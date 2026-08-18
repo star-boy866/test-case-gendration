@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+
+# Env files (never commit real secrets)
+.env
+backend/.env
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local data (never commit real healthcare data or DB files)
+database/*.db
+database/faiss_index/
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/exports/*
+!backend/exports/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db

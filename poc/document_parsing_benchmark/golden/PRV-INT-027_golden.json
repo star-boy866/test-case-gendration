@@ -1,0 +1,282 @@
+{
+  "metadata": {
+    "report_id": "PRV-INT-027",
+    "title": "Provider License Interface - Term Date Report",
+    "description": "To record any Interface errors that occurred during the Common License Interface.",
+    "source_type": "OLTP",
+    "source_component": "Provider",
+    "generation": "Scheduled",
+    "calendar": "State Fiscal",
+    "trigger_frequency": "Daily",
+    "accumulation": "Prompt"
+  },
+  "requirements": [
+    {
+      "requirement_id": "REQ-001",
+      "area": "Identification",
+      "atomic_statement": "The report shall define identification.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-002",
+      "area": "Purpose",
+      "atomic_statement": "The report shall define purpose.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-003",
+      "area": "Source",
+      "atomic_statement": "The report shall define source.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-004",
+      "area": "Generation",
+      "atomic_statement": "The report shall define generation.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-005",
+      "area": "Calendar",
+      "atomic_statement": "The report shall define calendar.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-006",
+      "area": "Trigger",
+      "atomic_statement": "The report shall define trigger.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-007",
+      "area": "Accumulation",
+      "atomic_statement": "The report shall define accumulation.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-008",
+      "area": "Selection",
+      "atomic_statement": "The report shall define selection.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-009",
+      "area": "Sorting",
+      "atomic_statement": "The report shall define sorting.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-010",
+      "area": "Layout",
+      "atomic_statement": "The report shall define layout.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-011",
+      "area": "Output",
+      "atomic_statement": "The report shall define output.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-012",
+      "area": "Portal",
+      "atomic_statement": "The report shall define portal.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-013",
+      "area": "Retention",
+      "atomic_statement": "The report shall define retention.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-014",
+      "area": "Special Processing",
+      "atomic_statement": "The report shall define special processing.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 1,
+      "source_section": "Report Definition",
+      "source_location": "Table 1"
+    },
+    {
+      "requirement_id": "REQ-015",
+      "area": "Report Body",
+      "atomic_statement": "The report shall display the Provider ID.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 2,
+      "source_section": "Report Layout",
+      "source_location": "Table 2",
+      "field_mapping": {
+        "source": "P_RPT_CLDI_TERM_TB",
+        "column": "PROVIDER_ID"
+      }
+    },
+    {
+      "requirement_id": "REQ-016",
+      "area": "Report Body",
+      "atomic_statement": "The report shall display the Provider Name.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 2,
+      "source_section": "Report Layout",
+      "source_location": "Table 2",
+      "field_mapping": {
+        "source": "P_RPT_CLDI_TERM_TB",
+        "column": "PROVIDER_NAME"
+      }
+    },
+    {
+      "requirement_id": "REQ-017",
+      "area": "Report Body",
+      "atomic_statement": "The report shall display the License Type.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 2,
+      "source_section": "Report Layout",
+      "source_location": "Table 2",
+      "field_mapping": {
+        "source": "P_RPT_CLDI_TERM_TB",
+        "column": "LICENSE_TYPE"
+      }
+    },
+    {
+      "requirement_id": "REQ-018",
+      "area": "Report Body",
+      "atomic_statement": "The report shall display the Term Date.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 2,
+      "source_section": "Report Layout",
+      "source_location": "Table 2",
+      "field_mapping": {
+        "source": "P_RPT_CLDI_TERM_TB",
+        "column": "TERM_DATE"
+      }
+    },
+    {
+      "requirement_id": "REQ-019",
+      "area": "Report Body",
+      "atomic_statement": "The report shall display the Error Code.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 2,
+      "source_section": "Report Layout",
+      "source_location": "Table 2",
+      "field_mapping": {
+        "source": "P_RPT_CLDI_TERM_TB",
+        "column": "ERROR_CODE"
+      }
+    },
+    {
+      "requirement_id": "REQ-020",
+      "area": "Report Body",
+      "atomic_statement": "The report shall display the Error Description.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 2,
+      "source_section": "Report Layout",
+      "source_location": "Table 2",
+      "field_mapping": {
+        "source": "P_RPT_CLDI_TERM_TB",
+        "column": "ERROR_DESCRIPTION"
+      }
+    },
+    {
+      "requirement_id": "REQ-021",
+      "area": "Output",
+      "atomic_statement": "The report shall be output in PDF format.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFLICT",
+      "source_page": 1,
+      "source_section": "Report Output",
+      "source_location": "Table 1, Row 45"
+    },
+    {
+      "requirement_id": "REQ-022",
+      "area": "Processing Rules",
+      "atomic_statement": "If no data available, display 'No data available'.",
+      "origin": "DSD_EXPLICIT",
+      "status": "CONFIRMED",
+      "source_page": 3,
+      "source_section": "Special Processing",
+      "source_location": "Table 3"
+    }
+  ],
+  "expected_comments": [
+    {
+      "id": "1",
+      "author": "Reviewer 1",
+      "text": "Are we sure this should be PDF?",
+      "location": "Table 1, Row 45",
+      "status": "unresolved"
+    }
+  ],
+  "expected_gaps": [
+    "Blank placeholder row in Report Body template not populated."
+  ],
+  "expected_conflicts": [
+    "Checkbox indicates PDF but comment asks if it should be Excel."
+  ],
+  "expected_assumptions": [
+    "Assuming PROV_NAME is the correct source column for Provider Name."
+  ],
+  "expected_source_pages": [
+    1,
+    2,
+    3
+  ]
+}

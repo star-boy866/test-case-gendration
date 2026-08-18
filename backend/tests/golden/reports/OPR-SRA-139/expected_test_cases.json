@@ -1,0 +1,18 @@
+[
+  {
+    "test_case_id": "TC-HDR-01",
+    "requirement_ids": [
+      "REQ-COGNOS-RPT-META-001"
+    ],
+    "scenario": "Verify report header metadata (COGNOS-RPT)",
+    "test_type": "Header",
+    "test_origin": "DIRECT_SPECIFICATION",
+    "test_design_technique": "Validate that report header displays exact metadata values.",
+    "preconditions": "Cognos Report 'COGNOS-RPT' (Cognos Report) is published and accessible. Test data exists in source table 'REVIEW_REQUIRED'.",
+    "validation_steps": "1. Run report COGNOS-RPT.\n2. Inspect top header area.\n3. Verify Report ID is 'COGNOS-RPT'.\n4. Verify Report Title is 'Cognos Report'.",
+    "test_data": "Expected Header Values:\nReport ID: COGNOS-RPT\nReport Title: Cognos Report\nDescription: Report Description",
+    "expected_result": "Header displays correct static values: ID='COGNOS-RPT', Title='Cognos Report'. No truncation or missing text.",
+    "priority": "High",
+    "evidence_types": []
+  }
+]

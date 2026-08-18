@@ -1,0 +1,173 @@
+{
+  "current_parser": {
+    "fabricated_mappings": {
+      "numerator": 5,
+      "denominator": 22,
+      "rate": 0.22727272727272727
+    },
+    "false_template_requirements": {
+      "numerator": 3,
+      "denominator": 22,
+      "rate": 0.13636363636363635
+    },
+    "checkbox": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0
+    },
+    "requirement_precision": {
+      "true_positive": 15,
+      "false_positive": 8,
+      "precision": 0.6521739130434783
+    },
+    "requirement_recall": {
+      "true_positive": 15,
+      "false_negative": 7,
+      "recall": 0.6818181818181818
+    },
+    "field_mapping_accuracy": {
+      "correct": 4,
+      "evaluated": 6,
+      "accuracy": 0.6666666666666666
+    },
+    "comments": {
+      "captured": 0,
+      "expected": 1,
+      "accuracy": 0.0
+    },
+    "conflicts": {
+      "detected": 0,
+      "expected": 1,
+      "recall": 0.0
+    },
+    "gaps": {
+      "detected": 0,
+      "expected": 1,
+      "recall": 0.0
+    },
+    "source_page": {
+      "correct": 10,
+      "evaluated": 22,
+      "accuracy": 0.45454545454545453
+    },
+    "processing_rules": {
+      "correct": 0,
+      "evaluated": 1,
+      "accuracy": 0.0
+    }
+  },
+  "python_docx": {
+    "fabricated_mappings": {
+      "numerator": 0,
+      "denominator": 22,
+      "rate": 0.0
+    },
+    "false_template_requirements": {
+      "numerator": 0,
+      "denominator": 22,
+      "rate": 0.0
+    },
+    "checkbox": {
+      "correct": 1,
+      "total": 1,
+      "accuracy": 1.0
+    },
+    "requirement_precision": {
+      "true_positive": 22,
+      "false_positive": 0,
+      "precision": 1.0
+    },
+    "requirement_recall": {
+      "true_positive": 22,
+      "false_negative": 0,
+      "recall": 1.0
+    },
+    "field_mapping_accuracy": {
+      "correct": 6,
+      "evaluated": 6,
+      "accuracy": 1.0
+    },
+    "comments": {
+      "captured": 1,
+      "expected": 1,
+      "accuracy": 1.0
+    },
+    "conflicts": {
+      "detected": 1,
+      "expected": 1,
+      "recall": 1.0
+    },
+    "gaps": {
+      "detected": 1,
+      "expected": 1,
+      "recall": 1.0
+    },
+    "source_page": {
+      "correct": 22,
+      "evaluated": 22,
+      "accuracy": 1.0
+    },
+    "processing_rules": {
+      "correct": 1,
+      "evaluated": 1,
+      "accuracy": 1.0
+    }
+  },
+  "docling": {
+    "fabricated_mappings": {
+      "numerator": 1,
+      "denominator": 22,
+      "rate": 0.045454545454545456
+    },
+    "false_template_requirements": {
+      "numerator": 1,
+      "denominator": 22,
+      "rate": 0.045454545454545456
+    },
+    "checkbox": {
+      "correct": 1,
+      "total": 1,
+      "accuracy": 1.0
+    },
+    "requirement_precision": {
+      "true_positive": 21,
+      "false_positive": 2,
+      "precision": 0.9130434782608695
+    },
+    "requirement_recall": {
+      "true_positive": 21,
+      "false_negative": 1,
+      "recall": 0.9545454545454546
+    },
+    "field_mapping_accuracy": {
+      "correct": 5,
+      "evaluated": 6,
+      "accuracy": 0.8333333333333334
+    },
+    "comments": {
+      "captured": 1,
+      "expected": 1,
+      "accuracy": 1.0
+    },
+    "conflicts": {
+      "detected": 1,
+      "expected": 1,
+      "recall": 1.0
+    },
+    "gaps": {
+      "detected": 1,
+      "expected": 1,
+      "recall": 1.0
+    },
+    "source_page": {
+      "correct": 20,
+      "evaluated": 22,
+      "accuracy": 0.9090909090909091
+    },
+    "processing_rules": {
+      "correct": 1,
+      "evaluated": 1,
+      "accuracy": 1.0
+    }
+  }
+}

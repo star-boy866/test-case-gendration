@@ -1,0 +1,79 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-appuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-healthcare_db}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-appuser} -d ${POSTGRES_DB:-healthcare_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  broker:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-appuser}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-healthcare_db}
+      - CELERY_BROKER_URL=redis://broker:6379/0
+      # All sensitive keys (SECRET_KEY, LLM APIs) MUST be provided via .env at runtime
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # Override CMD to run Celery instead of Gunicorn
+    command: ["celery", "-A", "app.worker", "worker", "--loglevel=info", "--concurrency=4"]
+    environment:
+      - APP_ENV=production
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-appuser}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-healthcare_db}
+      - CELERY_BROKER_URL=redis://broker:6379/0
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  pgdata:

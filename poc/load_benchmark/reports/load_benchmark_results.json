@@ -1,0 +1,93 @@
+[
+  {
+    "concurrency": 1,
+    "tasks": 3,
+    "throughput": 0.66,
+    "p50": 0.13,
+    "p95": 4.34,
+    "p99": 4.34,
+    "errors": 0,
+    "lock_errors": 0,
+    "cpu_percent": 13.93,
+    "mem_percent": 75.72,
+    "golden_pass_rate": "3/3"
+  },
+  {
+    "concurrency": 2,
+    "tasks": 3,
+    "throughput": 0.51,
+    "p50": 0.58,
+    "p95": 5.83,
+    "p99": 5.83,
+    "errors": 0,
+    "lock_errors": 0,
+    "cpu_percent": 28.8,
+    "mem_percent": 77.76,
+    "golden_pass_rate": "3/3"
+  },
+  {
+    "concurrency": 5,
+    "tasks": 5,
+    "throughput": 0.34,
+    "p50": 0.8,
+    "p95": 14.55,
+    "p99": 14.55,
+    "errors": 0,
+    "lock_errors": 0,
+    "cpu_percent": 26.15,
+    "mem_percent": 76.59,
+    "golden_pass_rate": "5/5"
+  },
+  {
+    "concurrency": 10,
+    "tasks": 10,
+    "throughput": 0.44,
+    "p50": 1.2,
+    "p95": 22.65,
+    "p99": 22.65,
+    "errors": 0,
+    "lock_errors": 0,
+    "cpu_percent": 8.99,
+    "mem_percent": 76.86,
+    "golden_pass_rate": "10/10"
+  },
+  {
+    "concurrency": 20,
+    "tasks": 20,
+    "throughput": 0.28,
+    "p50": 3.69,
+    "p95": 72.07,
+    "p99": 72.07,
+    "errors": 0,
+    "lock_errors": 0,
+    "cpu_percent": 13.17,
+    "mem_percent": 84.0,
+    "golden_pass_rate": "20/20"
+  },
+  {
+    "concurrency": 25,
+    "tasks": 25,
+    "throughput": 0.28,
+    "p50": 6.81,
+    "p95": 88.32,
+    "p99": 89.06,
+    "errors": 0,
+    "lock_errors": 0,
+    "cpu_percent": 24.25,
+    "mem_percent": 84.82,
+    "golden_pass_rate": "25/25"
+  },
+  {
+    "concurrency": 50,
+    "tasks": 50,
+    "throughput": 0.36,
+    "p50": 8.55,
+    "p95": 138.08,
+    "p99": 139.6,
+    "errors": 0,
+    "lock_errors": 0,
+    "cpu_percent": 8.39,
+    "mem_percent": 92.93,
+    "golden_pass_rate": "50/50"
+  }
+]

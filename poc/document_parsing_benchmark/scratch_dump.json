@@ -1,0 +1,651 @@
+{
+  "paragraphs": [
+    {
+      "index": 4,
+      "text": "State: New Hampshire"
+    },
+    {
+      "index": 5,
+      "text": "Project: OPLC License Interface Change Part II"
+    },
+    {
+      "index": 6,
+      "text": "CR 18175/ESPRD01335005"
+    },
+    {
+      "index": 7,
+      "text": "Unit Testing Document"
+    },
+    {
+      "index": 8,
+      "text": "PRV-INT-027"
+    },
+    {
+      "index": 9,
+      "text": "Date: 11/06/2025"
+    },
+    {
+      "index": 13,
+      "text": "Table of Contents"
+    },
+    {
+      "index": 15,
+      "text": "Revision History\t2"
+    },
+    {
+      "index": 16,
+      "text": "1\tOverview\t3"
+    },
+    {
+      "index": 17,
+      "text": "2\tReport Details\t3"
+    },
+    {
+      "index": 18,
+      "text": "2.1\tFuture State – Report Output\t3"
+    },
+    {
+      "index": 19,
+      "text": "3\tSQL/Code Changes\t3"
+    },
+    {
+      "index": 20,
+      "text": "3.1\tCode\t3"
+    },
+    {
+      "index": 21,
+      "text": "3.2\tPackage\t3"
+    },
+    {
+      "index": 22,
+      "text": "4\tAdditional Specifications\t3"
+    },
+    {
+      "index": 23,
+      "text": "4.1\tData Flow Diagram\t3"
+    },
+    {
+      "index": 24,
+      "text": "4.2\tReport Column Mappings\t3"
+    },
+    {
+      "index": 25,
+      "text": "4.3\tReport Parameters\t4"
+    },
+    {
+      "index": 26,
+      "text": "4.4\tParameter Logic Details\t4"
+    },
+    {
+      "index": 27,
+      "text": "5\tOpen and Closed Items\t4"
+    },
+    {
+      "index": 28,
+      "text": "6\tAppendix: Final Code\t4"
+    },
+    {
+      "index": 30,
+      "text": "Revision History"
+    },
+    {
+      "index": 31,
+      "text": "Deliverable Approval"
+    },
+    {
+      "index": 34,
+      "text": "Overview"
+    },
+    {
+      "index": 36,
+      "text": "This deliverable outlines the technical design for the PRV-INT-027/ Provider License Interface – Term Date Report. This Package change does/does not require Section 4 based on complexity."
+    },
+    {
+      "index": 38,
+      "text": "This document is prepared by the BI team for review and approved by the Testing team.  It is based on the DSD and contains the specifications and actual logic required to create/Modify the report in COGNOS."
+    },
+    {
+      "index": 39,
+      "text": "Report Details"
+    },
+    {
+      "index": 41,
+      "text": "Report Name: Provider License Interface – Term Date Report"
+    },
+    {
+      "index": 43,
+      "text": "Report Description: To record any Interface errors that occurred during the Common License Interface."
+    },
+    {
+      "index": 45,
+      "text": "Table Used -   P_RPT_CLDI_TERM_TB, R_VV_TB"
+    },
+    {
+      "index": 47,
+      "text": "Report Path: Team content > Operational Reports> Provider>Provider – Scheduled > PRV-INT-027."
+    },
+    {
+      "index": 49,
+      "text": "Output Format: Excel"
+    },
+    {
+      "index": 51,
+      "text": "Script Name: cognosScript_XLSX.sh"
+    },
+    {
+      "index": 53,
+      "text": "CR Enhancement: As part of the OPLC Project, a new report called “Provider License Interface – Term Date Report” is being created. This enhancement also updates the PRV-INT-027 report to capture any interface errors that happen during the Common License Interface process. It includes errors from both OPLC and MMIS data shown in the report."
+    },
+    {
+      "index": 58,
+      "text": "Future State - Report Output"
+    },
+    {
+      "index": 61,
+      "text": "Note: As data is not loaded yet PRV-INT-027 report has been validated by dummy data ."
+    },
+    {
+      "index": 63,
+      "text": "Scenario 1: Validated the layout of report PRV-INT-027 including Report ID, Report Description, and Header to ensure it is displayed in Excel format as per the report specification. And the report is as expected."
+    },
+    {
+      "index": 65,
+      "text": "DSD:"
+    },
+    {
+      "index": 68,
+      "text": "Report:"
+    },
+    {
+      "index": 71,
+      "text": "Scenario 2: Validated the label names in report PRV-INT-027 to verify report is as per DSD specification. And the report meets the expected specification."
+    },
+    {
+      "index": 73,
+      "text": "DSD:"
+    },
+    {
+      "index": 76,
+      "text": "Report:"
+    },
+    {
+      "index": 80,
+      "text": "Scenario 3: Validated the sorting in report PRV-INT-027 to ensure it matches the DSD and complies with the report specification. The report meets the expected specification."
+    },
+    {
+      "index": 81,
+      "text": "DSD:"
+    },
+    {
+      "index": 84,
+      "text": "Report:"
+    },
+    {
+      "index": 87,
+      "text": "OUTPUT:"
+    },
+    {
+      "index": 90,
+      "text": "Scenario 4: Validated the report script and output format of PRV-INT-027 to ensure it aligns with the report specification. The report is as per the report specification."
+    },
+    {
+      "index": 92,
+      "text": "Script:"
+    },
+    {
+      "index": 93,
+      "text": "/opt/enterprise/cots/agentScripts/cognos/cognosScript_XLSX.sh PRV-INT-027"
+    },
+    {
+      "index": 95,
+      "text": "DSD:"
+    },
+    {
+      "index": 98,
+      "text": "Putty:"
+    },
+    {
+      "index": 101,
+      "text": "Scenario 5: Validated the report name and description in PRV-INT-027 in both the DSD and the report. It is as per the report specification."
+    },
+    {
+      "index": 103,
+      "text": "DSD:"
+    },
+    {
+      "index": 106,
+      "text": "Report:"
+    },
+    {
+      "index": 110,
+      "text": "Scenario 6: Validated the Special Processing Rule For “No data Available” in report PRV-INT-027 in Excel format. The report is working as expected."
+    },
+    {
+      "index": 112,
+      "text": "DSD:"
+    },
+    {
+      "index": 114,
+      "text": "Report:"
+    },
+    {
+      "index": 117,
+      "text": "Scenario 7: Validated the date format in the header using Excel format in report PRV-INT-027 against the DSD and the report. The report is as per report specification."
+    },
+    {
+      "index": 119,
+      "text": "DSD:"
+    },
+    {
+      "index": 123,
+      "text": "Report:"
+    },
+    {
+      "index": 126,
+      "text": "Scenario 8: Validated the Control Break in report PRV-INT-027 as per the DSD specification using the Excel format. The report is working as expected."
+    },
+    {
+      "index": 128,
+      "text": "DSD:"
+    },
+    {
+      "index": 130,
+      "text": "Report:"
+    },
+    {
+      "index": 132,
+      "text": "Scenario 9: Validated the count of records displayed in the PRV-INT-027 report matches the records with the DB."
+    },
+    {
+      "index": 133,
+      "text": "Report:"
+    },
+    {
+      "index": 135,
+      "text": "DB:"
+    },
+    {
+      "index": 139,
+      "text": "Scenario 10: Validated the PRV-INT-027 report to check if any duplicate records are present. The report is working as expected."
+    },
+    {
+      "index": 141,
+      "text": "Report:"
+    },
+    {
+      "index": 144,
+      "text": "DB:"
+    },
+    {
+      "index": 147,
+      "text": "Scenario 11: Validated the PRV-INT-027 report to check whether it is fetching the correct description for column “Reval Stat CD”. The report is working as expected."
+    },
+    {
+      "index": 148,
+      "text": "DSD:"
+    },
+    {
+      "index": 150,
+      "text": "Report:"
+    },
+    {
+      "index": 153,
+      "text": "DB:"
+    },
+    {
+      "index": 156,
+      "text": "Scenario 12: Validated PRV-INT-027 report execution through box."
+    },
+    {
+      "index": 157,
+      "text": "Putty screenshot:"
+    },
+    {
+      "index": 159,
+      "text": "OUTPUT:"
+    },
+    {
+      "index": 162,
+      "text": "Scenario 13: Validated Report PRV-INT-027 To check whether report is reaching SDR page or not. The report is moving to SDR as expected."
+    },
+    {
+      "index": 164,
+      "text": "UI:"
+    },
+    {
+      "index": 165,
+      "text": "Will update once Metadata is updated."
+    },
+    {
+      "index": 166,
+      "text": "SQL/Code Changes"
+    },
+    {
+      "index": 167,
+      "text": "Technical details on changes from current state to future state"
+    },
+    {
+      "index": 168,
+      "text": "Code"
+    },
+    {
+      "index": 170,
+      "text": "Scenario 14: Data validation with DB."
+    },
+    {
+      "index": 172,
+      "text": "DB:"
+    },
+    {
+      "index": 174,
+      "text": "REPORT:"
+    },
+    {
+      "index": 179,
+      "text": "Package"
+    },
+    {
+      "index": 180,
+      "text": "Additional Specifications"
+    },
+    {
+      "index": 181,
+      "text": "Detail as needed based on report complexity"
+    },
+    {
+      "index": 182,
+      "text": "Data Flow Diagram"
+    },
+    {
+      "index": 183,
+      "text": "The data flow diagram represents the base tables of each block or business domain and the tables referenced for validation or lookups."
+    },
+    {
+      "index": 185,
+      "text": "NA"
+    },
+    {
+      "index": 186,
+      "text": "Report Column Mappings"
+    },
+    {
+      "index": 187,
+      "text": "Report Parameters"
+    },
+    {
+      "index": 189,
+      "text": "Parameter Logic Details"
+    },
+    {
+      "index": 190,
+      "text": "This Section contains the information about the List of Values (parameters) to be used as inputs for a report. Each Parameter query is different and has a SQL query to it."
+    },
+    {
+      "index": 193,
+      "text": "Parameter Layout: displays how the parameter page appears in a report."
+    },
+    {
+      "index": 194,
+      "text": "Open and Closed Items"
+    },
+    {
+      "index": 197,
+      "text": "Appendix: Final Code"
+    },
+    {
+      "index": 198,
+      "text": "Copy of final code in the future state report"
+    },
+    {
+      "index": 205,
+      "text": "Report Query:"
+    }
+  ],
+  "tables": [
+    {
+      "index": 0,
+      "rows": [
+        [
+          "Revision Comments",
+          "Created By",
+          "Revised By",
+          "Revision Date",
+          "Actual Revision Date"
+        ],
+        [
+          "Initial Version",
+          "Abhilash Chiluka",
+          "Veera Hema Chekkera",
+          "11/06/2025",
+          "11/06/2025"
+        ],
+        [
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          "",
+          ""
+        ]
+      ]
+    },
+    {
+      "index": 1,
+      "rows": [
+        [
+          "Approver Name",
+          "Title / Role",
+          "Approved Date",
+          "Date"
+        ],
+        [
+          "Chenchurathnam Anjali",
+          "Senior Technical Lead",
+          "11/06/2025",
+          "11/06/2025"
+        ],
+        [
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          ""
+        ]
+      ]
+    },
+    {
+      "index": 2,
+      "rows": [
+        [
+          "Output Field Type",
+          "Output Field Name",
+          "Source Tables",
+          "Column",
+          "Data Type",
+          "Class Name",
+          "Object Name",
+          "SQL Code"
+        ],
+        [
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ]
+      ]
+    },
+    {
+      "index": 3,
+      "rows": [
+        [
+          "Seq",
+          "Name",
+          "Datatype",
+          "Rqd",
+          "Default",
+          "Format",
+          "Validation/ValueSet",
+          "Parameter Name"
+        ],
+        [
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ]
+      ]
+    },
+    {
+      "index": 4,
+      "rows": [
+        [
+          "Parameter Name",
+          "SQL Statement"
+        ],
+        [
+          "",
+          ""
+        ],
+        [
+          "",
+          ""
+        ],
+        [
+          "",
+          ""
+        ]
+      ]
+    },
+    {
+      "index": 5,
+      "rows": [
+        [
+          "Item No.",
+          "Status (Open / Closed)",
+          "Item Requiring Action or Resolution",
+          "Issues CQ ID",
+          "Responsibility",
+          "Target Completion Date",
+          "Resolution",
+          "Closed\nDate"
+        ],
+        [
+          "1",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "2",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        [
+          "3",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ]
+      ]
+    }
+  ]
+}

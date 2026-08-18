@@ -1,0 +1,18 @@
+[
+  {
+    "test_case_id": "OPR005-HDR-01",
+    "requirement_ids": [
+      "REQ-OPR-TPL-005-META-001"
+    ],
+    "scenario": "Verify report header metadata (OPR-TPL-005)",
+    "test_type": "Header",
+    "test_origin": "DIRECT_SPECIFICATION",
+    "test_design_technique": "Validate that report header displays exact metadata values.",
+    "preconditions": "Cognos Report 'OPR-TPL-005' (Cognos Report) is published and accessible. Test data exists in source table 'REVIEW_REQUIRED'.",
+    "validation_steps": "1. Run report OPR-TPL-005.\n2. Inspect top header area.\n3. Verify Report ID is 'OPR-TPL-005'.\n4. Verify Report Title is 'Cognos Report'.",
+    "test_data": "Expected Header Values:\nReport ID: OPR-TPL-005\nReport Title: Cognos Report\nDescription: Report Description",
+    "expected_result": "Header displays correct static values: ID='OPR-TPL-005', Title='Cognos Report'. No truncation or missing text.",
+    "priority": "High",
+    "evidence_types": []
+  }
+]

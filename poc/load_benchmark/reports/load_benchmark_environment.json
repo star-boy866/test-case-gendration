@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-08-18T10:42:45.294391+00:00",
+  "os": "Windows",
+  "os_release": "11",
+  "python_version": "3.12.0",
+  "cpu_cores_physical": 4,
+  "cpu_cores_logical": 8,
+  "ram_total_gb": 15.76,
+  "sqlite_version": "3.42.0",
+  "backend_version": "1.0.0",
+  "configuration": {
+    "WAL_enabled": false,
+    "LLM": "Ollama / local"
+  }
+}

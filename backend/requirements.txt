@@ -1,0 +1,53 @@
+# Phase 0 — core API
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-dotenv==1.0.1
+python-multipart==0.0.9
+sqlalchemy==2.0.35
+
+# Phase 1 — document parsing (RDD/LDM -> Knowledge Base)
+pandas==2.2.3
+openpyxl==3.1.5
+python-docx==1.1.2
+pdfplumber==0.11.4
+
+# Phase 3 — Context Minimizer + semantic cache
+# faiss-cpu is preferred when it installs cleanly; app/services/vector_index.py
+# automatically falls back to a pure-numpy brute-force index if this native
+# wheel isn't available in a given environment. BM25 and the hashing-trick
+# embedder are hand-rolled (see bm25.py / embeddings.py) — zero extra deps.
+faiss-cpu==1.9.0
+
+# Phase 4 — Planning Agent / AST Builder / Generator
+requests==2.32.3
+# langgraph is OPTIONAL — app/agents/langgraph_pipeline.py defers the import
+# and app/agents/pipeline.py (plain Python, no framework) is what's actually
+# wired into the API. Install this if you want the LangGraph-wrapped
+# execution path; nothing breaks if you don't.
+langgraph==0.2.53
+
+# Phase 8 — SharePoint sync (Microsoft Graph API client-credentials auth).
+# smtplib/email for the email notifications are Python stdlib — no new
+# dependency needed for that half of Phase 8.
+msal==1.31.0
+
+# Phase 10 — structured telemetry. OPTIONAL — app/core/telemetry.py
+# transparently falls back to a dependency-free stdlib-logging equivalent
+# (same JSON shape) if this isn't installed. The LLM-as-Judge evaluation
+# layer (llm_judge.py) needs no new dependency at all — same Callable[[str],
+# str] LLM injection pattern as Phase 4/5.
+structlog==24.4.0
+
+# Phase 9 — RBAC, immutable audit logging, encryption at rest
+# pyjwt (not python-jose, which is less actively maintained) for JWT auth.
+# Password hashing uses stdlib hashlib.pbkdf2_hmac — no passlib/bcrypt
+# dependency needed. cryptography (AESGCM) for AES-256 encryption at rest.
+pyjwt==2.9.0
+cryptography==43.0.3
+
+# Dev/test
+pytest==8.3.3
+httpx==0.27.2
+defusedxml==0.7.1

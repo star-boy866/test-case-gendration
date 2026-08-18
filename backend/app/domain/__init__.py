@@ -1,0 +1,1 @@
+# Cognos domain models package

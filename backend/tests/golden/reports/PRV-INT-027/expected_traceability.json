@@ -1,0 +1,22 @@
+{
+  "report_id": "PRV-INT-027",
+  "mappings": [],
+  "implementation_only_items": [
+    "CognosUserID",
+    "EvenOdd",
+    "File Name",
+    "Last Reval Status Dt",
+    "MM/DD/CCYY",
+    "MMIS Lic Cert End Date",
+    "OPLC Term Date",
+    "Prov ID",
+    "Prov Lic Cert Num",
+    "Prov SK",
+    "Prov Sort Name",
+    "Reval Stat Cd",
+    "Total Errors",
+    "Value1"
+  ],
+  "missing_in_xml_items": [],
+  "discrepancy_notes": []
+}
