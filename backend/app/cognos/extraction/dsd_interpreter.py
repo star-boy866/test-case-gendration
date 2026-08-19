@@ -64,6 +64,7 @@ class DsdInterpreter:
 
     def process(self) -> RequirementSet:
         self._interpret_metadata()
+        self._interpret_paragraphs()
         self._interpret_tables()
         self._apply_reasoning_engine()
         self.req_set.compute_summary()
@@ -73,7 +74,7 @@ class DsdInterpreter:
         # Scan paragraphs and first table for basic report ID
         for p in self.doc.paragraphs:
             if "PRV-INT" in p or "OPR-" in p:
-                match = re.search(r"((?:PRV-INT|OPR-TPL)-\d{3})", p)
+                match = re.search(r"((?:PRV-INT|OPR-TPL|OPR-SRA)-\d{3})", p)
                 if match:
                     self.req_set.report_id = match.group(1)
                     self.report_id_prefix = self.req_set.report_id.split('-')[-1]
@@ -86,6 +87,21 @@ class DsdInterpreter:
                     self.report_id_prefix = self.req_set.report_id.split('-')[-1]
                     break
 
+    def _interpret_paragraphs(self):
+        # Parse paragraphs for Unit Test Scenarios (e.g. PRV-INT-027)
+        for i, p in enumerate(self.doc.paragraphs):
+            text = _extract_text(p)
+            if text.startswith("Scenario "):
+                self._add_req(
+                    RequirementCategory.BUSINESS_RULE,
+                    "Unit Test Scenario",
+                    text,
+                    status="EXTRACTED",
+                    origin=TestOrigin.DEV_UT_METHODOLOGY,
+                    confidence=RequirementConfidence.HIGH,
+                    source_section="UT Document Scenarios"
+                )
+
     def _interpret_tables(self):
         # A simple schema-driven interpretation for deterministic facts.
         for t in self.doc.tables:
@@ -93,10 +109,12 @@ class DsdInterpreter:
             if not t.rows:
                 continue
             
-            headers = [c.text.lower().strip() for c in t.rows[0].cells]
+            headers_0 = [c.text.lower().strip() for c in t.rows[0].cells]
+            headers_1 = [c.text.lower().strip() for c in t.rows[1].cells] if len(t.rows) > 1 else []
+            all_headers = set(headers_0 + headers_1)
             
             # Check if this is the Report Body mappings table
-            if "field type" in headers or "business label" in headers or "column" in headers:
+            if "field type" in all_headers or "business label" in all_headers or "column" in all_headers or "report body" in all_headers:
                 self._parse_report_body(t)
             
             # Check for general Report Definition (key/value pairs)
@@ -104,7 +122,15 @@ class DsdInterpreter:
                 self._parse_key_value_table(t)
 
     def _parse_report_body(self, table: CanonicalTable):
-        for row in table.rows[1:]:
+        # Find the actual header row
+        start_idx = 1
+        for i, row in enumerate(table.rows[:3]):
+            row_texts = [c.text.lower().strip() for c in row.cells]
+            if "field type" in row_texts or "business label" in row_texts:
+                start_idx = i + 1
+                break
+
+        for row in table.rows[start_idx:]:
             cells = row.cells
             if len(cells) < 2:
                 continue
@@ -112,21 +138,18 @@ class DsdInterpreter:
             field_type = _extract_text(cells[0].text)
             business_label = _extract_text(cells[1].text)
             
-            # Gaps detection: Blank placeholder row in template
-            if not business_label or "N/A" in business_label or not field_type:
-                req = self._add_req(
-                    RequirementCategory.COLUMN, 
-                    "Unknown", 
-                    "Blank placeholder row in template.",
-                    status="GAP",
-                    origin=TestOrigin.DSD_DERIVED,
-                    confidence=RequirementConfidence.LOW,
-                    source_section="Report Body Mappings"
-                )
-                self.req_set.warnings.append(f"GAP: Empty row mapped in table {table.index}")
-                continue
+            # Gaps detection / Template boilerplate filtering
+            lower_label = business_label.lower()
+            lower_type = field_type.lower()
+            
+            if not business_label or "n/a" in lower_label or not field_type:
+                continue # Skip empty placeholders entirely
+                
+            if "summary" in lower_type or "daily total" in lower_type or "row" in lower_type:
+                continue # Skip structural template boilerplate
 
             # Valid field
+            source_table = _extract_text(cells[4].text) if len(cells) > 4 else ""
             req = self._add_req(
                 RequirementCategory.COLUMN,
                 business_label,
@@ -134,6 +157,7 @@ class DsdInterpreter:
                 status="EXTRACTED",
                 source_section="Report Body Mappings"
             )
+            req.source_table = source_table
 
     def _parse_key_value_table(self, table: CanonicalTable):
         for row in table.rows:

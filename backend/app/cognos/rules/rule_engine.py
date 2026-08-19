@@ -100,5 +100,7 @@ def _build_metadata_header_case(rd: ReportDefinition, precondition: str) -> Cogn
         ),
         expected_result=f"Header displays correct static values: ID='{rid}', Title='{rname}'. No truncation or missing text.",
         priority=TestCasePriority.HIGH,
+        evidence_type="REPORT",
+        evidence_required="- Generated report output showing header metadata: [REPORT EVIDENCE — INSERT SCREENSHOT]",
         origin="DIRECT_SPECIFICATION",
     )

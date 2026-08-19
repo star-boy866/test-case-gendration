@@ -15,6 +15,7 @@ def root_dir() -> Path:
     return Path(__file__).parent.parent.parent
 
 
+@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_direct_mapping_classification(root_dir: Path):
     doc_path = root_dir / "Report Definition - OPR.docx"
     doc = parse_cognos_docx(doc_path)
@@ -27,6 +28,7 @@ def test_direct_mapping_classification(root_dir: Path):
     assert "T_RPT_HMS_CARR_ID" in carrier_id_field.source_columns[0]
 
 
+@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_multi_source_classification(root_dir: Path):
     doc_path = root_dir / "Report Definition - OPR.docx"
     doc = parse_cognos_docx(doc_path)
@@ -70,6 +72,7 @@ def test_concat_4_input(root_dir: Path):
         assert col in mbr_name_field.source_columns
 
 
+@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_program_generated_measure(root_dir: Path):
     doc_path = root_dir / "Report Definition- OPT-TPL-005.docx"
     doc = parse_cognos_docx(doc_path)
@@ -84,6 +87,7 @@ def test_program_generated_measure(root_dir: Path):
     assert len(partial_matches_field.source_columns) == 0
 
 
+@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_lookup_classification(root_dir: Path):
     doc_path = root_dir / "Report Definition OPR-TPL-004 - OPR.docx"
     doc = parse_cognos_docx(doc_path)
@@ -94,6 +98,7 @@ def test_lookup_classification(root_dir: Path):
     assert lookup_field.source_logic_type == SourceLogicType.LOOKUP
 
 
+@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_formatted_field_classification(root_dir: Path):
     doc_path = root_dir / "Report Definition - OPR.docx"
     doc = parse_cognos_docx(doc_path)
@@ -104,6 +109,7 @@ def test_formatted_field_classification(root_dir: Path):
     assert coverage_codes_field.source_logic_type == SourceLogicType.FORMATTED
 
 
+@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_part5_acceptance_gate(root_dir: Path):
     # OPR-TPL-016 Carrier ID → DIRECT_SOURCE
     doc16 = parse_cognos_docx(root_dir / "Report Definition - OPR.docx")

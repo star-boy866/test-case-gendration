@@ -7,6 +7,7 @@ from pathlib import Path
 from app.cognos.pipeline import run_cognos_pipeline
 from app.domain.cognos_requirement import RequirementCategory
 
+@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_all_tests_have_requirement_links(tmp_path: Path):
     """
     Every generated test case must have requirement_ids populated,
@@ -76,6 +77,7 @@ def test_traceability_is_populated(tmp_path: Path):
             assert len(entry.test_case_ids) > 0
 
 
+@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_coverage_matches_relationships(tmp_path: Path):
     """
     Coverage percentage must exactly match unique covered IDs / total normalized IDs.

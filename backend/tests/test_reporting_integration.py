@@ -87,7 +87,7 @@ def test_final_report_context_composition(sample_dsd, sample_reqs, sample_trace)
     suite = TestSuite(report_id="PRV-INT-027", test_cases=cases)
     
     # Coverage is computed using ONLY DSD logic
-    coverage = compute_coverage(sample_reqs, suite.test_cases)
+    coverage = compute_coverage(sample_reqs, suite.test_cases, sample_dsd)
     suite.coverage = coverage
     
     # 2. Compose the final reporting context

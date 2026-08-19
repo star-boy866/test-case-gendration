@@ -79,6 +79,39 @@ class PipelineResult:
         }
 
 
+def _build_legacy_report_definition(req_set: RequirementSet, source_document_name: str) -> ReportDefinition:
+    report_def = ReportDefinition(source_document=source_document_name)
+    report_def.metadata.report_id = req_set.report_id
+    
+    from app.domain.cognos_requirement import RequirementCategory
+    from app.domain.cognos_models import ReportField, SelectionCriterion
+    
+    for req in req_set.requirements:
+        if req.category == RequirementCategory.REPORT_TITLE:
+            report_def.metadata.report_title = req.requirement_text
+        elif req.category == RequirementCategory.REPORT_DESCRIPTION:
+            report_def.metadata.report_description = req.requirement_text
+        elif req.category == RequirementCategory.COLUMN:
+            f = ReportField(
+                field_name=req.field,
+                business_label=req.business_label,
+                description=req.description or req.requirement_text,
+                source_table=req.source_table,
+                source_logic_type=req.source_logic_type,
+                processing_rule=req.processing_rule,
+                formatting_rule=req.formatting_rule
+            )
+            report_def.report_fields.append(f)
+        elif req.category == RequirementCategory.PARAMETER:
+            c = SelectionCriterion(
+                field=req.field,
+                parameter_name=req.business_label,
+                description=req.description or req.requirement_text
+            )
+            report_def.selection_criteria.append(c)
+
+    return report_def
+
 def run_cognos_pipeline(
     docx_path: str | Path,
     xml_path: str | Path | None = None,
@@ -109,12 +142,8 @@ def run_cognos_pipeline(
     req_set = interpret_dsd(canonical_doc, source_document_name)
     all_warnings.extend(req_set.warnings)
     
-    # --- Stage 2.5: Build backwards-compatible ReportDefinition (Stubbed for now) ---
-    # The new interpreter generates a rich RequirementSet. The old Test Design Engine 
-    # needs a ReportDefinition to run. We construct a minimal one here to keep 
-    # the existing pipeline intact while adopting the new parser.
-    report_def = ReportDefinition(source_document=source_document_name)
-    report_def.metadata.report_id = req_set.report_id
+    # --- Stage 2.5: Build backwards-compatible ReportDefinition ---
+    report_def = _build_legacy_report_definition(req_set, source_document_name)
 
 
     # --- Stage 3: Deduplicate requirements ---

@@ -1,21 +1,5 @@
 [
   {
-    "test_case_id": "PRV027-LBL-01",
-    "requirement_ids": [
-      "REQ-027-COLU-001"
-    ],
-    "scenario": "Verify column labels in PRV-INT-027",
-    "test_type": "Report Label",
-    "test_origin": "DEV_UT_METHODOLOGY",
-    "test_design_technique": "Verify column labels.",
-    "preconditions": "Cognos Report 'PRV-INT-027' (Cognos Report) is published and accessible. Test data exists in source table 'REVIEW_REQUIRED'.",
-    "validation_steps": "1. Generate report PRV-INT-027.\n2. Inspect the column headers.\n3. Verify headers match: Unknown.",
-    "test_data": "N/A",
-    "expected_result": "The column headers exactly match the DSD: Unknown.",
-    "priority": "Medium",
-    "evidence_types": []
-  },
-  {
     "test_case_id": "PRV027-HDR-01",
     "requirement_ids": [
       "REQ-PRV-INT-027-META-001"
@@ -29,22 +13,47 @@
     "test_data": "Expected Header Values:\nReport ID: PRV-INT-027\nReport Title: Cognos Report\nDescription: Report Description",
     "expected_result": "Header displays correct static values: ID='PRV-INT-027', Title='Cognos Report'. No truncation or missing text.",
     "priority": "High",
-    "evidence_types": []
+    "evidence_types": [
+      "- Generated report output showing header metadata: [REPORT EVIDENCE \u2014 INSERT SCREENSHOT]",
+      "REPORT"
+    ]
   },
   {
-    "test_case_id": "PRV027-DB-01",
+    "test_case_id": "PRV027-LOOK-01",
     "requirement_ids": [
-      "REQ-027-COLU-001"
+      "REQ-027-BUSI-001"
     ],
-    "scenario": "Verify DB-to-Report data mapping for PRV-INT-027",
-    "test_type": "Database Validation",
+    "scenario": "Verify Lookup Description mapping in PRV-INT-027",
+    "test_type": "Lookup Logic",
     "test_origin": "DEV_UT_METHODOLOGY",
-    "test_design_technique": "Verify direct data mapping and logic.",
+    "test_design_technique": "Verify lookup code-to-description transformation.",
     "preconditions": "Cognos Report 'PRV-INT-027' (Cognos Report) is published and accessible. Test data exists in source table 'REVIEW_REQUIRED'.",
-    "validation_steps": "1. Query the source database for the test records.\n2. Generate report PRV-INT-027.\n3. Verify report columns (e.g., Unknown) match the database query results.",
-    "test_data": "Source tables: REVIEW_REQUIRED",
-    "expected_result": "All report data fields correctly map to and match their respective source database values.",
+    "validation_steps": "1. Query the source code in the database and verify the expected description in the lookup table.\n2. Generate report PRV-INT-027.\n3. Verify the report displays the resolved description instead of the code.",
+    "test_data": "Records with lookup codes.",
+    "expected_result": "The codes are successfully resolved and displayed as descriptions according to the DSD.",
     "priority": "High",
-    "evidence_types": []
+    "evidence_types": [
+      "- DSD showing lookup requirements: [DSD EVIDENCE \u2014 INSERT SCREENSHOT]\n- Report showing lookup description: [REPORT EVIDENCE \u2014 INSERT SCREENSHOT]\n- Database showing lookup code: [DB EVIDENCE \u2014 INSERT SCREENSHOT]",
+      "DSD"
+    ]
+  },
+  {
+    "test_case_id": "PRV027-OUTP-01",
+    "requirement_ids": [
+      "REQ-027-BUSI-001"
+    ],
+    "scenario": "Verify script/output format for PRV-INT-027",
+    "test_type": "Output Format",
+    "test_origin": "DEV_UT_METHODOLOGY",
+    "test_design_technique": "Verify report output format and generation script.",
+    "preconditions": "Cognos Report 'PRV-INT-027' (Cognos Report) is published and accessible. Test data exists in source table 'REVIEW_REQUIRED'.",
+    "validation_steps": "1. Run the operational script for PRV-INT-027.\n2. Locate the generated output.\n3. Verify the output format and naming.",
+    "test_data": "N/A",
+    "expected_result": "The output is generated in the required format and stored appropriately.",
+    "priority": "High",
+    "evidence_types": [
+      "- DSD showing output format requirements: [DSD EVIDENCE \u2014 INSERT SCREENSHOT]\n- Generated output file: [OUTPUT EVIDENCE \u2014 INSERT SCREENSHOT]",
+      "DSD"
+    ]
   }
 ]

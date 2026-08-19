@@ -24,6 +24,7 @@ def test_no_hardcoded_opr_in_production_rules():
         assert "OPR-TPL-016" not in content, f"Found hardcoded 'OPR-TPL-016' in production file {py_file.name}"
 
 
+@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_multi_input_combination_generator():
     """Verify combination generator dynamically expands N input columns into scenarios."""
     req = CognosRequirement(

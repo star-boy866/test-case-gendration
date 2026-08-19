@@ -1,5 +1,36 @@
 [
   {
+    "test_case_id": "OPR005-LBL-01",
+    "requirement_ids": [
+      "REQ-005-COLU-001",
+      "REQ-005-COLU-002",
+      "REQ-005-COLU-003",
+      "REQ-005-COLU-004",
+      "REQ-005-COLU-005",
+      "REQ-005-COLU-006",
+      "REQ-005-COLU-007",
+      "REQ-005-COLU-008",
+      "REQ-005-COLU-009",
+      "REQ-005-COLU-010",
+      "REQ-005-COLU-011",
+      "REQ-005-COLU-012",
+      "REQ-005-COLU-013"
+    ],
+    "scenario": "Verify column labels in OPR-TPL-005",
+    "test_type": "Report Label",
+    "test_origin": "DEV_UT_METHODOLOGY",
+    "test_design_technique": "Verify column labels.",
+    "preconditions": "Cognos Report 'OPR-TPL-005' (Cognos Report) is published and accessible. Test data exists in source table 'Chart Footer (opt)'.",
+    "validation_steps": "1. Generate report OPR-TPL-005.\n2. Inspect the column headers.\n3. Verify headers match: Records Exchanged, Exact Matches, Partial Matches, New Coverage, New Members, Policies Added:, Active Policies, Pended Policies, Existing Policies Modified, Chart Footer (opt), Chart Footnote Label (opt), Report Footnote (opt), Report Footnote Label (opt).",
+    "test_data": "N/A",
+    "expected_result": "The column headers exactly match the DSD: Records Exchanged, Exact Matches, Partial Matches, New Coverage, New Members, Policies Added:, Active Policies, Pended Policies, Existing Policies Modified, Chart Footer (opt), Chart Footnote Label (opt), Report Footnote (opt), Report Footnote Label (opt).",
+    "priority": "Medium",
+    "evidence_types": [
+      "- DSD showing label requirements: [DSD EVIDENCE \u2014 INSERT SCREENSHOT]\n- Generated report output: [REPORT EVIDENCE \u2014 INSERT SCREENSHOT]",
+      "DSD"
+    ]
+  },
+  {
     "test_case_id": "OPR005-HDR-01",
     "requirement_ids": [
       "REQ-OPR-TPL-005-META-001"
@@ -8,11 +39,45 @@
     "test_type": "Header",
     "test_origin": "DIRECT_SPECIFICATION",
     "test_design_technique": "Validate that report header displays exact metadata values.",
-    "preconditions": "Cognos Report 'OPR-TPL-005' (Cognos Report) is published and accessible. Test data exists in source table 'REVIEW_REQUIRED'.",
+    "preconditions": "Cognos Report 'OPR-TPL-005' (Cognos Report) is published and accessible. Test data exists in source table 'Chart Footer (opt)'.",
     "validation_steps": "1. Run report OPR-TPL-005.\n2. Inspect top header area.\n3. Verify Report ID is 'OPR-TPL-005'.\n4. Verify Report Title is 'Cognos Report'.",
     "test_data": "Expected Header Values:\nReport ID: OPR-TPL-005\nReport Title: Cognos Report\nDescription: Report Description",
     "expected_result": "Header displays correct static values: ID='OPR-TPL-005', Title='Cognos Report'. No truncation or missing text.",
     "priority": "High",
-    "evidence_types": []
+    "evidence_types": [
+      "- Generated report output showing header metadata: [REPORT EVIDENCE \u2014 INSERT SCREENSHOT]",
+      "REPORT"
+    ]
+  },
+  {
+    "test_case_id": "OPR005-DB-01",
+    "requirement_ids": [
+      "REQ-005-COLU-001",
+      "REQ-005-COLU-002",
+      "REQ-005-COLU-003",
+      "REQ-005-COLU-004",
+      "REQ-005-COLU-005",
+      "REQ-005-COLU-006",
+      "REQ-005-COLU-007",
+      "REQ-005-COLU-008",
+      "REQ-005-COLU-009",
+      "REQ-005-COLU-010",
+      "REQ-005-COLU-011",
+      "REQ-005-COLU-012",
+      "REQ-005-COLU-013"
+    ],
+    "scenario": "Verify DB-to-Report data mapping for OPR-TPL-005",
+    "test_type": "Database Validation",
+    "test_origin": "DEV_UT_METHODOLOGY",
+    "test_design_technique": "Verify direct data mapping and logic.",
+    "preconditions": "Cognos Report 'OPR-TPL-005' (Cognos Report) is published and accessible. Test data exists in source table 'Chart Footer (opt)'.",
+    "validation_steps": "1. Query the source database for the test records.\n2. Generate report OPR-TPL-005.\n3. Verify report columns (e.g., Records Exchanged, Exact Matches, Partial Matches, New Coverage, New Members...) match the database query results.",
+    "test_data": "Source tables: Chart Footer (opt)",
+    "expected_result": "All report data fields correctly map to and match their respective source database values.",
+    "priority": "High",
+    "evidence_types": [
+      "- DSD showing data mapping requirements: [DSD EVIDENCE \u2014 INSERT SCREENSHOT]\n- Generated report data: [REPORT EVIDENCE \u2014 INSERT SCREENSHOT]\n- Source database records: [DB EVIDENCE \u2014 INSERT SCREENSHOT]",
+      "DSD"
+    ]
   }
 ]

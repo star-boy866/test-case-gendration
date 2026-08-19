@@ -17,8 +17,8 @@ from tests.golden_framework.generate import (
     compute_sha256
 )
 
-GOLDEN_REPORTS_DIR = Path("tests/golden/reports")
-FIXTURES_DIR = Path("tests/fixtures/golden_sources")
+GOLDEN_REPORTS_DIR = Path("backend/tests/golden/reports")
+FIXTURES_DIR = Path("backend/tests/fixtures/golden_sources")
 
 def get_golden_reports():
     if not GOLDEN_REPORTS_DIR.exists():

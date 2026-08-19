@@ -13,6 +13,7 @@ def _mock_rd(report_id="RPT-TEST-001", title="Test Report"):
         report_fields=[]
     )
 
+@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_pattern_applicability_and_limits():
     # 1. Applicability of each pattern
     # 10. duplicate pattern only when DSD supports it

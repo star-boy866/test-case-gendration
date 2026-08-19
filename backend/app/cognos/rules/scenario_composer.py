@@ -63,6 +63,19 @@ class ScenarioComposer:
             "origin": "DEV_UT_METHODOLOGY",
         }
 
+    def _format_evidence(self, evidences: List[EvidenceRequirement]) -> dict:
+        if not evidences:
+            return {"evidence_required": "", "evidence_type": ""}
+        
+        evidence_required_str = "\n".join([f"- {e.description}: {e.placeholder}" for e in evidences])
+        evidence_type_str = evidences[0].evidence_type if evidences else "REPORT"
+        
+        return {
+            "evidence_required": evidence_required_str,
+            "evidence_type": evidence_type_str,
+            "evidence_requirements": evidences
+        }
+
     def _build_layout(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
         kwargs = self._get_common_kwargs(pattern)
         fields = [req.field for req in pattern.requirements if req.field]
@@ -85,8 +98,8 @@ class ScenarioComposer:
                 f"2. Compare layout presentation against DSD layout requirements."
             ),
             expected_result="The report layout (header, footer, pagination) matches the format specified in the DSD.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.MEDIUM
+            priority=TestCasePriority.MEDIUM,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -113,8 +126,8 @@ class ScenarioComposer:
                 f"3. Verify headers match: {label_str}."
             ),
             expected_result=f"The column headers exactly match the DSD: {label_str}.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.MEDIUM
+            priority=TestCasePriority.MEDIUM,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -146,8 +159,8 @@ class ScenarioComposer:
                     f"3. Verify sort order matches: {sort_str}."
                 ),
                 expected_result=f"Records are sorted according to the DSD: {sort_str}.",
-                evidence_requirements=evidences,
-                priority=TestCasePriority.HIGH
+                priority=TestCasePriority.HIGH,
+                **self._format_evidence(evidences)
             )
             cases.append(tc)
         return cases
@@ -172,8 +185,8 @@ class ScenarioComposer:
                 f"3. Verify the output format and naming."
             ),
             expected_result="The output is generated in the required format and stored appropriately.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.HIGH
+            priority=TestCasePriority.HIGH,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -197,8 +210,8 @@ class ScenarioComposer:
                 f"3. Verify the Report Name and Description."
             ),
             expected_result=f"The Report Name is '{kwargs['report_name']}' and the description matches the DSD.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.MEDIUM
+            priority=TestCasePriority.MEDIUM,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -221,8 +234,8 @@ class ScenarioComposer:
                 f"2. Verify the output matches the no-data specification."
             ),
             expected_result="The report displays the specified no-data message or empty layout as per the DSD.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.HIGH
+            priority=TestCasePriority.HIGH,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -246,8 +259,8 @@ class ScenarioComposer:
                 f"3. Verify formatting aligns with the DSD."
             ),
             expected_result="All date columns are formatted exactly as specified in the DSD.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.MEDIUM
+            priority=TestCasePriority.MEDIUM,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -271,8 +284,8 @@ class ScenarioComposer:
                 f"3. Verify control break layout applies correctly."
             ),
             expected_result="The report breaks correctly as specified in the DSD when the control field changes.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.HIGH
+            priority=TestCasePriority.HIGH,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -297,8 +310,8 @@ class ScenarioComposer:
                 f"3. Compare the report totals with the SQL output."
             ),
             expected_result="The counts and totals in the report exactly match the database query results.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.HIGH
+            priority=TestCasePriority.HIGH,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -323,8 +336,8 @@ class ScenarioComposer:
                 f"3. Confirm that only distinct records are displayed according to DSD."
             ),
             expected_result="The report successfully prevents duplicate rows and displays distinct records as specified.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.HIGH
+            priority=TestCasePriority.HIGH,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -349,8 +362,8 @@ class ScenarioComposer:
                 f"3. Verify the report displays the resolved description instead of the code."
             ),
             expected_result="The codes are successfully resolved and displayed as descriptions according to the DSD.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.HIGH
+            priority=TestCasePriority.HIGH,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -374,8 +387,8 @@ class ScenarioComposer:
                 f"3. Verify successful completion and file distribution."
             ),
             expected_result="The Box job executes successfully and distributes the output as required.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.HIGH
+            priority=TestCasePriority.HIGH,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -399,8 +412,8 @@ class ScenarioComposer:
                 f"3. Verify the report document is uploaded and accessible."
             ),
             expected_result="The report is successfully delivered to SDR/EDMS with correct metadata.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.HIGH
+            priority=TestCasePriority.HIGH,
+            **self._format_evidence(evidences)
         )
         return [tc]
 
@@ -432,8 +445,8 @@ class ScenarioComposer:
                 f"3. Verify report columns (e.g., {field_str}) match the database query results."
             ),
             expected_result="All report data fields correctly map to and match their respective source database values.",
-            evidence_requirements=evidences,
-            priority=TestCasePriority.HIGH
+            priority=TestCasePriority.HIGH,
+            **self._format_evidence(evidences)
         )
         cases.append(tc)
         
@@ -454,8 +467,8 @@ class ScenarioComposer:
                         f"3. Verify '{req.field}' matches expected rule."
                     ),
                     expected_result=f"The field '{req.field}' evaluates correctly based on {req.processing_rule}.",
-                    evidence_requirements=evidences,
-                    priority=TestCasePriority.MEDIUM
+                    priority=TestCasePriority.MEDIUM,
+                    **self._format_evidence(evidences)
                 )
                 cases.append(tc_trans)
         

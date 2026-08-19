@@ -14,8 +14,8 @@ from app.testing.golden.schemas import (
     GoldenTraceabilityItem
 )
 
-FIXTURES_DIR = Path("tests/fixtures/golden_sources")
-GOLDEN_REPORTS_DIR = Path("tests/golden/reports")
+FIXTURES_DIR = Path("backend/tests/fixtures/golden_sources")
+GOLDEN_REPORTS_DIR = Path("backend/tests/golden/reports")
 
 def compute_sha256(filepath: Path) -> str:
     hasher = hashlib.sha256()

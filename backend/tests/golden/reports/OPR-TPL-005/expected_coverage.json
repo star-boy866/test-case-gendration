@@ -1,7 +1,21 @@
 {
-  "total_dsd_requirements": 0,
-  "covered_requirement_ids": [],
+  "total_dsd_requirements": 13,
+  "covered_requirement_ids": [
+    "REQ-005-COLU-001",
+    "REQ-005-COLU-002",
+    "REQ-005-COLU-003",
+    "REQ-005-COLU-004",
+    "REQ-005-COLU-005",
+    "REQ-005-COLU-006",
+    "REQ-005-COLU-007",
+    "REQ-005-COLU-008",
+    "REQ-005-COLU-009",
+    "REQ-005-COLU-010",
+    "REQ-005-COLU-011",
+    "REQ-005-COLU-012",
+    "REQ-005-COLU-013"
+  ],
   "uncovered_requirement_ids": [],
   "supplemental_test_count": 0,
-  "coverage_percentage": 0.0
+  "coverage_percentage": 100.0
 }
