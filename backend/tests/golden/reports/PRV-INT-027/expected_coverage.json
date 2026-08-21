@@ -1,9 +1,23 @@
 {
-  "total_dsd_requirements": 1,
+  "total_dsd_requirements": 14,
   "covered_requirement_ids": [
-    "REQ-027-BUSI-001"
+    "REQ-027-BUSI-001",
+    "REQ-027-BUSI-004",
+    "REQ-027-BUSI-005",
+    "REQ-027-BUSI-009",
+    "REQ-027-BUSI-010",
+    "REQ-027-BUSI-011",
+    "REQ-027-BUSI-012",
+    "REQ-027-BUSI-013"
   ],
-  "uncovered_requirement_ids": [],
+  "uncovered_requirement_ids": [
+    "REQ-027-BUSI-002",
+    "REQ-027-BUSI-003",
+    "REQ-027-BUSI-006",
+    "REQ-027-BUSI-007",
+    "REQ-027-BUSI-008",
+    "REQ-027-BUSI-014"
+  ],
   "supplemental_test_count": 0,
-  "coverage_percentage": 100.0
+  "coverage_percentage": 57.14
 }

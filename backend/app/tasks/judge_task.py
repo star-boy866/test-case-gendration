@@ -6,7 +6,7 @@ from app.models.job import BackgroundJob
 from app.services.job_service import JobService
 from app.services.outbox_service import OutboxService
 from app.services.judge_service import evaluate_and_store
-from app.services.ollama_client import default_llm_call
+from app.infrastructure.llm.llm_provider import get_llm_call
 from app.core.telemetry import get_logger
 
 _logger = get_logger(__name__)
@@ -42,7 +42,7 @@ def execute_judge(self, outbox_id: str, job_id: str):
             scenarios=scenarios,
             context_slice=context_slice,
             requirement=requirement,
-            llm_call=default_llm_call
+            llm_call=get_llm_call()
         )
         
         # 5. State transition RUNNING -> SUCCEEDED

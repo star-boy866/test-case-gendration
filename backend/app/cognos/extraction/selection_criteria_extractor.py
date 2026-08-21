@@ -27,47 +27,6 @@ def extract_selection_criteria(
     criteria: list[SelectionCriterion] = []
     warnings: list[str] = []
 
-    # OPR-SRA-139 hardcoded acceptance requirement mapping
-    is_opr_139 = any("139" in section_name for section_name in [s.name for s in doc.sections])
-    if "139" in doc.sections[0].name or "139" in source_document_name or "139" in report_id:
-        is_opr_139 = True
-
-    if is_opr_139:
-        return [
-            SelectionCriterion(
-                field="SA Hdr Stat Cd - Desc",
-                filter_logic="A-HDR-STAT-CD <> 'R' (Rejected)",
-                prompt=False,
-                source=SourceReference(
-                    document_name=source_document_name,
-                    section="Report Definition",
-                    page=1,
-                ),
-            ),
-            SelectionCriterion(
-                field="LOB Cd - Desc",
-                filter_logic="",
-                prompt=True,
-                parameter_name="Select LOB(s)",
-                source=SourceReference(
-                    document_name=source_document_name,
-                    section="Report Definition",
-                    page=1,
-                ),
-            ),
-            SelectionCriterion(
-                field="Prov ID",
-                filter_logic="",
-                prompt=True,
-                parameter_name="Select Provider ID",
-                source=SourceReference(
-                    document_name=source_document_name,
-                    section="Report Definition",
-                    page=1,
-                ),
-            ),
-        ], warnings
-
     # Iterate over all tables in all sections to find the Report Selection Criteria
     for section in doc.sections:
         for table in section.tables:
@@ -79,36 +38,56 @@ def extract_selection_criteria(
             if not table_data:
                 continue
 
+            header_idx_field = -1
+            header_idx_param = -1
+            header_idx_prompt = -1
+            
             for row in table_data:
                 if not row: continue
-                text = row[0].lower() if len(row) > 0 else ""
+                c0_text = row[0].lower().strip() if len(row) > 0 else ""
                 
-                if "report selection criteria:" in text:
-                    text_clean = row[0].replace("Report Selection Criteria:", "").strip()
-                    if not text_clean or "Report Field" in text_clean:
-                        continue
-                        
-                    lines = text_clean.split("\n")
-                    field_name = lines[0].strip()
-                    
+                # Identify headers
+                if "report selection criteria:" in c0_text:
+                    if header_idx_field == -1:
+                        for i, cell in enumerate(row):
+                            c_lower = cell.lower().strip()
+                            if "report field" in c_lower:
+                                header_idx_field = i
+                            elif "parameters" in c_lower:
+                                header_idx_param = i
+                            elif "prompt" in c_lower:
+                                header_idx_prompt = i
+                        continue # Skip header row
+
+                    if header_idx_field == -1:
+                        continue # Header not found yet
+
+                    field_name = row[header_idx_field].strip() if header_idx_field < len(row) else ""
                     if not field_name:
                         continue
                         
-                    filter_logic = ""
-                    prompt = False
+                    param_text = row[header_idx_param].strip() if header_idx_param != -1 and header_idx_param < len(row) else ""
+                    prompt_text = row[header_idx_prompt].strip().lower() if header_idx_prompt != -1 and header_idx_prompt < len(row) else ""
                     
-                    # Very basic fallback parsing
-                    if "<>" in text_clean or "=" in text_clean:
-                        matches = re.findall(r'([A-Za-z0-9_\-]+ [\<\>\=]+ [^\n]+)', text_clean)
-                        if matches:
-                            filter_logic = matches[0]
-                            
-                    if "\uf0fe yes" in text.lower() or "\u2611 yes" in text.lower() or "yes" in text_clean.lower().split()[-3:]:
+                    # Regex logic for table.column
+                    filter_logic = param_text
+                    source_table_column = ""
+                    col_matches = re.findall(r'(\w+)\.(\w+)', param_text)
+                    if col_matches:
+                        source_table_column = f"{col_matches[0][0]}.{col_matches[0][1]}"
+                        
+                    prompt = False
+                    if "\uf0fe yes" in prompt_text or "\u2611 yes" in prompt_text or "yes" in prompt_text.split()[-3:]:
                         prompt = True
+                        
+                    # "If populated, Prompt must = No" validation
+                    if filter_logic and prompt:
+                        warnings.append(f"Validation Warning: Selection Criteria '{field_name}' has a populated parameter but Prompt is set to Yes.")
                         
                     criterion = SelectionCriterion(
                         field=field_name,
                         filter_logic=filter_logic,
+                        source_table_column=source_table_column,
                         prompt=prompt,
                         source=SourceReference(
                             document_name=source_document_name,

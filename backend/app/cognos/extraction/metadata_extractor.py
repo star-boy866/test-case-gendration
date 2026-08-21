@@ -160,8 +160,6 @@ def extract_metadata(
 
     # Direct row-by-row structural scan over parsed tables
     parsed_tables = doc.all_parsed_tables
-    if report_def_section and report_def_section.tables:
-        parsed_tables = report_def_section.tables
 
     for parsed_table in parsed_tables:
         for row in parsed_table.rows:
@@ -200,11 +198,27 @@ def extract_metadata(
                             elif "customized" in val_str.lower():
                                 metadata.report_type = ReportType.CUSTOMIZED
                         elif canonical == "frequency":
-                            # Clean up "Other - Please explain: Event Driven ..."
-                            if "event driven" in val_str.lower():
-                                metadata.frequency = "Event Driven"
-                            else:
-                                metadata.frequency = val_str
+                            # Parse Frequency Type (Scheduled vs On Request)
+                            if "scheduled" in val_str.lower() and "on request" not in val_str.lower():
+                                metadata.frequency_type = "Scheduled"
+                            elif "on request" in val_str.lower():
+                                metadata.frequency_type = "On Request"
+                                
+                            # Parse Timeframe (Daily, Weekly, Monthly, Quarterly, Annually)
+                            timeframes = [t for t in ["daily", "weekly", "monthly", "quarterly", "annually"] if t in val_str.lower()]
+                            if timeframes:
+                                metadata.frequency = timeframes[0].capitalize()
+                                
+                            # Parse Other / Trigger
+                            if "other" in val_str.lower() or "trigger" in val_str.lower():
+                                trigger_match = re.search(r'(?:other\s*-\s*please explain|triggered by)[\s:]*(.*)', val_str, re.IGNORECASE)
+                                if trigger_match:
+                                    metadata.trigger = trigger_match.group(1).strip()
+                                else:
+                                    # Fallback to the whole string if it's just event driven or similar
+                                    if "event driven" in val_str.lower():
+                                        metadata.frequency = "Event Driven"
+                                    metadata.trigger = val_str
                         else:
                             setattr(metadata, canonical, val_str)
                     else:
@@ -238,14 +252,26 @@ def extract_metadata(
                             elif "customized" in val.lower():
                                 metadata.report_type = ReportType.CUSTOMIZED
                         elif canonical == "frequency":
-                            if "event driven" in val.lower():
-                                metadata.frequency = "Event Driven"
-                            elif "scheduled" in val.lower():
-                                metadata.frequency = "Scheduled"
-                            else:
-                                metadata.frequency = val
-                        else:
-                            setattr(metadata, canonical, val)
+                            # Parse Frequency Type (Scheduled vs On Request)
+                            if "scheduled" in val.lower() and "on request" not in val.lower():
+                                metadata.frequency_type = "Scheduled"
+                            elif "on request" in val.lower():
+                                metadata.frequency_type = "On Request"
+                                
+                            # Parse Timeframe (Daily, Weekly, Monthly, Quarterly, Annually)
+                            timeframes = [t for t in ["daily", "weekly", "monthly", "quarterly", "annually"] if t in val.lower()]
+                            if timeframes:
+                                metadata.frequency = timeframes[0].capitalize()
+                                
+                            # Parse Other / Trigger
+                            if "other" in val.lower() or "trigger" in val.lower():
+                                trigger_match = re.search(r'(?:other\s*-\s*please explain|triggered by)[\s:]*(.*)', val, re.IGNORECASE)
+                                if trigger_match:
+                                    metadata.trigger = trigger_match.group(1).strip()
+                                else:
+                                    if "event driven" in val.lower():
+                                        metadata.frequency = "Event Driven"
+                                    metadata.trigger = val
 
     # Secondary paragraph scan for Report ID & Title if still unpopulated
     if not metadata.report_id or _is_label_text(metadata.report_id):

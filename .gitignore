@@ -1,27 +1,73 @@
 # Python
-__pycache__/
-*.pyc
-venv/
 .venv/
-*.egg-info/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Env files (never commit real secrets)
+# Secrets
 .env
-backend/.env
+.env.*
+!.env.example
 
-# Node / frontend
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Node
 node_modules/
-frontend/dist/
-frontend/.vite/
+dist/
+build/
 
-# Local data (never commit real healthcare data or DB files)
-database/*.db
-database/faiss_index/
-backend/uploads/*
-!backend/uploads/.gitkeep
-backend/exports/*
-!backend/exports/.gitkeep
+# Runtime
+backend/runs/
+backend/jobs/
+
+# Generated output
+*.xlsx
+*.xls
+*.pdf
+
+# Temporary / local evidence
+backend/test_render/
+backend/render/output/
+backend/exports/
+backend/tmp/
+*.tmp
+*.docx
+*.doc
+
+# IDE
+.vscode/
+.idea/
 
 # OS
-.DS_Store
 Thumbs.db
+.DS_Store
+
+# Debug / scratch
+scratch_*.py
+debug_*.py
+check_db*.py
+test_api.py
+test_cover.py
+test_gen.py
+test_paras.py
+test_tables.py
+test_pipeline.py
+prv_dump.py
+read_excel.py
+backend/test_interpreter.py
+backend/spire_doc-14.6.2-py3-none-win_amd64.whl
+docx_dump.txt
+prv_tables.txt
+validation_output*.txt
+
+!backend/tests/fixtures/
+
+!backend/tests/fixtures/**/*.docx
+!backend/tests/fixtures/**/*.doc
+!backend/tests/fixtures/**/*.xlsx

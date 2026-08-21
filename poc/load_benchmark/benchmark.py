@@ -3,7 +3,7 @@ import sys
 import time
 import json
 import threading
-import psutil
+import psutil  # type: ignore
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -68,7 +68,7 @@ def execute_workload(report_id: str):
         "success": False,
         "latency": 0.0,
         "golden_pass": False,
-        "error_type": None,
+        "error_type": "",
         "lock_error": False,
         "req_count": 0,
         "tc_count": 0
@@ -207,7 +207,7 @@ def execute_workload(report_id: str):
     except Exception as e:
         result_metrics["success"] = False
         result_metrics["golden_pass"] = False
-        result_metrics["error_type"] = str(type(e).__name__)
+        result_metrics["error_type"] = type(e).__name__
         if "lock" in str(e).lower() or "busy" in str(e).lower():
             result_metrics["lock_error"] = True
             

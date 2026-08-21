@@ -47,7 +47,7 @@ from app.services.knowledge_base import get_current_file_hash
 from app.services.context_minimizer import minimize_context
 from app.services.fast_path_router import try_fast_path
 from app.services.semantic_cache import check_cache, store_result
-from app.services.ollama_client import default_llm_call, OllamaUnavailableError
+from app.infrastructure.llm.llm_provider import get_llm_call, LLMUnavailableError
 from app.agents.pipeline import run_pipeline
 from app.agents.reflection_loop import run_reflection_loop
 from app.services.refinement import add_generated_rows
@@ -109,9 +109,12 @@ def run_generation(
     if injection_scan.is_suspicious:
         db.add(AuditLogEntry(
             user_id=current_user.username,
-            session_id=session.id,
+            session_id=int(session.id),
             event_type="PROMPT_INJECTION_BLOCKED",
-            detail=f'{{"report_id": "{payload.report_id}", "matched_patterns": {injection_scan.matched_patterns!r}}}',
+            detail=json.dumps({
+                "report_id": payload.report_id,
+                "matched_patterns": injection_scan.matched_patterns,
+            }),
         ))
         db.commit()
         raise HTTPException(
@@ -138,11 +141,11 @@ def run_generation(
             verification_sql=fast_path.verification_sql,
         )
         add_generated_rows(
-            db, session_id=session.id, report_id=payload.report_id,
+            db, session_id=int(str(session.id)), report_id=payload.report_id,
             requirement_text=requirement, scenarios=[scenario.model_dump()],
         )
         return GenerationResponse(
-            session_id=session.id,
+            session_id=int(str(session.id)),
             report_id=payload.report_id,
             scenarios=[scenario],
             cache_status="fast_path",
@@ -181,11 +184,11 @@ def run_generation(
         cached = cache_result["cached_entry"]
         scenarios = [TestScenario(**s) for s in cached["cached_payload"]]
         add_generated_rows(
-            db, session_id=session.id, report_id=payload.report_id,
+            db, session_id=int(str(session.id)), report_id=payload.report_id,
             requirement_text=requirement, scenarios=[s.model_dump() for s in scenarios],
         )
         return GenerationResponse(
-            session_id=session.id,
+            session_id=int(str(session.id)),
             report_id=payload.report_id,
             scenarios=scenarios,
             cache_status="hit",
@@ -204,7 +207,7 @@ def run_generation(
             generated, pipeline_warnings = run_pipeline(
                 context_slice_dict,
                 requirement,
-                default_llm_call,
+                get_llm_call(),
                 max_scenarios=settings.MAX_SCENARIOS_PER_REQUEST,
                 few_shot_example=few_shot,
             )
@@ -216,7 +219,7 @@ def run_generation(
                 generated,
                 context_slice_dict,
                 requirement,
-                default_llm_call,
+                get_llm_call(),
                 max_iterations=settings.MAX_REFLECTION_ITERATIONS,
                 max_scenarios=settings.MAX_SCENARIOS_PER_REQUEST,
             )
@@ -226,7 +229,7 @@ def run_generation(
             critic_passed=reflection.critic_report.passed,
             iterations_used=reflection.iterations_used,
         )
-    except OllamaUnavailableError as e:
+    except LLMUnavailableError as e:
         raise HTTPException(
             status_code=503,
             detail=(
@@ -275,7 +278,7 @@ def run_generation(
         # notes.) add_generated_rows doesn't need sl_no, so the mismatch
         # with the other two call sites' input shape is harmless.
         add_generated_rows(
-            db, session_id=session.id, report_id=payload.report_id,
+            db, session_id=int(str(session.id)), report_id=payload.report_id,
             requirement_text=requirement,
             scenarios=[s.to_dict() for s in final_scenarios],
         )
@@ -322,7 +325,7 @@ def run_generation(
         from app.tasks.judge_task import execute_judge
 
         job_payload = json.dumps({
-            "session_id": session.id,
+            "session_id": int(str(session.id)),
             "report_id": payload.report_id,
             "scenarios": [s.to_dict() for s in final_scenarios],
             "context_slice": context_slice_dict,
@@ -343,22 +346,22 @@ def run_generation(
             db=db,
             event_type="CELERY_TASK_ENQUEUE",
             aggregate_type="BackgroundJob",
-            aggregate_id=job.job_id,
-            payload_reference=json.dumps({"task": "execute_judge", "job_id": job.job_id})
+            aggregate_id=str(job.job_id),
+            payload_reference=json.dumps({"task": "execute_judge", "job_id": str(job.job_id)})
         )
         
         db.commit()
         
         # Fire and forget. The outbox processor handles retries if this fails.
         try:
-            execute_judge.delay(outbox_id=outbox_event.outbox_id, job_id=job.job_id)
+            execute_judge.delay(outbox_id=str(outbox_event.outbox_id), job_id=str(job.job_id))
         except Exception as e:
             _logger.error("redis_unavailable_during_enqueue", error=str(e))
             # Outbox ensures this isn't permanently lost
 
 
     return GenerationResponse(
-        session_id=session.id,
+        session_id=int(str(session.id)),
         report_id=payload.report_id,
         scenarios=scenarios,
         cache_status=cache_result["status"],

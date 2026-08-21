@@ -35,12 +35,10 @@ def detect_and_mark_duplicates(req_set: RequirementSet) -> list[str]:
             primary = seen[key]
             req.is_duplicate_of = primary.requirement_id
 
-            # Add this source reference to the primary
-            source_ref = f"{req.source_section}"
-            if req.source_page:
-                source_ref += f" (page {req.source_page})"
-            if source_ref not in primary.source_references:
-                primary.source_references.append(source_ref)
+            # Merge this evidence reference to the primary
+            for ref in req.evidence_references:
+                if ref not in primary.evidence_references:
+                    primary.evidence_references.append(ref)
 
             messages.append(
                 f"Requirement '{req.requirement_id}' is a duplicate of "
@@ -48,10 +46,6 @@ def detect_and_mark_duplicates(req_set: RequirementSet) -> list[str]:
             )
         else:
             seen[key] = req
-            source_ref = f"{req.source_section}"
-            if req.source_page:
-                source_ref += f" (page {req.source_page})"
-            req.source_references.append(source_ref)
 
     # Recompute summary
     req_set.compute_summary()
@@ -63,8 +57,9 @@ def _dedup_key(req: CognosRequirement) -> str:
     """
     Generate a deduplication key for a requirement.
 
-    Uses category + field name (normalized) to detect logical duplicates
+    Uses category + field name + normalized text to detect logical duplicates
     across sections.
     """
     field_normalized = req.field.strip().lower().replace(" ", "_")
-    return f"{req.category.value}::{field_normalized}"
+    text_normalized = "".join(req.requirement_text.split()).lower()
+    return f"{req.category.value}::{field_normalized}::{text_normalized}"

@@ -11,17 +11,18 @@ Additional sheets provide full traceability:
 
 from __future__ import annotations
 
+import typing
 from datetime import datetime, timezone
 from typing import Optional
 
-from openpyxl import Workbook
-from openpyxl.styles import (
-    Font, PatternFill, Alignment, Border, Side,
-)
-from openpyxl.utils import get_column_letter
+from openpyxl import Workbook  # type: ignore
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side  # type: ignore
+from openpyxl.utils import get_column_letter  # type: ignore
+from openpyxl.drawing.image import Image as OpenpyxlImage  # type: ignore
+import os
 
 from app.domain.cognos_test_case import TestSuite
-from app.domain.cognos_requirement import RequirementSet
+from app.domain.cognos_requirement import RequirementSet, RequirementCategory
 from app.domain.reporting_context import FinalReportContext
 
 
@@ -109,30 +110,43 @@ def build_cognos_workbook(
     # --- Sheet 5: Traceability Matrix ---
     _build_traceability_sheet(wb, context)
 
+    # --- Sheet 6: Evidence Snapshots ---
+    _build_evidence_snapshots_sheet(wb, context.test_suite)
+
     return wb
 
 
 def _build_primary_test_sheet(wb: Workbook, ts: TestSuite) -> None:
     """
-    Build the primary Test Scenarios sheet matching the 17-column Dev UT specification format.
+    Build the primary Test Scenarios sheet — Phase 10.6 Developer UT format.
+
+    Columns match the reference workbook format:
+    Test Case ID | Category | Test Objective | DSD/Technical Reference |
+    Preconditions/Test Data | Test Steps | Expected Result | Evidence Required |
+    Open Item/Notes | Requirement IDs | Source Page | Source Section |
+    LLM Status | Status | Confidence
     """
-    ws = wb.active
+    ws = typing.cast(typing.Any, wb.active)
     ws.title = "Test Scenarios"
     ws.sheet_properties.tabColor = "2E75B6"
 
     headers = [
-        "Test Case ID",
-        "Scenario Title",
-        "Objective",
-        "Requirement ID(s)",
-        "Preconditions",
-        "Validation Steps",
-        "Test Data",
-        "Expected Result",
-        "Evidence Required",
-        "Evidence Type",
-        "Status",
-        "Comments",
+        "Test Case ID",           # A
+        "Category",               # B
+        "Test Objective",         # C
+        "DSD / Technical Reference",  # D
+        "Preconditions / Test Data",  # E
+        "Test Steps",             # F
+        "Expected Result",        # G
+        "Evidence Required",      # H
+        "Evidence Type",          # I
+        "Open Item / Notes",      # J
+        "Requirement ID(s)",      # K
+        "Source Page",            # L
+        "Source Section",         # M
+        "LLM Refinement Status",  # N
+        "Status",                 # O
+        "Confidence",             # P
     ]
 
     for col, header in enumerate(headers, start=1):
@@ -142,36 +156,80 @@ def _build_primary_test_sheet(wb: Workbook, ts: TestSuite) -> None:
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(ts.test_cases) + 1}"
 
+    # Priority color fills
+    _REVIEW_FILL = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+    _OPEN_ITEM_FILL = PatternFill(start_color="FFE4E1", end_color="FFE4E1", fill_type="solid")
+
     for row_idx, tc in enumerate(ts.test_cases, start=2):
-        evidences = "\n".join(
+        evidences_str = "\n".join(
             [f"- {e.description} ({e.placeholder})" for e in tc.evidence_requirements]
         ) if tc.evidence_requirements else tc.evidence_required
-        
-        ev_types = ", ".join(set([e.evidence_type for e in tc.evidence_requirements])) if tc.evidence_requirements else tc.evidence_type
-        
+
+        ev_types = ", ".join(sorted(set(e.evidence_type for e in tc.evidence_requirements))) if tc.evidence_requirements else tc.evidence_type
+        req_ids_str = ", ".join(tc.requirement_ids) if tc.requirement_ids else tc.requirement_id
+
+        # Build preconditions + test data as combined cell (reference format)
+        prec_data = tc.preconditions
+        if tc.test_data and tc.test_data not in ("N/A", "", "N/A — layout verification is structural, no specific data required."):
+            prec_data = f"{tc.preconditions}\n\nTest Data:\n{tc.test_data}"
+
+        evidence_pages = ", ".join(sorted(set(str(e.page_number) for e in getattr(tc, 'evidence_references', []) if getattr(e, 'page_number', None))))
+        evidence_sections = tc.source_section or "\n".join(sorted(set(e.section for e in getattr(tc, 'evidence_references', []) if e.section)))
+
+        # DSD reference — use new field or fall back to applicability reason
+        dsd_ref = getattr(tc, 'dsd_reference', '') or tc.applicability_reason or ""
+
+        # Open item — Phase 10.6 field
+        open_item = getattr(tc, 'open_item', '') or tc.open_questions or ""
+
+        # LLM status
+        llm_status = getattr(tc, 'llm_refinement_status', 'NOT_ATTEMPTED')
+
+        # Confidence
+        confidence = getattr(tc, 'confidence', 'High')
+
         values = [
-            tc.test_case_id,
-            tc.test_case_title,
-            tc.objective,
-            tc.requirement_id,
-            tc.preconditions,
-            tc.test_steps,
-            tc.test_data,
-            tc.expected_result,
-            evidences,
-            ev_types,
-            tc.status.value if hasattr(tc.status, 'value') else tc.status,
-            tc.notes or tc.open_questions,
+            tc.test_case_id,         # A: Test Case ID
+            tc.category,             # B: Category
+            tc.objective,            # C: Test Objective
+            dsd_ref,                 # D: DSD / Technical Reference
+            prec_data,               # E: Preconditions / Test Data
+            tc.test_steps,           # F: Test Steps
+            tc.expected_result,      # G: Expected Result
+            evidences_str,           # H: Evidence Required
+            ev_types,                # I: Evidence Type
+            open_item,               # J: Open Item / Notes
+            req_ids_str,             # K: Requirement ID(s)
+            evidence_pages,          # L: Source Page
+            evidence_sections,       # M: Source Section
+            llm_status,              # N: LLM Refinement Status
+            tc.status.value if hasattr(tc.status, 'value') else tc.status,  # O: Status
+            confidence,              # P: Confidence
         ]
+
         for col, val in enumerate(values, start=1):
             ws.cell(row=row_idx, column=col, value=val)
 
         _apply_data_style(ws, row_idx, len(headers), alt=(row_idx % 2 == 0))
 
-    # Set column widths
-    col_widths = [16, 40, 40, 20, 40, 50, 40, 50, 40, 20, 15, 30]
+        # Highlight rows with open items or REVIEW_REQUIRED status
+        status_val = tc.status.value if hasattr(tc.status, 'value') else tc.status
+        if open_item:
+            for col in range(1, len(headers) + 1):
+                ws.cell(row=row_idx, column=col).fill = _OPEN_ITEM_FILL
+        elif status_val == "Review Required":
+            for col in range(1, len(headers) + 1):
+                ws.cell(row=row_idx, column=col).fill = _REVIEW_FILL
+
+    # Set column widths (matching reference workbook proportions)
+    col_widths = [16, 28, 45, 40, 45, 55, 50, 40, 18, 35, 22, 14, 28, 20, 18, 14]
     for i, w in enumerate(col_widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
+
+    # Row heights for readability
+    ws.row_dimensions[1].height = 30
+    for row_idx in range(2, len(ts.test_cases) + 2):
+        ws.row_dimensions[row_idx].height = 60
 
 
 def _build_cover_sheet(
@@ -179,7 +237,7 @@ def _build_cover_sheet(
     ts: TestSuite,
     generated_at: datetime,
 ) -> None:
-    ws = wb.create_sheet("Cover")
+    ws = typing.cast(typing.Any, wb.create_sheet("Cover"))
     ws.sheet_properties.tabColor = _COLORS["cover_title"]
 
     ws.merge_cells("A1:D1")
@@ -223,7 +281,7 @@ def _get_traceability_for_req(req, trace_result) -> tuple[str, str, str, str, st
         return ("", "", "", "", "")
 
     cat_val = req.category.value if hasattr(req.category, 'value') else str(req.category)
-    if cat_val == "Sort":
+    if cat_val == RequirementCategory.SORT.value:
         for t in trace_result.sort_traces:
             if t.dsd_field_name == req.field:
                 mapping = t.mapping_status.value if hasattr(t.mapping_status, 'value') else t.mapping_status
@@ -243,7 +301,7 @@ def _build_requirements_sheet(
     wb: Workbook,
     ctx: FinalReportContext,
 ) -> None:
-    ws = wb.create_sheet("Requirements")
+    ws = typing.cast(typing.Any, wb.create_sheet("Requirements"))
     ws.sheet_properties.tabColor = "27AE60"
 
     headers = [
@@ -254,6 +312,7 @@ def _build_requirements_sheet(
         "Source Document",
         "Source Section",
         "Source Page",
+        "Source Text",
         "Field",
         "Source Table",
         "Source Column(s)",
@@ -283,6 +342,12 @@ def _build_requirements_sheet(
         for row_idx, req in enumerate(req_items, start=2):
             cat_val = req.category.value if hasattr(req.category, 'value') else str(req.category)
             xml_data, xml_mapping, xml_impl, xml_review, xml_notes = _get_traceability_for_req(req, ctx.traceability_result)
+            
+            # Extract source text from evidence reference if available
+            source_text = ""
+            if req.evidence_references:
+                source_text = req.evidence_references[0].source_text
+                
             values = [
                 req.requirement_id,
                 req.report_id,
@@ -291,6 +356,7 @@ def _build_requirements_sheet(
                 req.source_document,
                 req.source_section,
                 req.source_page or "UNKNOWN",
+                source_text,
                 req.field or req.business_label,
                 req.source_table,
                 ", ".join(req.source_columns),
@@ -327,6 +393,7 @@ def _build_requirements_sheet(
                 "",
                 "",
                 entry.source_page or "UNKNOWN",
+                "",  # Source Text
                 "",
                 "",
                 "",
@@ -350,7 +417,7 @@ def _build_requirements_sheet(
 
 
 def _build_coverage_sheet(wb: Workbook, ts: TestSuite) -> None:
-    ws = wb.create_sheet("Coverage Summary")
+    ws = typing.cast(typing.Any, wb.create_sheet("Coverage Summary"))
     ws.sheet_properties.tabColor = "F39C12"
 
     headers = [
@@ -393,7 +460,7 @@ def _build_coverage_sheet(wb: Workbook, ts: TestSuite) -> None:
 
 
 def _build_traceability_sheet(wb: Workbook, ctx: FinalReportContext) -> None:
-    ws = wb.create_sheet("Traceability Matrix")
+    ws = typing.cast(typing.Any, wb.create_sheet("Traceability Matrix"))
     ws.sheet_properties.tabColor = "8E44AD"
 
     headers = [
@@ -444,3 +511,49 @@ def _build_traceability_sheet(wb: Workbook, ctx: FinalReportContext) -> None:
         _apply_data_style(ws, row_idx, len(headers), alt=(row_idx % 2 == 0))
 
     _auto_width(ws, len(headers))
+
+def _build_evidence_snapshots_sheet(wb: Workbook, ts: TestSuite) -> None:
+    ws = typing.cast(typing.Any, wb.create_sheet("Evidence Snapshots"))
+    ws.sheet_properties.tabColor = "F1C40F"
+    
+    ws.cell(row=1, column=1, value="Page Number")
+    ws.cell(row=1, column=2, value="DSD Snapshot")
+    _apply_header_style(ws, 1, 2)
+    
+    # Collect all unique snapshots
+    snapshots = {}
+    for tc in ts.test_cases:
+        for ref in getattr(tc, "evidence_references", []):
+            if ref.snapshot_path and getattr(ref, 'page_number', None) and os.path.exists(ref.snapshot_path):
+                snapshots[ref.page_number] = ref.snapshot_path
+                
+    if not snapshots:
+        ws.cell(row=2, column=1, value="No snapshots found.")
+        return
+        
+    current_row = 2
+    for page in sorted(snapshots.keys()):
+        ws.cell(row=current_row, column=1, value=f"Page {page}")
+        img_path = snapshots[page]
+        
+        try:
+            img = OpenpyxlImage(img_path)
+            # Resize image if it's too large to prevent Excel crashing or freezing
+            max_width = 1000
+            if img.width > max_width:
+                ratio = max_width / img.width
+                img.width = max_width
+                img.height = int(img.height * ratio)
+                
+            ws.add_image(img, f"B{current_row}")
+            
+            # Estimate height based on image size to adjust row height
+            # 1 point is approx 1.33 pixels, adding a little buffer
+            ws.row_dimensions[current_row].height = (img.height * 0.75) + 20
+        except Exception as e:
+            ws.cell(row=current_row, column=2, value=f"Failed to load image: {e}")
+            
+        current_row += 1
+        
+    ws.column_dimensions["A"].width = 15
+    ws.column_dimensions["B"].width = 150

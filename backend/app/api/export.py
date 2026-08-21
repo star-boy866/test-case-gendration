@@ -19,6 +19,10 @@ from app.services.export_service import (
     sync_and_notify,
     ExportError,
 )
+from app.core.config import settings
+from app.core.telemetry import get_logger
+
+_logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
@@ -76,15 +80,15 @@ def finalize_export(
         job_payload = json.dumps({
             "session_id": record.session_id,
             "report_id": record.report_id,
-            "sharepoint_site": "https://company.sharepoint.com/sites/qa" if payload.sync_to_sharepoint else None,
-            "email_to": payload.email_distribution_list[0] if payload.email_distribution_list else None
+            "sharepoint_site": settings.SHAREPOINT_SITE_URL if payload.sync_to_sharepoint else None,
+            "email_distribution_list": payload.email_distribution_list
         })
 
         job = JobService.create_job(
             db=db,
             job_type="EXPORT_SYNC",
             requested_by=current_user.username,
-            correlation_id=record.report_id,
+            correlation_id=str(record.report_id),
             idempotency_key=f"export_{record.session_id}_{record.file_sha256}",
             payload_reference=job_payload
         )
@@ -93,27 +97,27 @@ def finalize_export(
             db=db,
             event_type="CELERY_TASK_ENQUEUE",
             aggregate_type="BackgroundJob",
-            aggregate_id=job.job_id,
-            payload_reference=json.dumps({"task": "execute_export", "job_id": job.job_id})
+            aggregate_id=str(job.job_id),
+            payload_reference=json.dumps({"task": "execute_export", "job_id": str(job.job_id)})
         )
         
         db.commit()
         job_id = job.job_id
         
         try:
-            execute_export.delay(outbox_id=outbox_event.outbox_id, job_id=job.job_id)
-        except Exception:
-            pass
+            execute_export.delay(outbox_id=str(outbox_event.outbox_id), job_id=str(job.job_id))
+        except Exception as e:
+            _logger.error("redis_unavailable_during_enqueue", error=str(e))
 
     message = f"Excel workbook generated with {record.row_count} scenario(s)."
     if job_id:
         message += " External syncing queued in background."
 
     return ExportResponse(
-        session_id=record.session_id,
-        filename=record.filename,
-        file_sha256=record.file_sha256,
-        row_count=record.row_count,
+        session_id=int(str(record.session_id)),
+        filename=str(record.filename),
+        file_sha256=str(record.file_sha256),
+        row_count=int(str(record.row_count)),
         excel_download_url=f"/api/export/{record.session_id}/download",
         sharepoint_url=None,
         sharepoint_error=None,
@@ -139,7 +143,7 @@ def download_latest_export(
                     f"Call POST /api/export/finalize first.",
         )
 
-    path = Path(record.file_path)
+    path = Path(str(record.file_path))
     if not path.exists():
         raise HTTPException(
             status_code=410,
@@ -149,6 +153,6 @@ def download_latest_export(
 
     return FileResponse(
         path,
-        filename=record.filename,
+        filename=str(record.filename),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )

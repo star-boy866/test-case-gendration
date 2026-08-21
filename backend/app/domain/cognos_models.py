@@ -96,10 +96,13 @@ class Priority(str, Enum):
 class SourceReference(BaseModel):
     """Traceability back to the source document."""
     document_name: str = ""
-    section: str = ""
     page: Optional[int] = None
+    section: str = ""
     paragraph_index: Optional[int] = None
     table_index: Optional[int] = None
+    source_text: str = ""
+    snapshot_path: str = ""
+    bounding_box: dict = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +125,9 @@ class ReportMetadata(BaseModel):
     generated_by: str = ""
     screen_tip: str = ""
     calendar_type: str = ""
+    frequency_type: str = ""
     frequency: str = ""
+    trigger: str = ""
     data_accumulation_type: str = ""
     source: SourceReference = Field(default_factory=SourceReference)
 
@@ -138,6 +143,7 @@ class SelectionCriterion(BaseModel):
     prompt: bool = False
     required: Optional[bool] = None
     allowed_values: list[str] = Field(default_factory=list)
+    source_table_column: str = ""
     filter_logic: str = ""
     default_value: str = ""
     description: str = ""

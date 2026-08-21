@@ -155,6 +155,10 @@ def generate_golden(report_id: str, docx_filename: str, xml_filename: str | None
     print(f"Golden files generated for {report_id} successfully.")
 
 if __name__ == "__main__":
-    generate_golden("PRV-INT-027", "CR 18175 PRV-INT-027 UT DOCUMENT 1.docx", "PRV-INT-027.xml")
-    generate_golden("OPR-SRA-139", "Service Authorization Part E_CR18140_V0.1 1.docx")
-    generate_golden("OPR-TPL-005", "Report Definition- OPT-TPL-005.docx")
+    print("WARNING: Golden baseline generation is currently disconnected (P1.10).")
+    print("The previous script ran the production pipeline and assumed its output was perfect, ")
+    print("which masked regressions and created a self-referential loop.")
+    print("Please manually verify any new fixtures independently before updating expectations.")
+    # generate_golden("PRV-INT-027", "CR 18175 PRV-INT-027 UT DOCUMENT 1.docx", "PRV-INT-027.xml")
+    # generate_golden("OPR-SRA-139", "Service Authorization Part E_CR18140_V0.1 1.docx")
+    # generate_golden("OPR-TPL-005", "Report Definition- OPT-TPL-005.docx")

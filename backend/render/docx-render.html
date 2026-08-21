@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>DOCX Render Harness</title>
+    <style>
+        body { margin: 0; padding: 0; background: #fff; }
+        #container { width: 100%; height: 100%; }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <script>
+        window.isRenderComplete = false;
+        
+        async function renderDocx(base64Data) {
+            try {
+                const binary = atob(base64Data);
+                const array = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {
+                    array[i] = binary.charCodeAt(i);
+                }
+                const blob = new Blob([array], {type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+                
+                const container = document.getElementById("container");
+                
+                // docx is available globally after playwright injects it
+                await docx.renderAsync(blob, container, null, {
+                    className: "docx",
+                    inWrapper: true,
+                    ignoreWidth: false,
+                    ignoreHeight: false,
+                    ignoreFonts: false,
+                    breakPages: true,
+                    ignoreLastRenderedPageBreak: false,
+                    experimental: false,
+                    trimXmlDeclaration: true,
+                    useBase64URL: false,
+                    useMathMLPolyfill: false,
+                    showChanges: false,
+                    debug: false
+                });
+                window.isRenderComplete = true;
+            } catch (err) {
+                console.error("Failed to render docx:", err);
+                window.renderError = err.toString();
+                window.isRenderComplete = true;
+            }
+        }
+    </script>
+</body>
+</html>

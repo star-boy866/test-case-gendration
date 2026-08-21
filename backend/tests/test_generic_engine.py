@@ -11,7 +11,7 @@ import pytest
 
 from app.domain.cognos_models import ReportDefinition, ReportMetadata, ReportField
 from app.domain.cognos_requirement import CognosRequirement, RequirementCategory, RequirementSet
-from app.cognos.rules.scenario_patterns import discover_applicable_patterns
+from app.cognos.rules.scenario_patterns import discover_applicable_patterns, MethodologyPattern
 from app.cognos.rules.scenario_composer import ScenarioComposer
 from app.cognos.rules.rule_engine import generate_all_test_cases
 
@@ -36,12 +36,14 @@ def test_multi_input_combination_generator():
         source_columns=["LAST_NAME", "FIRST_NAME", "MIDDLE_NAME"],
         processing_rule="Concatenate as Last, First Middle",
     )
-    patterns = discover_applicable_patterns([req])
+    applicability_report = discover_applicable_patterns([req])
+    patterns = applicability_report.generated
     assert len(patterns) >= 1
     pattern = patterns[0]
 
-    composer = ScenarioComposer()
-    cases = composer.build_test_cases(pattern)
+    from app.domain.cognos_models import ReportDefinition, ReportMetadata
+    composer = ScenarioComposer(rd=ReportDefinition(metadata=ReportMetadata(report_id="RPT-CUSTOM-001")), base_precondition="")
+    cases = composer.compose([pattern])
     assert len(cases) >= 5
     titles = [tc.test_case_title for tc in cases]
     assert any("all source fields are populated" in t for t in titles)
@@ -61,12 +63,14 @@ def test_date_range_combination_generator():
         source_columns=["EFF_BEG_DT", "EFF_END_DT"],
         formatting_rule="YYYY-MM-DD - YYYY-MM-DD",
     )
-    patterns = discover_applicable_patterns([req])
-    assert any(p.pattern_type == "DATE_RANGE" for p in patterns)
+    applicability_report = discover_applicable_patterns([req])
+    patterns = applicability_report.generated
+    assert any(p.pattern == MethodologyPattern.DATE_FORMAT_VALIDATION for p in patterns)
 
-    date_pattern = next(p for p in patterns if p.pattern_type == "DATE_RANGE")
-    composer = ScenarioComposer()
-    cases = composer.build_test_cases(date_pattern)
+    date_pattern = next(p for p in patterns if p.pattern == MethodologyPattern.DATE_FORMAT_VALIDATION)
+    from app.domain.cognos_models import ReportDefinition, ReportMetadata
+    composer = ScenarioComposer(rd=ReportDefinition(metadata=ReportMetadata(report_id="RPT-CUSTOM-002")), base_precondition="")
+    cases = composer.compose([date_pattern])
     assert len(cases) == 4
     titles = [tc.test_case_title for tc in cases]
     assert any("both dates are populated" in t for t in titles)

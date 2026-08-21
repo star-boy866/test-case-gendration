@@ -19,9 +19,68 @@
     ]
   },
   {
+    "test_case_id": "PRV027-TOT-01",
+    "requirement_ids": [
+      "REQ-027-BUSI-009"
+    ],
+    "scenario": "Verify DB Counts/Totals in PRV-INT-027",
+    "test_type": "Totals/Counts",
+    "test_origin": "DEV_UT_METHODOLOGY",
+    "test_design_technique": "Verify report counts against database.",
+    "preconditions": "Cognos Report 'PRV-INT-027' (Cognos Report) is published and accessible. Test data exists in source table 'REVIEW_REQUIRED'.",
+    "validation_steps": "1. Run an aggregate SQL query to count/sum the expected records.\n2. Generate report PRV-INT-027.\n3. Compare the report totals with the SQL output.",
+    "test_data": "Set of records to be counted/summed.",
+    "expected_result": "The counts and totals in the report exactly match the database query results.",
+    "priority": "High",
+    "evidence_types": [
+      "- DSD showing count/total requirements: [DSD EVIDENCE \u2014 INSERT SCREENSHOT]\n- Report showing totals: [REPORT EVIDENCE \u2014 INSERT SCREENSHOT]\n- Database count query results: [DB EVIDENCE \u2014 INSERT SCREENSHOT]",
+      "DSD"
+    ]
+  },
+  {
+    "test_case_id": "PRV027-DUP-01",
+    "requirement_ids": [
+      "REQ-027-BUSI-010"
+    ],
+    "scenario": "Verify Duplicate Prevention in PRV-INT-027",
+    "test_type": "Duplicate Data",
+    "test_origin": "DEV_UT_METHODOLOGY",
+    "test_design_technique": "Verify distinct/unique record logic.",
+    "preconditions": "Cognos Report 'PRV-INT-027' (Cognos Report) is published and accessible. Test data exists in source table 'REVIEW_REQUIRED'.",
+    "validation_steps": "1. Identify or insert duplicate test records in the database.\n2. Generate report PRV-INT-027.\n3. Confirm that only distinct records are displayed according to DSD.",
+    "test_data": "Database setup containing multiple identical or joining rows that could cause duplication.",
+    "expected_result": "The report successfully prevents duplicate rows and displays distinct records as specified.",
+    "priority": "High",
+    "evidence_types": [
+      "- DSD showing distinct/duplicate requirements: [DSD EVIDENCE \u2014 INSERT SCREENSHOT]\n- Report showing unique records: [REPORT EVIDENCE \u2014 INSERT SCREENSHOT]\n- Database state showing multiple rows: [DB EVIDENCE \u2014 INSERT SCREENSHOT]",
+      "DSD"
+    ]
+  },
+  {
+    "test_case_id": "PRV027-DIST-01",
+    "requirement_ids": [
+      "REQ-027-BUSI-012"
+    ],
+    "scenario": "Verify Box execution/scheduler for PRV-INT-027",
+    "test_type": "Distribution",
+    "test_origin": "DEV_UT_METHODOLOGY",
+    "test_design_technique": "Verify Box scheduler integration.",
+    "preconditions": "Cognos Report 'PRV-INT-027' (Cognos Report) is published and accessible. Test data exists in source table 'REVIEW_REQUIRED'.",
+    "validation_steps": "1. Trigger the Box job for PRV-INT-027.\n2. Monitor the execution logs.\n3. Verify successful completion and file distribution.",
+    "test_data": "N/A",
+    "expected_result": "The Box job executes successfully and distributes the output as required.",
+    "priority": "High",
+    "evidence_types": [
+      "- DSD showing Box execution/distribution requirements: [DSD EVIDENCE \u2014 INSERT SCREENSHOT]\n- Box scheduling configuration/job output: [BOX EVIDENCE \u2014 INSERT SCREENSHOT]",
+      "DSD"
+    ]
+  },
+  {
     "test_case_id": "PRV027-LOOK-01",
     "requirement_ids": [
-      "REQ-027-BUSI-001"
+      "REQ-027-BUSI-001",
+      "REQ-027-BUSI-005",
+      "REQ-027-BUSI-011"
     ],
     "scenario": "Verify Lookup Description mapping in PRV-INT-027",
     "test_type": "Lookup Logic",
@@ -38,9 +97,31 @@
     ]
   },
   {
+    "test_case_id": "PRV027-DIST-02",
+    "requirement_ids": [
+      "REQ-027-BUSI-013"
+    ],
+    "scenario": "Verify SDR/EDMS Delivery for PRV-INT-027",
+    "test_type": "Distribution",
+    "test_origin": "DEV_UT_METHODOLOGY",
+    "test_design_technique": "Verify SDR delivery integration.",
+    "preconditions": "Cognos Report 'PRV-INT-027' (Cognos Report) is published and accessible. Test data exists in source table 'REVIEW_REQUIRED'.",
+    "validation_steps": "1. Trigger the report generation targeting SDR delivery.\n2. Navigate to the SDR/EDMS platform.\n3. Verify the report document is uploaded and accessible.",
+    "test_data": "N/A",
+    "expected_result": "The report is successfully delivered to SDR/EDMS with correct metadata.",
+    "priority": "High",
+    "evidence_types": [
+      "- DSD showing SDR/EDMS delivery requirements: [DSD EVIDENCE \u2014 INSERT SCREENSHOT]\n- SDR delivery confirmation: [SDR EVIDENCE \u2014 INSERT SCREENSHOT]",
+      "DSD"
+    ]
+  },
+  {
     "test_case_id": "PRV027-OUTP-01",
     "requirement_ids": [
-      "REQ-027-BUSI-001"
+      "REQ-027-BUSI-001",
+      "REQ-027-BUSI-004",
+      "REQ-027-BUSI-005",
+      "REQ-027-BUSI-011"
     ],
     "scenario": "Verify script/output format for PRV-INT-027",
     "test_type": "Output Format",

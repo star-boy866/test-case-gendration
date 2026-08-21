@@ -7,7 +7,7 @@ from app.models.job import BackgroundJob
 from app.models.delivery import ExternalDeliveryRecord
 from app.services.job_service import JobService
 from app.services.outbox_service import OutboxService
-from app.services.export_service import sync_and_notify, SharePointSyncError, EmailSendError
+from app.services.export_service import sync_and_notify, get_latest_export, SharePointSyncError, EmailSendError
 from app.core.telemetry import get_logger
 
 _logger = get_logger(__name__)
@@ -32,16 +32,13 @@ def execute_export(self, outbox_id: str, job_id: str):
         session_id = payload["session_id"]
         report_id = payload["report_id"]
         sharepoint_site = payload.get("sharepoint_site")
-        email_to = payload.get("email_to")
+        email_distribution_list = payload.get("email_distribution_list") or []
 
         # Basic hash of inputs for idempotency
         artifact_id = f"{session_id}_{report_id}"
         artifact_hash = hashlib.sha256(artifact_id.encode()).hexdigest()
 
         # 4. Check Idempotency before executing Business Logic
-        # (This is a simplistic check; a more robust one would integrate tightly inside the sync_and_notify logic,
-        # but the prompt allows application-level wrapper idempotency.)
-        
         sp_delivered = False
         if sharepoint_site:
             record = db.query(ExternalDeliveryRecord).filter_by(
@@ -53,54 +50,56 @@ def execute_export(self, outbox_id: str, job_id: str):
             if record:
                 sp_delivered = True
 
-        email_delivered = False
-        if email_to:
+        undelivered_emails = []
+        for email in email_distribution_list:
             record = db.query(ExternalDeliveryRecord).filter_by(
                 target_system="SMTP",
-                target_address=email_to,
+                target_address=email,
                 artifact_hash=artifact_hash,
                 status="DELIVERED"
             ).first()
-            if record:
-                email_delivered = True
+            if not record:
+                undelivered_emails.append(email)
 
-        # Call service, potentially telling it what to skip
-        # Note: sync_and_notify might need to be refactored to accept skip_sp and skip_email flags.
-        # Assuming we just execute if either is NOT delivered, and the service handles it or we wrap it.
-        # If both are requested and already delivered, skip entirely.
-        if (sharepoint_site and not sp_delivered) or (email_to and not email_delivered):
-            try:
-                sync_and_notify(
-                    db=db,
-                    session_id=session_id,
-                    report_id=report_id,
-                    sharepoint_site=sharepoint_site if not sp_delivered else None,
-                    email_to=email_to if not email_delivered else None
-                )
+        if (sharepoint_site and not sp_delivered) or undelivered_emails:
+            export_record = get_latest_export(db, session_id)
+            if not export_record:
+                raise ValueError(f"No export record found for session {session_id}")
                 
-                # Record successful delivery
-                if sharepoint_site and not sp_delivered:
+            result = sync_and_notify(
+                db=db,
+                record=export_record,
+                sync_to_sharepoint=bool(sharepoint_site and not sp_delivered),
+                email_distribution_list=undelivered_emails if undelivered_emails else None
+            )
+            
+            # Record successful delivery
+            if sharepoint_site and not sp_delivered:
+                if result.get("sharepoint_error"):
+                    raise SharePointSyncError(result["sharepoint_error"])
+                db.add(ExternalDeliveryRecord(
+                    delivery_id=f"SP-{job.job_id}",
+                    job_id=job.job_id,
+                    target_system="SHAREPOINT",
+                    target_address=sharepoint_site,
+                    artifact_hash=artifact_hash,
+                    status="DELIVERED",
+                    delivered_at=datetime.now(timezone.utc)
+                ))
+            
+            if undelivered_emails:
+                if result.get("email_error"):
+                    raise EmailSendError(result["email_error"])
+                for idx, email in enumerate(undelivered_emails):
                     db.add(ExternalDeliveryRecord(
-                        delivery_id=f"SP-{job.job_id}",
-                        job_id=job.job_id,
-                        target_system="SHAREPOINT",
-                        target_address=sharepoint_site,
-                        artifact_hash=artifact_hash,
-                        status="DELIVERED",
-                        delivered_at=datetime.now(timezone.utc)
-                    ))
-                if email_to and not email_delivered:
-                    db.add(ExternalDeliveryRecord(
-                        delivery_id=f"SMTP-{job.job_id}",
+                        delivery_id=f"SMTP-{job.job_id}-{idx}",
                         job_id=job.job_id,
                         target_system="SMTP",
-                        target_address=email_to,
+                        target_address=email,
                         artifact_hash=artifact_hash,
                         status="DELIVERED",
                         delivered_at=datetime.now(timezone.utc)
                     ))
-            except (SharePointSyncError, EmailSendError) as service_exc:
-                raise service_exc # Transient
         
         JobService.transition_to(db, job, "SUCCEEDED")
         db.commit()

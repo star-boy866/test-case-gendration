@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 
 from sqlalchemy.orm import Session
 
@@ -178,7 +179,7 @@ def sync_and_notify(
                 user_id=requested_by or "unknown",
                 session_id=record.session_id,
                 event_type="SHAREPOINT_SYNC",
-                detail=f'{{"filename": "{record.filename}", "web_url": "{upload_result["web_url"]}"}}',
+                detail=json.dumps({"filename": record.filename, "web_url": upload_result["web_url"]}),
                 file_sha256=record.file_sha256,
             ))
         except SharePointSyncError as e:
@@ -187,7 +188,7 @@ def sync_and_notify(
                 user_id=requested_by or "unknown",
                 session_id=record.session_id,
                 event_type="SHAREPOINT_SYNC_FAILED",
-                detail=f'{{"filename": "{record.filename}", "error": {str(e)!r}}}',
+                detail=json.dumps({"filename": record.filename, "error": str(e)}),
                 file_sha256=record.file_sha256,
             ))
 
@@ -235,7 +236,7 @@ def sync_and_notify(
                 # specifically because these addresses are genuine PII.
                 # The encrypted record.email_sent_to is the authoritative,
                 # protected place to find who actually received this.
-                detail=f'{{"recipient_count": {len(email_distribution_list)}, "filename": "{record.filename}"}}',
+                detail=json.dumps({"recipient_count": len(email_distribution_list), "filename": record.filename}),
                 file_sha256=record.file_sha256,
             ))
         except EmailSendError as e:
@@ -244,7 +245,7 @@ def sync_and_notify(
                 user_id=requested_by or "unknown",
                 session_id=record.session_id,
                 event_type="EMAIL_FAILED",
-                detail=f'{{"recipient_count": {len(email_distribution_list)}, "error": {str(e)!r}}}',
+                detail=json.dumps({"recipient_count": len(email_distribution_list), "error": str(e)}),
                 file_sha256=record.file_sha256,
             ))
 

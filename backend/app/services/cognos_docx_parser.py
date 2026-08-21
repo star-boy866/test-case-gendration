@@ -520,10 +520,11 @@ def parse_cognos_docx(path: str | Path) -> CognosParsedDocument:
             text = item.text.strip()
             result.all_paragraphs.append(text)
 
-            # Check explicit page breaks in XML
+            # Check explicit page breaks or last rendered page breaks in XML
             xml = item._element.xml
-            if "w:br" in xml and 'w:type="page"' in xml:
-                current_page = (current_page or 1) + 1
+            breaks = xml.count("w:lastRenderedPageBreak") + xml.count('w:type="page"')
+            if breaks > 0:
+                current_page = (current_page or 1) + breaks
 
             # Check section detection
             is_heading = item.style and item.style.name and \
@@ -562,6 +563,12 @@ def parse_cognos_docx(path: str | Path) -> CognosParsedDocument:
 
         elif isinstance(item, docx.table.Table):
             table_index += 1
+
+            # Check explicit page breaks or last rendered page breaks inside the table XML
+            xml = item._element.xml
+            breaks = xml.count("w:lastRenderedPageBreak") + xml.count('w:type="page"')
+            if breaks > 0:
+                current_page = (current_page or 1) + breaks
 
             if current_section is None:
                 current_section = DocumentSection(

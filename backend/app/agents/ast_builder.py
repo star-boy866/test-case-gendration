@@ -38,7 +38,7 @@ class SchemaSymbolResolver:
         for col in context_slice.get("columns", []):
             self.columns_by_table.setdefault(col["table_name"], {})[col["column_name"].lower()] = col["column_name"]
             
-        self.registry: dict[str, str] = {}
+        self.registry: dict[str, tuple[str, str]] = {}
         
     def register_table(self, table_expr: str) -> str:
         parts = table_expr.strip().split()

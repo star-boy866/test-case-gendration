@@ -7,14 +7,13 @@ from pathlib import Path
 from app.cognos.pipeline import run_cognos_pipeline
 from app.domain.cognos_requirement import RequirementCategory
 
-@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_all_tests_have_requirement_links(tmp_path: Path):
     """
     Every generated test case must have requirement_ids populated,
     unless it is specifically flagged as a fallback header test.
     """
-    root_dir = Path("D:/test-case-gendration/healthcare-nl-testgen")
-    doc_path = root_dir / "Report Definition  OPR.docx"
+    root_dir = Path(__file__).parent / "fixtures" / "golden_sources"
+    doc_path = root_dir / "Service Authorization Part E_CR18140_V0.1 1.docx"
     result = run_cognos_pipeline(doc_path)
     
     test_cases = result.test_suite.test_cases
@@ -27,7 +26,6 @@ def test_all_tests_have_requirement_links(tmp_path: Path):
         assert tc.requirement_id != "", f"Test {tc.test_case_id} has empty requirement_id property"
 
 
-@pytest.mark.skip
 def test_all_requirements_reach_excel(tmp_path: Path):
     """
     Every normalized requirement (including field-derived ones) 
@@ -35,11 +33,11 @@ def test_all_requirements_reach_excel(tmp_path: Path):
     """
     from app.services.cognos_excel_compiler import build_cognos_workbook
     
-    root_dir = Path("D:/test-case-gendration/healthcare-nl-testgen")
-    doc_path = root_dir / "Report Definition OPR-TPL-004  OPR.docx"
+    root_dir = Path(__file__).parent / "fixtures" / "golden_sources"
+    doc_path = root_dir / "Report Definition- OPT-TPL-005.docx"
     result = run_cognos_pipeline(doc_path)
-    
-    wb = build_cognos_workbook(result.test_suite, result.requirement_set)
+    assert result.final_report_context is not None
+    wb = build_cognos_workbook(result.final_report_context)
     assert "Requirements" in wb.sheetnames
     
     req_sheet = wb["Requirements"]
@@ -55,12 +53,11 @@ def test_all_requirements_reach_excel(tmp_path: Path):
     assert row_count == len(active_reqs), f"Expected {len(active_reqs)} requirement rows, got {row_count}"
 
 
-@pytest.mark.skip
 def test_traceability_is_populated(tmp_path: Path):
     """
     The Traceability Matrix must be populated natively by the coverage analyzer.
     """
-    root_dir = Path("D:/test-case-gendration/healthcare-nl-testgen")
+    root_dir = Path(__file__).parent / "fixtures" / "golden_sources"
     doc_path = root_dir / "Report Definition- OPT-TPL-005.docx"
     result = run_cognos_pipeline(doc_path)
     

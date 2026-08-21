@@ -72,7 +72,8 @@ def build_scenario_from_intent(
     except GeneratorParseError as e:
         return None, f"Scenario '{intent.title}' dropped — Generator Agent failed: {e}"
 
-    referenced_tables = sorted({ast.from_table.split()[0], *(j["table"].split()[0] for j in ast.joins)})
+    from_table_str = ast.from_table or ""
+    referenced_tables = sorted({from_table_str.split()[0] if from_table_str else "", *(j["table"].split()[0] for j in ast.joins)})
     referenced_columns = sorted({
         col for col in ast.select
     } | {
@@ -125,7 +126,7 @@ def run_pipeline(
         scenario, warning = build_scenario_from_intent(intent, context_slice, llm_call)
         if scenario is not None:
             scenarios.append(scenario)
-        else:
+        elif warning is not None:
             warnings.append(warning)
 
     return scenarios, warnings

@@ -31,6 +31,7 @@ def compute_coverage(
     # Build requirement ID -> test case mapping (many-to-many support)
     req_to_tests: dict[str, list[str]] = {}
     for tc in test_cases:
+        # Do not allow methodology-only tests to increase Requirement Coverage if they have no requirements!
         req_list = tc.requirement_ids if tc.requirement_ids else ([tc.requirement_id] if tc.requirement_id else [])
         for req_id in req_list:
             if req_id and tc.test_case_id not in req_to_tests.setdefault(req_id, []):
@@ -39,13 +40,25 @@ def compute_coverage(
     # Non-duplicate requirements only
     active_reqs = [r for r in req_set.requirements if not r.is_duplicate_of]
 
-    covered = sum(1 for r in active_reqs if r.requirement_id in req_to_tests)
-    unmapped = sum(1 for r in active_reqs if r.requirement_id not in req_to_tests)
+    covered = sum(1 for r in active_reqs if r.requirement_id and r.requirement_id in req_to_tests)
+    unmapped = sum(1 for r in active_reqs if not r.requirement_id or r.requirement_id not in req_to_tests)
     ambiguous = sum(1 for r in active_reqs if r.is_ambiguous)
     duplicate = sum(1 for r in req_set.requirements if r.is_duplicate_of)
 
-    total = len(active_reqs)
+    # Hard assertion logic requested by user
+    total = len([r for r in active_reqs if r.requirement_id])
     pct = (covered / total * 100) if total > 0 else 0.0
+
+    # Methodology coverage
+    from app.cognos.rules.scenario_patterns import discover_applicable_patterns
+    applicability_report = discover_applicable_patterns(active_reqs, report_def)
+    total_applicable = len(applicability_report.generated)
+    
+    # Methodology tests are those originating from DEV_UT_METHODOLOGY
+    methodology_patterns_generated = len(set(
+        tc.category for tc in test_cases if tc.origin == "DEV_UT_METHODOLOGY"
+    ))
+    methodology_pct = (methodology_patterns_generated / total_applicable * 100) if total_applicable > 0 else 100.0
 
     # Category-level coverage
     category_coverage = _compute_category_coverage(active_reqs, req_to_tests, test_cases)
@@ -64,6 +77,8 @@ def compute_coverage(
         requirements_ambiguous=ambiguous,
         requirements_duplicate=duplicate,
         overall_coverage_percentage=round(pct, 2),
+        methodology_patterns_generated=methodology_patterns_generated,
+        methodology_coverage_percentage=round(methodology_pct, 2),
         category_coverage=category_coverage,
         open_questions=open_questions,
     )
@@ -84,7 +99,7 @@ def _compute_category_coverage(
                 "found": 0, "covered": 0, "unmapped": 0, "ambiguous": 0
             }
         categories[cat]["found"] += 1
-        if req.requirement_id in req_to_tests:
+        if req.requirement_id and req.requirement_id in req_to_tests:
             categories[cat]["covered"] += 1
         else:
             categories[cat]["unmapped"] += 1

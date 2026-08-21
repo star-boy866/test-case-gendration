@@ -91,6 +91,42 @@ class DsdInterpreter:
         # Parse paragraphs for Unit Test Scenarios (e.g. PRV-INT-027)
         for i, p in enumerate(self.doc.paragraphs):
             text = _extract_text(p)
+            
+            # Extract metadata from paragraphs (e.g., in PRV-INT-027)
+            lower_text = text.lower()
+            if lower_text.startswith("report name:"):
+                self._add_req(
+                    RequirementCategory.REPORT_TITLE,
+                    "Report Name",
+                    text.split(":", 1)[1].strip(),
+                    status="EXTRACTED",
+                    source_section="Report Details"
+                )
+            elif lower_text.startswith("report description:"):
+                self._add_req(
+                    RequirementCategory.REPORT_DESCRIPTION,
+                    "Report Description",
+                    text.split(":", 1)[1].strip(),
+                    status="EXTRACTED",
+                    source_section="Report Details"
+                )
+            elif lower_text.startswith("output format:"):
+                self._add_req(
+                    RequirementCategory.OUTPUT_FORMAT,
+                    "Output Format",
+                    text.split(":", 1)[1].strip(),
+                    status="EXTRACTED",
+                    source_section="Report Details"
+                )
+            elif lower_text.startswith("table used"):
+                self._add_req(
+                    RequirementCategory.REPORT_METADATA,
+                    "Source Tables",
+                    text.split("-", 1)[1].strip() if "-" in text else text,
+                    status="EXTRACTED",
+                    source_section="Report Details"
+                )
+            
             if text.startswith("Scenario "):
                 self._add_req(
                     RequirementCategory.BUSINESS_RULE,
@@ -109,51 +145,86 @@ class DsdInterpreter:
             if not t.rows:
                 continue
             
-            headers_0 = [c.text.lower().strip() for c in t.rows[0].cells]
-            headers_1 = [c.text.lower().strip() for c in t.rows[1].cells] if len(t.rows) > 1 else []
-            all_headers = set(headers_0 + headers_1)
+            # Look at the first 4 rows to find headers
+            all_headers = set()
+            for row in t.rows[:4]:
+                all_headers.update([c.text.lower().strip() for c in row.cells])
             
             # Check if this is the Report Body mappings table
-            if "field type" in all_headers or "business label" in all_headers or "column" in all_headers or "report body" in all_headers:
+            # Expanded to match synonyms like "field name", "data element", "report column"
+            is_report_body = any(
+                k in h for h in all_headers 
+                for k in ["field type", "business label", "column", "report body", "field name", "data element", "data type"]
+            )
+            
+            if is_report_body:
                 self._parse_report_body(t)
             
             # Check for general Report Definition (key/value pairs)
-            elif len(t.rows[0].cells) >= 2 and ("report type" in t.rows[0].cells[0].text.lower() or "report title" in t.rows[0].cells[0].text.lower()):
-                self._parse_key_value_table(t)
+            else:
+                is_key_value = False
+                for row in t.rows[:4]:
+                    row_text = row.cells[0].text.lower() if len(row.cells) > 0 else ""
+                    if "report type" in row_text or "report title" in row_text or "client report id" in row_text:
+                        is_key_value = True
+                        break
+                        
+                if is_key_value:
+                    self._parse_key_value_table(t)
 
     def _parse_report_body(self, table: CanonicalTable):
-        # Find the actual header row
+        # Find the actual header row and dynamically assign column indices
         start_idx = 1
-        for i, row in enumerate(table.rows[:3]):
+        type_col_idx = 0
+        label_col_idx = 1
+        source_table_col_idx = 4
+        
+        for i, row in enumerate(table.rows[:5]):
             row_texts = [c.text.lower().strip() for c in row.cells]
-            if "field type" in row_texts or "business label" in row_texts:
+            if any(k in h for h in row_texts for k in ["field type", "business label", "field name", "column", "data element"]):
                 start_idx = i + 1
+                # Try to map columns dynamically based on this header row
+                for col_i, cell_text in enumerate(row_texts):
+                    if "type" in cell_text or "format" in cell_text:
+                        type_col_idx = col_i
+                    elif "label" in cell_text or "name" in cell_text or "column" in cell_text or "element" in cell_text:
+                        # Prioritize finding the business label/field name
+                        label_col_idx = col_i
+                    elif "table" in cell_text and "source" in cell_text:
+                        source_table_col_idx = col_i
                 break
 
         for row in table.rows[start_idx:]:
             cells = row.cells
-            if len(cells) < 2:
+            
+            # We need at least the label column to extract something
+            if len(cells) <= label_col_idx:
                 continue
                 
-            field_type = _extract_text(cells[0].text)
-            business_label = _extract_text(cells[1].text)
+            field_type = _extract_text(cells[type_col_idx].text) if len(cells) > type_col_idx else ""
+            business_label = _extract_text(cells[label_col_idx].text)
+            
+            # Fallback if label is empty but there's a type (maybe they are swapped in weird templates)
+            if not business_label and field_type and len(field_type) > 3 and " " not in field_type:
+                 # It's possible the columns are just off
+                 field_type, business_label = business_label, field_type
             
             # Gaps detection / Template boilerplate filtering
             lower_label = business_label.lower()
             lower_type = field_type.lower()
             
-            if not business_label or "n/a" in lower_label or not field_type:
+            if not business_label or "n/a" in lower_label:
                 continue # Skip empty placeholders entirely
                 
             if "summary" in lower_type or "daily total" in lower_type or "row" in lower_type:
                 continue # Skip structural template boilerplate
 
             # Valid field
-            source_table = _extract_text(cells[4].text) if len(cells) > 4 else ""
+            source_table = _extract_text(cells[source_table_col_idx].text) if len(cells) > source_table_col_idx else ""
             req = self._add_req(
                 RequirementCategory.COLUMN,
                 business_label,
-                f"Report must display {business_label} as {field_type}",
+                f"Report must display {business_label}" + (f" as {field_type}" if field_type else ""),
                 status="EXTRACTED",
                 source_section="Report Body Mappings"
             )
@@ -167,9 +238,15 @@ class DsdInterpreter:
                 if key and val:
                     # Generic metadata mapping
                     cat = RequirementCategory.REPORT_METADATA
-                    if "title" in key.lower(): cat = RequirementCategory.REPORT_TITLE
-                    if "description" in key.lower(): cat = RequirementCategory.REPORT_DESCRIPTION
-                    if "output" in key.lower(): cat = RequirementCategory.OUTPUT_FORMAT
+                    lower_key = key.lower()
+                    if "title" in lower_key: cat = RequirementCategory.REPORT_TITLE
+                    elif "description" in lower_key: cat = RequirementCategory.REPORT_DESCRIPTION
+                    elif "output" in lower_key: cat = RequirementCategory.OUTPUT_FORMAT
+                    elif "selection criteria" in lower_key or "parameter" in lower_key: cat = RequirementCategory.PARAMETER
+                    elif "sort by" in lower_key: cat = RequirementCategory.SORT
+                    elif "control break" in lower_key: cat = RequirementCategory.CONTROL_BREAK
+                    elif "total" in lower_key: cat = RequirementCategory.TOTAL
+                    elif "count" in lower_key: cat = RequirementCategory.COUNT
                     
                     self._add_req(
                         cat, key, f"{key}: {val}",

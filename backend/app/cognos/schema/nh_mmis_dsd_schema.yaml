@@ -1,0 +1,69 @@
+# NH MMIS DSD Semantic Contract Schema
+
+report_definition:
+  report_type: string
+  client_name: string
+  client_report_id: string
+  client_lob: string
+  client_division_department: string
+  report_title: string
+  report_description: string
+  report_source_type: string
+  report_source_type_component: string
+
+report_generation:
+  report_generated_by: string
+  report_screen_tip: string
+  report_calendar_type: string
+  report_frequency_type: string
+  scheduled_timeframe: string
+  other_explain: string
+  report_data_accumulation_type: string
+  triggered_by: string
+
+selection_criteria:
+  - report_selection_criteria: string
+    report_field: string
+
+parameters:
+  - parameter_description: string
+    prompt: boolean
+
+sorts:
+  - sort_by: string
+    direction: string
+
+control_breaks:
+  - control_break: string
+    level: string
+
+totals:
+  - total: string
+    level: string
+
+counts:
+  - count: string
+    level: string
+
+output:
+  report_output_format: string
+  reporting_portal: string
+  report_output_distribution_groups: string
+
+retention:
+  report_retention_type: string
+  report_output_versions: string
+  report_run_history_log: string
+
+layout:
+  report_id: string
+  file_name: string
+  report_title_line: string
+  report_section_label_names: string
+
+report_specification:
+  - business_label: string
+    field_description: string
+    source_table: string
+    source_column: string
+    processing_rules: string

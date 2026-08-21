@@ -144,6 +144,20 @@ def extract_requirements(
     layout, layout_warnings = extract_layout(doc, source_document_name)
     report_def.layout = layout
     all_warnings.extend(layout_warnings)
+    
+    # --- 6.5. Cross-check Report Body against Report Layout ---
+    # Clean the body field labels and layout element names for basic matching
+    body_labels = {re.sub(r'[^a-zA-Z0-9]', '', f.business_label.lower()) for f in fields if f.business_label}
+    layout_labels = {re.sub(r'[^a-zA-Z0-9]', '', e.element_name.lower()) for e in layout.body_elements if e.element_name}
+    
+    for field in fields:
+        if not field.business_label or field.business_label.lower() in ("n/a", "review_required", "unknown"):
+            continue
+        clean_label = re.sub(r'[^a-zA-Z0-9]', '', field.business_label.lower())
+        if clean_label and clean_label not in layout_labels:
+            # Layout might be very visual, don't trigger for purely calculated hidden fields or metadata
+            if field.field_type.value != "Derived":
+                all_warnings.append(f"Validation Warning: Field '{field.business_label}' found in Report Body but missing from Report Layout.")
 
     # --- 7. Store warnings ---
     report_def.parse_warnings = all_warnings
@@ -302,7 +316,7 @@ def _build_requirement_set(
     # --- Control break requirements ---
     for cb in report_def.control_break_definitions:
         _add(RequirementCategory.CONTROL_BREAK, cb.field,
-             f"Control break on {cb.field}"
+             f"{cb.break_type} Control break on {cb.field}"
              + (f": {cb.description}" if cb.description else ""),
              cb.source.section, cb.source.page)
 

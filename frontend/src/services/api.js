@@ -1,7 +1,7 @@
 import axios from "axios";
 
 // Vite dev server proxies /api -> http://localhost:8000 (see vite.config.js)
-const api = axios.create({
+export const api = axios.create({
   baseURL: "/api",
   timeout: 60000, // generation calls can involve a local LLM, allow more time
 });

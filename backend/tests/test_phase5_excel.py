@@ -14,7 +14,6 @@ def get_fixtures():
         xml = next(root.glob("PRV-INT-027.xml"), xml)
     return docx, xml
 
-@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_dsd_only_pipeline():
     docx, _ = get_fixtures()
     if not docx.exists():
@@ -43,7 +42,6 @@ def test_dsd_only_pipeline():
     cov = wb["Coverage Summary"]
     assert cov["B2"].value > 0  # Total Requirements
 
-@pytest.mark.skip(reason="Phase 9.8B Disposition: OBSOLETE_TEST")
 def test_dsd_xml_pipeline_and_discrepancy_rendering():
     docx, xml = get_fixtures()
     if not docx.exists() or not xml.exists():

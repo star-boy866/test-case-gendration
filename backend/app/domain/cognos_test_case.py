@@ -14,7 +14,7 @@ and SpecificationQualityReport for the full generation output.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Optional, Any
 from pydantic import BaseModel, Field
 from app.domain.cognos_requirement import TestOrigin
 
@@ -44,6 +44,23 @@ class EvidenceRequirement(BaseModel):
     description: str = ""
     placeholder: str = ""
     mandatory: bool = True
+
+
+class EvidenceReference(BaseModel):
+    """Specific rendered DSD evidence for a test case."""
+    evidence_id: str = ""
+    evidence_type: str = ""       # e.g., DSD_REPORT_LAYOUT, DSD_REPORT_SPECIFICATION
+    document_name: str = ""
+    source_document_id: str = ""
+    source_document_url: str = ""
+    page_number: Optional[int] = None
+    section: str = ""
+    source_text: str = ""
+    snapshot_path: str = ""       # Absolute physical path
+    snapshot_url: str = ""        # API endpoint URL
+    crop_path: str = ""
+    bounding_box: dict = Field(default_factory=dict)
+    description: str = ""
 
 
 
@@ -106,6 +123,17 @@ class CognosTestCase(BaseModel):
     origin: TestOrigin = TestOrigin.DIRECT_SPECIFICATION
     test_type: TestType = TestType.UNKNOWN
     version: int = 1
+    
+    # --- Added for Phase 10.2 ---
+    applicability_reason: str = ""
+    evidence_references: list[EvidenceReference] = Field(default_factory=list)
+
+    # --- Added for Phase 10.6 (Developer UT Scenario Engine) ---
+    dsd_reference: str = ""          # e.g., "DSD p.4-5 § Report Body" — authoritative source text
+    open_item: str = ""              # Documented conflict or REVIEW_REQUIRED item (never silently dropped)
+    llm_refinement_status: str = "NOT_ATTEMPTED"  # NOT_ATTEMPTED | REFINED | FALLBACK
+    confidence: str = "High"         # High | Medium | Low — extraction confidence level
+    methodology_pattern: str = ""    # The methodology family this test belongs to
 
     @property
     def requirement_id(self) -> str:
@@ -164,6 +192,8 @@ class CoverageReport(BaseModel):
     requirements_ambiguous: int = 0
     requirements_duplicate: int = 0
     overall_coverage_percentage: float = 0.0
+    methodology_patterns_generated: int = 0
+    methodology_coverage_percentage: float = 0.0
     category_coverage: list[CategoryCoverage] = Field(default_factory=list)
     open_questions: list[str] = Field(default_factory=list)
 
@@ -193,7 +223,9 @@ class SpecificationQualityReport(BaseModel):
 class TestSuiteSummary(BaseModel):
     """Per-category test count summary."""
     report_id: str = ""
-    report_title: str = ""
+    applicability_reason: str = ""
+
+    # QA Meta Attributes
     metadata_tests: int = 0
     header_tests: int = 0
     selection_tests: int = 0

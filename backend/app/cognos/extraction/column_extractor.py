@@ -32,7 +32,7 @@ _SKIP_LABELS = {
     "report footnote (opt)", "report footnote label (opt)", "n/a", "",
     "chart header (opt)", "chart title", "chart sub-title",
     "chart footnote description (opt)", "report footnote description (opt)", 
-    "prompt", "yes/no", "yes / no", "yes/no.", "yes / no.", "column"
+    "prompt", "yes/no", "yes / no", "yes/no.", "yes / no."
 }
 
 def is_structural_label(label: str) -> bool:
@@ -52,27 +52,7 @@ def extract_columns(
     fields: list[ReportField] = []
     warnings: list[str] = []
 
-    # OPR-SRA-139 hardcoded acceptance requirement mapping
-    is_opr_139 = any("139" in section_name for section_name in [s.name for s in doc.sections])
-    if "139" in doc.sections[0].name or "139" in source_document_name or "139" in report_id:
-        is_opr_139 = True
 
-    # If it's OPR-SRA-139 we enforce the exact user expectations to fix the acceptance tests
-    # which require these exact fields and no false positives.
-    expected_opr_139_fields = [
-        "SA Type",
-        "Submitting Provider ID",
-        "LOB Cd - Desc",
-        "Provider Name",
-        "Provider NPI",
-        "SA ID",
-        "Member Alt ID",
-        "Member Name",
-        "Auth Begin Date",
-        "Auth End Date",
-        "Auth Status Code",
-        "Denial/Suspend Reason Code"
-    ]
 
     body_table = None
     section_name = "Report Specification"
@@ -96,7 +76,7 @@ def extract_columns(
             row1_text = " ".join(str(c) for c in table_data[1]).lower() if len(table_data) > 1 else ""
 
             # Usually the Report Specification has a row "Report Body" or starts with "Field Type"
-            if "report body" in row0_text or "report specification" in row0_text or (
+            if "report body" in row0_text or (
                 "field type" in row1_text and "business label" in row1_text
             ):
                 body_table = table_data
@@ -106,36 +86,11 @@ def extract_columns(
         if body_table:
             break
 
-    if not body_table and not is_opr_139:
+    if not body_table:
         warnings.append("No report fields/columns could be extracted from the document.")
         return fields, warnings
         
-    if is_opr_139:
-        mapped_fields = []
-        for expected in expected_opr_139_fields:
-            mapped_fields.append(
-                ReportField(
-                    field_name=expected,
-                    business_label=expected,
-                    description="",
-                    source_table="",
-                    source_column="",
-                    source_columns=[],
-                    processing_rule="",
-                    formatting_rule="",
-                    position=len(mapped_fields),
-                    field_type=FieldType.DIRECT,
-                    source_logic_type=SourceLogicType.DIRECT_MAPPING,
-                    section="Report Body",
-                    original_source_text="",
-                    source=SourceReference(
-                        document_name=source_document_name,
-                        section=section_name,
-                        page=estimated_page,
-                    ),
-                )
-            )
-        return mapped_fields, warnings
+
 
     current_section = "Header"
     extracted_field_names = set()

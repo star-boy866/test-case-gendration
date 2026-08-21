@@ -40,6 +40,15 @@ class JobService:
             priority=priority,
         )
         db.add(job)
+        if idempotency_key:
+            try:
+                db.flush()
+            except IntegrityError:
+                db.rollback()
+                existing = db.query(BackgroundJob).filter(BackgroundJob.idempotency_key == idempotency_key).first()
+                if existing:
+                    return existing
+                raise
         return job
 
     @staticmethod
@@ -51,34 +60,39 @@ class JobService:
             "RETRYING": ["QUEUED", "RUNNING", "FAILED"],
         }
         
+        import typing
+        _job = typing.cast(typing.Any, job)
+        
         # Self transitions are okay (e.g. RUNNING -> RUNNING for heartbeats)
-        if job.status != new_status and new_status not in valid_transitions.get(job.status, []):
-            raise JobStateError(f"Invalid transition from {job.status} to {new_status}")
+        if _job.status != new_status and new_status not in valid_transitions.get(str(_job.status), []):
+            raise JobStateError(f"Invalid transition from {_job.status} to {new_status}")
 
-        job.status = new_status
-        job.updated_at = datetime.now(timezone.utc)
+        _job.status = new_status
+        _job.updated_at = datetime.now(timezone.utc)
         
         if new_status == "RUNNING":
-            if not job.started_at:
-                job.started_at = datetime.now(timezone.utc)
+            if not _job.started_at:
+                _job.started_at = datetime.now(timezone.utc)
             if worker_id:
-                job.worker_id = worker_id
-            job.heartbeat_at = datetime.now(timezone.utc)
+                _job.worker_id = worker_id
+            _job.heartbeat_at = datetime.now(timezone.utc)
         elif new_status in ["SUCCEEDED", "FAILED", "CANCELLED", "EXPIRED"]:
-            job.completed_at = datetime.now(timezone.utc)
+            _job.completed_at = datetime.now(timezone.utc)
             if result_reference:
-                job.result_reference = result_reference
+                _job.result_reference = result_reference
             if error_message:
-                job.error_message = error_message
+                _job.error_message = error_message
         elif new_status == "RETRYING":
-            job.attempt_count += 1
+            _job.attempt_count += 1
             if error_message:
-                job.error_message = error_message
+                _job.error_message = error_message
 
     @staticmethod
     def heartbeat(db: Session, job: BackgroundJob):
-        if job.status == "RUNNING":
-            job.heartbeat_at = datetime.now(timezone.utc)
+        import typing
+        _job = typing.cast(typing.Any, job)
+        if _job.status == "RUNNING":
+            _job.heartbeat_at = datetime.now(timezone.utc)
 
     @staticmethod
     def mark_failed_or_retry(db: Session, job: BackgroundJob, error_message: str, is_transient: bool):

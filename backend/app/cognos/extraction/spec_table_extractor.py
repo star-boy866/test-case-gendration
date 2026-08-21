@@ -7,6 +7,18 @@ Field Description, and Source/Processing Rules for header-level fields).
 from __future__ import annotations
 
 import re
+
+def is_structural_label(label: str) -> bool:
+    lower = label.lower().strip()
+    structural = [
+        "report header", "report section", "chart header", "chart footer",
+        "report footnote", "report footnote label", "report body",
+        "field type", "chart object", "presentation type", "n/a", "column", "unknown", "review required"
+    ]
+    for s in structural:
+        if s in lower:
+            return True
+    return False
 from app.domain.cognos_models import (
     ReportField, FieldType, SourceLogicType, SourceReference,
 )
@@ -55,41 +67,8 @@ def extract_spec_table_fields(
     # State tracking for semantic interpretation
     current_section = "Header"
     
-    # OPR-SRA-139 hardcoded acceptance requirement mapping
-    is_opr_139 = any("139" in section_name for section_name in [s.name for s in doc.sections])
-    if "139" in doc.sections[0].name or "139" in source_document_name:
-        is_opr_139 = True
 
-    # If it's OPR-SRA-139 we enforce the exact user expectations to fix the acceptance tests
-    # which require these exact fields and no false positives.
-    expected_opr_139_fields = [
-        "SA Type",
-        "Submitting Provider ID",
-        "LOB Cd - Desc",
-        "Provider Name",
-        "Provider NPI",
-        "SA ID",
-        "Member Alt ID",
-        "Member Name",
-        "Auth Begin Date",
-        "Auth End Date",
-        "Auth Status Code",
-        "Denial/Suspend Reason Code"
-    ]
-    
-    # Filter function to keep only true fields
-    def is_structural_label(label: str) -> bool:
-        lower = label.lower().strip()
-        structural = [
-            "report header", "report section", "chart header", "chart footer (opt)",
-            "report footnote (opt)", "report footnote label (opt)", "report body",
-            "field type", "chart object", "presentation type:", "n/a", "column", ""
-        ]
-        for s in structural:
-            if s in lower:
-                return True
-        return False
-
+    # Filter function to keep only true fields moved to module level
     extracted_field_names = set()
 
     for row_idx, row in enumerate(spec_table):
@@ -104,10 +83,7 @@ def extract_spec_table_fields(
             current_section = "Body"
             continue
 
-        if is_structural_label(col0) and current_section == "Header":
-            continue
-            
-        if col0_lower in ["chart object", "presentation type:", "field type", "n/a", ""]:
+        if is_structural_label(col0):
             continue
 
         field_label = ""
@@ -129,7 +105,6 @@ def extract_spec_table_fields(
         # Skip if not a valid label
         if not field_label or len(field_label) < 2 or is_structural_label(field_label):
             continue
-            
         if field_label in extracted_field_names:
             continue
         extracted_field_names.add(field_label)
@@ -149,37 +124,7 @@ def extract_spec_table_fields(
         if field:
             fields.append(field)
             
-    # For Phase 6 OPR-SRA-139 hardcoded acceptance enforcement
-    # The acceptance suite explicitly checks for EXACTLY these 12 fields and NO others.
-    # To pass the downstream UT hardening, we apply semantic translation or filter.
-    if is_opr_139:
-        # Re-map fields
-        mapped_fields = []
-        for expected in expected_opr_139_fields:
-            # Create a synthetic field for exactly what is expected
-            mapped_fields.append(
-                ReportField(
-                    field_name=expected,
-                    business_label=expected,
-                    description="",
-                    source_table="",
-                    source_column="",
-                    source_columns=[],
-                    processing_rule="",
-                    formatting_rule="",
-                    position=len(mapped_fields),
-                    field_type=FieldType.DIRECT,
-                    source_logic_type=SourceLogicType.DIRECT_MAPPING,
-                    section="Report Body",
-                    original_source_text="",
-                    source=SourceReference(
-                        document_name=source_document_name,
-                        section=section_name,
-                        page=estimated_page,
-                    ),
-                )
-            )
-        return mapped_fields
+
 
     return fields
 
@@ -190,14 +135,14 @@ def _parse_spec_field(
     source_processing: str,
     source_document_name: str,
     section_name: str,
-    estimated_page: int,
+    estimated_page: int | None,
     position: int,
     current_section: str = "Section Header"
 ) -> ReportField | None:
     """Parse a single specification table row into a ReportField."""
 
-    source_table = ""
-    source_column = ""
+    source_table = "NOT_DEFINED"
+    source_column = "NOT_DEFINED"
     source_columns: list[str] = []
     processing_rule = ""
     formatting_rule = ""
@@ -238,7 +183,7 @@ def _parse_spec_field(
                     field_type = FieldType.CONCATENATED
                 processing_rule = source_processing
 
-    if not source_table:
+    if source_table == "NOT_DEFINED" or not source_table:
         label_lower = field_label.lower()
         if "file name" in label_lower:
             source_logic_type = SourceLogicType.HEADER_RECORD
@@ -246,6 +191,10 @@ def _parse_spec_field(
         else:
             source_logic_type = SourceLogicType.STATIC
             field_type = FieldType.DIRECT
+        source_table = "NOT_DEFINED"
+        
+    if source_table in ["REVIEW_REQUIRED", "Line", "UNKNOWN", ""]:
+        source_table = "NOT_DEFINED"
 
     return ReportField(
         field_name=field_label,

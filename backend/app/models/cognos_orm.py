@@ -15,12 +15,17 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     Column, Integer, String, Text, Boolean, Float,
-    DateTime, ForeignKey, JSON
+    DateTime, ForeignKey, JSON, Table
 )
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
 
+cognos_test_case_requirements = Table(
+    "cognos_test_case_requirements", Base.metadata,
+    Column("test_case_id", Integer, ForeignKey("cognos_test_cases.id", ondelete="CASCADE"), primary_key=True),
+    Column("requirement_id", Integer, ForeignKey("cognos_requirements.id", ondelete="CASCADE"), primary_key=True)
+)
 
 class CognosGenerationRun(Base):
     """
@@ -32,11 +37,16 @@ class CognosGenerationRun(Base):
     report_id = Column(String, index=True, nullable=False)
     report_title = Column(String, nullable=True)
     source_document = Column(String, nullable=False)
+    source_document_path = Column(String, nullable=True)
     source_document_sha256 = Column(String, nullable=True)
+    job_id = Column(String, nullable=True)
     
     # LLM configuration used
     llm_provider = Column(String, nullable=True)
     llm_model = Column(String, nullable=True)
+    
+    # Store the complete parsed report definition (P1.9 fix)
+    report_definition_json = Column(JSON, nullable=True)
     
     # Stats
     requirements_extracted = Column(Integer, default=0)
@@ -85,8 +95,9 @@ class CognosRequirementModel(Base):
 
     run = relationship("CognosGenerationRun", back_populates="requirements")
     test_cases = relationship(
-        "CognosTestCaseModel", 
-        back_populates="requirement"
+        "CognosTestCaseModel",
+        secondary=cognos_test_case_requirements,
+        back_populates="requirements"
     )
 
 
@@ -98,7 +109,6 @@ class CognosTestCaseModel(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     run_id = Column(Integer, ForeignKey("cognos_generation_runs.id"), nullable=False)
-    requirement_internal_id = Column(Integer, ForeignKey("cognos_requirements.id"), nullable=True)
     
     test_case_id = Column(String, index=True, nullable=False)
     report_id = Column(String, index=True, nullable=False)
@@ -130,9 +140,14 @@ class CognosTestCaseModel(Base):
     
     notes = Column(Text, nullable=True)
     open_questions = Column(Text, nullable=True)
+    evidence_references = Column(JSON, nullable=True)
     
     # Store history of human edits (if applicable in HITL phase)
     edit_history = Column(JSON, nullable=True)
 
     run = relationship("CognosGenerationRun", back_populates="test_cases")
-    requirement = relationship("CognosRequirementModel", back_populates="test_cases")
+    requirements = relationship(
+        "CognosRequirementModel",
+        secondary=cognos_test_case_requirements,
+        back_populates="test_cases"
+    )
