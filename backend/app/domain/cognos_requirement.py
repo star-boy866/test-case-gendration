@@ -66,6 +66,8 @@ class RequirementCategory(str, Enum):
 
     # Layout / Presentation
     LAYOUT = "LAYOUT"
+    REPORT_HEADER = "REPORT_HEADER"
+    SECTION_HEADING = "SECTION_HEADING"
     PAGINATION = "PAGINATION"
     FOOTER = "FOOTER"
 
@@ -137,6 +139,11 @@ class CognosRequirement(BaseModel):
     mapped_test_case_ids: list[str] = Field(default_factory=list)  # Many-to-many link to test cases
 
     @property
+    def source_column(self) -> str:
+        """First source column if available."""
+        return self.source_columns[0] if self.source_columns else ""
+
+    @property
     def is_complete(self) -> bool:
         """A requirement is complete if it has an ID, text, and source."""
         return bool(self.requirement_id and self.requirement_text and self.source_section)
@@ -199,8 +206,11 @@ class ReportFeatures(BaseModel):
     Used by the rules engine to deterministically apply methodology patterns.
 
     Phase 11: has_no_data_evidence added for No Data Validation trigger.
+    Phase 12M: has_report_header and has_report_section_headings added.
     """
     has_layout: Optional[FeatureEvidence] = None
+    has_report_header: Optional[FeatureEvidence] = None             # Phase 12M
+    has_report_section_headings: Optional[FeatureEvidence] = None   # Phase 12M
     has_labels: Optional[FeatureEvidence] = None
     has_sorting: Optional[FeatureEvidence] = None
     has_script_output: Optional[FeatureEvidence] = None
@@ -215,6 +225,7 @@ class ReportFeatures(BaseModel):
     has_lookup_semantics: Optional[FeatureEvidence] = None
     has_distribution: Optional[FeatureEvidence] = None
     has_delivery_destination: Optional[FeatureEvidence] = None
+    has_special_processing: Optional[FeatureEvidence] = None   # Phase 12N
 
     @classmethod
     def extract(cls, requirements: list[CognosRequirement], report_def: 'ReportDefinition') -> 'ReportFeatures':
@@ -249,6 +260,82 @@ class ReportFeatures(BaseModel):
                 reason="Explicit Layout formatting, Presentation Type, or report body fields detected in DSD.",
                 source_section="Report Layout / Report Body",
                 semantic_evidence=layout_evidence[:4],
+                confidence=RequirementConfidence.HIGH
+            )
+
+        # ── 1B. REPORT HEADER (Phase 12M) ────────────────────────────────────
+        header_evidence: list[str] = []
+        if getattr(report_def.layout, 'header_elements', None) and report_def.layout.header_elements:
+            header_evidence.extend([e.element_name for e in report_def.layout.header_elements[:3]])
+        if report_def.metadata.report_id:
+            header_evidence.append(f"Report ID: {report_def.metadata.report_id}")
+        if report_def.metadata.report_title:
+            header_evidence.append(f"Title: {report_def.metadata.report_title}")
+        dept = getattr(report_def.metadata, 'division_department', '') or getattr(report_def.metadata, 'client_division_department', '')
+        if dept:
+            header_evidence.append(f"Department: {dept}")
+        
+        hdr_reqs = [r for r in requirements if r.category in (RequirementCategory.HEADER, RequirementCategory.REPORT_HEADER)]
+        for r in hdr_reqs[:2]:
+            if r.requirement_text not in header_evidence:
+                header_evidence.append(r.requirement_text)
+
+        if header_evidence:
+            f.has_report_header = FeatureEvidence(
+                feature_name="has_report_header",
+                reason="Explicit Report Header fields or layout elements detected in DSD.",
+                source_section="Report Layout",
+                semantic_evidence=header_evidence[:5],
+                confidence=RequirementConfidence.HIGH
+            )
+
+        # ── 1C. REPORT SECTION HEADINGS (Phase 12M) ──────────────────────────
+        section_heading_evidence: list[str] = []
+        if getattr(report_def, 'section_headings', None) and report_def.section_headings:
+            for sh in report_def.section_headings:
+                if sh.section_label and sh.section_label.upper() not in ("N/A", "NONE", ""):
+                    section_heading_evidence.append(f"Section Label: {sh.section_label}")
+        
+        sh_reqs = [r for r in requirements if r.category == RequirementCategory.SECTION_HEADING]
+        for r in sh_reqs:
+            if r.field and r.field.upper() not in ("N/A", "NONE", ""):
+                section_heading_evidence.append(r.requirement_text)
+        
+        # Also check if any report_fields are section headers
+        for rf in getattr(report_def, 'report_fields', []):
+            if rf.section.lower() in ("section header", "section heading") and rf.business_label and rf.business_label.upper() not in ("N/A", "NONE", ""):
+                section_heading_evidence.append(f"Section: {rf.business_label}")
+
+        if section_heading_evidence:
+            f.has_report_section_headings = FeatureEvidence(
+                feature_name="has_report_section_headings",
+                reason="Explicit Report Section Heading definitions detected in DSD.",
+                source_section="Report Section Heading",
+                semantic_evidence=section_heading_evidence[:5],
+                confidence=RequirementConfidence.HIGH
+            )
+
+        # ── 1D. SPECIAL PROCESSING (Phase 12N) ────────────────────────────────
+        sp_evidence: list[str] = []
+        if getattr(report_def, 'special_processing', None):
+            for sp in report_def.special_processing:
+                ev_str = sp.raw_rule_text or (f"{sp.source_column} -> {sp.lookup_table}.{sp.lookup_description_column}" if sp.source_column and sp.lookup_table else "")
+                if not ev_str and sp.description:
+                    ev_str = sp.description
+                if ev_str and ev_str not in sp_evidence:
+                    sp_evidence.append(ev_str)
+        
+        sp_reqs = [r for r in requirements if r.category == RequirementCategory.SPECIAL_PROCESSING]
+        for r in sp_reqs:
+            if r.requirement_text and r.requirement_text not in sp_evidence:
+                sp_evidence.append(r.requirement_text)
+
+        if sp_evidence:
+            f.has_special_processing = FeatureEvidence(
+                feature_name="has_special_processing",
+                reason="Explicit special processing / code-to-description lookup rule detected.",
+                source_section="Report Special Processing",
+                semantic_evidence=sp_evidence[:5],
                 confidence=RequirementConfidence.HIGH
             )
 

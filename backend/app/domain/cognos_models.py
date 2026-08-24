@@ -149,6 +149,14 @@ class SelectionCriterion(BaseModel):
     description: str = ""
     source: SourceReference = Field(default_factory=SourceReference)
 
+    @property
+    def report_selection_criteria(self) -> str:
+        return self.filter_logic or self.field
+
+    @property
+    def report_field(self) -> str:
+        return self.field
+
 
 # ---------------------------------------------------------------------------
 # Sort, Control Break, Total, Count
@@ -213,12 +221,21 @@ class OutputDefinition(BaseModel):
 # ---------------------------------------------------------------------------
 
 class SpecialProcessingItem(BaseModel):
-    """A single special processing use case or version variant."""
+    """A single special processing rule, lookup, or use case from Report Special Processing."""
     use_case: str = ""
     version: str = ""
     naming_convention: str = ""
     description: str = ""
     source_code: str = ""
+    processing_type: str = "CODE_TO_DESCRIPTION_LOOKUP"  # Phase 12N
+    source_table: str = ""
+    source_column: str = ""
+    lookup_table: str = ""
+    lookup_code_column: str = ""
+    lookup_description_column: str = ""
+    lookup_domain: str = ""
+    raw_rule_text: str = ""
+    sql_example: str = ""
     source: SourceReference = Field(default_factory=SourceReference)
 
 
@@ -294,6 +311,14 @@ class ReportField(BaseModel):
     source: SourceReference = Field(default_factory=SourceReference)
 
 
+class SectionHeadingDefinition(BaseModel):
+    """Report section heading item from DSD Report Section Heading (opt)."""
+    section_label: str = ""
+    section_description: str = ""
+    section_processing_rules: str = ""
+    source: SourceReference = Field(default_factory=SourceReference)
+
+
 # ---------------------------------------------------------------------------
 # Top-Level Report Definition
 # ---------------------------------------------------------------------------
@@ -317,6 +342,7 @@ class ReportDefinition(BaseModel):
     output: OutputDefinition = Field(default_factory=OutputDefinition)
     special_processing: list[SpecialProcessingItem] = Field(default_factory=list)
     layout: LayoutDefinition = Field(default_factory=LayoutDefinition)
+    section_headings: list[SectionHeadingDefinition] = Field(default_factory=list)  # Phase 12M
     report_fields: list[ReportField] = Field(default_factory=list)
 
     # Document-level metadata

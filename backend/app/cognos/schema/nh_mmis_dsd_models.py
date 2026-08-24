@@ -33,6 +33,7 @@ class ReportGeneration(ProvenanceMixin):
 class SelectionCriteria(ProvenanceMixin):
     report_selection_criteria: str = ""
     report_field: str = ""
+    prompt: bool = False
 
 class Parameter(ProvenanceMixin):
     parameter_description: str = ""
@@ -70,6 +71,22 @@ class Layout(ProvenanceMixin):
     report_title_line: str = ""
     report_section_label_names: str = ""
 
+class ReportSectionHeadingRow(ProvenanceMixin):
+    section_label: str = ""
+    section_description: str = ""
+    section_processing_rules: str = ""
+
+class ReportSpecialProcessingRow(ProvenanceMixin):
+    raw_rule_text: str = ""
+    processing_type: str = "CODE_TO_DESCRIPTION_LOOKUP"  # Phase 12N
+    source_table: str = ""
+    source_column: str = ""
+    lookup_table: str = ""
+    lookup_code_column: str = ""
+    lookup_description_column: str = ""
+    lookup_domain: str = ""
+    sql_example: str = ""
+
 class ReportSpecificationRow(ProvenanceMixin):
     business_label: str = ""
     field_description: str = ""
@@ -90,4 +107,6 @@ class NhMmisDsd(BaseModel):
     output: Optional[Output] = None
     retention: Optional[Retention] = None
     layout: Optional[Layout] = None
+    report_section_headings: List[ReportSectionHeadingRow] = Field(default_factory=list)  # Phase 12M
+    special_processing: List[ReportSpecialProcessingRow] = Field(default_factory=list)    # Phase 12N
     report_specification: List[ReportSpecificationRow] = Field(default_factory=list)

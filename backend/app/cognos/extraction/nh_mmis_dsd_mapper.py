@@ -9,6 +9,8 @@ from app.domain.cognos_models import (
     CountDefinition,
     OutputDefinition,
     LayoutDefinition,
+    SectionHeadingDefinition,
+    SpecialProcessingItem,
     ReportField,
     SourceReference,
     SortDirection,
@@ -185,5 +187,41 @@ def map_dsd_to_domain(dsd: NhMmisDsd, source_document_name: str) -> DomainReport
         if rsr.source_column:
             rf.source_columns.append(rsr.source_column)
         domain_rd.report_fields.append(rf)
+
+    # Section Headings (Phase 12M)
+    for sh in getattr(dsd, 'report_section_headings', []):
+        domain_rd.section_headings.append(SectionHeadingDefinition(
+            section_label=sh.section_label,
+            section_description=sh.section_description,
+            section_processing_rules=sh.section_processing_rules,
+            source=SourceReference(
+                document_name=sh.source_document,
+                page=sh.source_page,
+                section=sh.source_section,
+                table_index=sh.table_index
+            )
+        ))
+
+    # Special Processing (Phase 12N)
+    for sp in getattr(dsd, 'special_processing', []):
+        domain_rd.special_processing.append(SpecialProcessingItem(
+            use_case="Special Processing",
+            description=sp.raw_rule_text[:500] if sp.raw_rule_text else f"Code-to-description lookup for {sp.source_column}",
+            processing_type=sp.processing_type or "CODE_TO_DESCRIPTION_LOOKUP",
+            source_table=sp.source_table,
+            source_column=sp.source_column,
+            lookup_table=sp.lookup_table,
+            lookup_code_column=sp.lookup_code_column,
+            lookup_description_column=sp.lookup_description_column,
+            lookup_domain=sp.lookup_domain,
+            raw_rule_text=sp.raw_rule_text,
+            sql_example=sp.sql_example,
+            source=SourceReference(
+                document_name=sp.source_document,
+                page=sp.source_page,
+                section=sp.source_section,
+                table_index=sp.table_index
+            )
+        ))
 
     return domain_rd

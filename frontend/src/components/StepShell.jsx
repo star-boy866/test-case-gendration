@@ -74,7 +74,9 @@ export default function StepShell({ children }) {
         })}
       </nav>
 
-      <main className="mx-auto max-w-4xl px-6 py-8">{children}</main>
+      <main className={location.pathname === "/cognos" ? "w-full" : "mx-auto max-w-4xl px-6 py-8"}>
+        {children}
+      </main>
     </div>
   );
 }

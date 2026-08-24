@@ -7,7 +7,9 @@ from pathlib import Path
 from datetime import datetime, timezone
 import hashlib
 import subprocess
-import fitz
+import logging
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from fastapi.responses import FileResponse
@@ -25,6 +27,8 @@ from app.models.cognos_orm import (
     CognosRequirementModel,
     CognosTestCaseModel
 )
+from app.cognos.rules.scenario_patterns import discover_applicable_patterns
+
 
 router = APIRouter(prefix="/api/cognos", tags=["cognos"])
 
@@ -179,6 +183,7 @@ async def upload_and_generate(
                 status=tc.status.value if hasattr(tc.status, 'value') else tc.status,
                 origin=tc.origin.value if hasattr(tc.origin, 'value') else tc.origin,
                 version=tc.version,
+                scenario_order=tc.scenario_order,
                 notes=tc.notes,
                 open_questions=tc.open_questions,
                 evidence_references=[er.model_dump() for er in tc.evidence_references] if getattr(tc, "evidence_references", None) else None
@@ -232,12 +237,42 @@ async def upload_and_generate(
                         ev["snapshot_url"] = f"/api/cognos/runs/{run.id}/evidence/{ev_id}"
             test_cases_out.append(tc_dict)
 
+        # Retrieve methodology applicability (already computed during test generation, but we re-fetch the report here for the UI)
+        methodology_report = discover_applicable_patterns(
+            pipeline_result.requirement_set.requirements, 
+            pipeline_result.report_definition
+        )
+        
+        # We need to manually convert the MethodologyApplicabilityReport and its nested enums to JSON-serializable dicts
+        # Pydantic's model_dump doesn't apply because it's a dataclass, and asdict might not serialize enums.
+        import dataclasses
+        def _serialize_methodology_report(report):
+            from app.domain.cognos_requirement import RequirementConfidence
+            from enum import Enum
+            import typing
+            def _clean(obj: typing.Any) -> typing.Any:
+                if isinstance(obj, Enum):
+                    return obj.value
+                elif isinstance(obj, dict):
+                    return {k: _clean(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [_clean(i) for i in obj]
+                elif dataclasses.is_dataclass(obj):
+                    return _clean(dataclasses.asdict(obj))
+                elif hasattr(obj, 'model_dump'):
+                    return obj.model_dump()
+                return obj
+            return _clean(report)
+
         return {
             "run_id": run.id,
             "report_id": run.report_id,
             "status": "success",
+            "report_definition": pipeline_result.report_definition.model_dump(),
             "summary": pipeline_result.test_suite.summary.model_dump(),
             "coverage": pipeline_result.test_suite.coverage.model_dump(),
+            "methodology_applicability": _serialize_methodology_report(methodology_report),
+            "requirements": [r.model_dump() for r in pipeline_result.requirement_set.requirements],
             "test_cases": test_cases_out,
             "requirement_count": requirement_count,
             "test_case_count": test_case_count
@@ -291,67 +326,105 @@ def get_source_snapshot(
     run_id: int,
     evidence_id: str = "",
     section: str = "",
+    methodology: str = "",
+    target_field: str = "",
+    evidence_scope: str = "",
+    test_case_id: str = "",
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_role("tester")),
 ):
     """
-    Serve the PNG rasterization of the canonical source document's target page using Playwright.
+    Serve the PNG rasterization of the canonical source document's target region using Playwright.
     """
+    logger.info(
+        f"[SOURCE_SNAPSHOT REQUEST] run_id={run_id}, evidence_id='{evidence_id}', "
+        f"test_case_id='{test_case_id}', methodology='{methodology}', "
+        f"section='{section}', target_field='{target_field}', evidence_scope='{evidence_scope}'"
+    )
+
     run = db.query(CognosGenerationRun).filter(CognosGenerationRun.id == run_id).first()
     if not run:
+        logger.warning(f"[SOURCE_SNAPSHOT 404] Run {run_id} not found in DB.")
         raise HTTPException(status_code=404, detail="Run not found.")
         
     if not run.source_document_path:
+        logger.warning(f"[SOURCE_SNAPSHOT 404] Run {run_id} has no source_document_path.")
         raise HTTPException(status_code=404, detail="Run does not have an associated source document path.")
         
     source_path = Path(run.source_document_path)
     if not source_path.exists():
+        logger.warning(f"[SOURCE_SNAPSHOT 404] Source document not found at {source_path}.")
         raise HTTPException(status_code=404, detail="Source document not found on disk.")
 
     evidence_dir = source_path.parent.parent / "evidence"
     evidence_dir.mkdir(parents=True, exist_ok=True)
     
-    # Safe fallback if evidence_id isn't provided
-    safe_evidence_id = evidence_id or "default"
-    png_path = evidence_dir / f"source_snapshot_{safe_evidence_id}.png"
+    # Phase 12O.1: Layout Validation snapshot cache key is page-level
+    if methodology == "LAYOUT_VALIDATION" or evidence_scope == "FULL_REPORT_LAYOUT":
+        png_path = evidence_dir / f"source_snapshot_{run_id}_REPORT_LAYOUT_FULL.png"
+        target_field = ""
+        evidence_scope = "FULL_REPORT_LAYOUT"
+        section = "Report Layout"
+    else:
+        # Safe fallback if evidence_id isn't provided
+        safe_evidence_id = evidence_id or (f"snap_{test_case_id}_{methodology[:6]}" if (test_case_id or methodology) else "default")
+        png_path = evidence_dir / f"source_snapshot_{safe_evidence_id}.png"
 
-    if png_path.exists():
+    # Cache check: return cached PNG if file exists and has size > 0
+    if png_path.exists() and png_path.stat().st_size > 0:
+        logger.info(f"[SOURCE_SNAPSHOT CACHE HIT] {png_path} ({png_path.stat().st_size} bytes)")
         return FileResponse(path=png_path, media_type="image/png")
 
     render_script = Path(__file__).parent.parent.parent / "render" / "render_snapshot.js"
     
     # Try to find node executable path (fallback if 'node' not in PATH)
     node_cmd = "node"
+    args = [
+        str(render_script),
+        str(source_path),
+        str(png_path),
+        section or "",
+        run.report_id or "",
+        methodology or "",
+        target_field or "",
+        evidence_scope or ""
+    ]
     
+    logger.info(f"[SOURCE_SNAPSHOT RENDER] Starting render_snapshot.js for {png_path.name}...")
     try:
         res = subprocess.run(
-            [node_cmd, str(render_script), str(source_path), str(png_path), section, run.report_id or ""],
+            [node_cmd] + args,
             check=True,
             capture_output=True,
             text=True
         )
+        logger.info(f"[SOURCE_SNAPSHOT RENDER STDOUT] {res.stdout.strip()}")
     except FileNotFoundError:
         # If 'node' is not in path, try hardcoded paths for this specific environment
         try:
             node_cmd = r"D:\Tools\node-v26.5.0-win-x64\node-v26.5.0-win-x64\node.exe"
             res = subprocess.run(
-                [node_cmd, str(render_script), str(source_path), str(png_path), section, run.report_id or ""],
+                [node_cmd] + args,
                 check=True,
                 capture_output=True,
                 text=True
             )
+            logger.info(f"[SOURCE_SNAPSHOT RENDER STDOUT] {res.stdout.strip()}")
         except Exception as fallback_e:
+            logger.error(f"[SOURCE_SNAPSHOT NODE ERROR] Node execution failed: {fallback_e}")
             raise HTTPException(status_code=404, detail=f"Visual source preview unavailable (Node not found: {str(fallback_e)})")
     except subprocess.CalledProcessError as e:
-        # Playwright rendering failed
-        print(f"Snapshot render failed: {e.stderr}")
-        raise HTTPException(status_code=404, detail="Visual source preview unavailable")
+        logger.error(f"[SOURCE_SNAPSHOT PROCESS ERROR] Return code {e.returncode}. Stderr: {e.stderr}")
+        raise HTTPException(status_code=404, detail=f"Visual source preview unavailable: {e.stderr or e.stdout}")
     except Exception as e:
+        logger.error(f"[SOURCE_SNAPSHOT ERROR] {str(e)}")
         raise HTTPException(status_code=404, detail=f"Visual source preview unavailable ({str(e)})")
 
-    if not png_path.exists():
+    if not png_path.exists() or png_path.stat().st_size == 0:
+        logger.error(f"[SOURCE_SNAPSHOT MISSING] Output file {png_path} was not created or empty.")
         raise HTTPException(status_code=404, detail="Visual source preview unavailable (image not saved)")
         
+    logger.info(f"[SOURCE_SNAPSHOT CREATED] {png_path} ({png_path.stat().st_size} bytes)")
     return FileResponse(path=png_path, media_type="image/png")
 
 
@@ -401,20 +474,25 @@ def get_evidence_image(
     # Security: Ensure evidence_id is just a filename
     evidence_id = Path(evidence_id).name
     
-    # Path is jobs/<job_id>/evidence/<evidence_id>
-    img_path = Path("jobs") / run.job_id / "evidence" / evidence_id
+    candidate_paths = [
+        Path("jobs") / (run.job_id or "") / "evidence" / evidence_id,
+        Path("jobs") / (run.job_id or "") / "evidence" / f"{evidence_id}.png",
+        Path("runs") / str(run.id) / "evidence" / evidence_id,
+        Path("runs") / str(run.id) / "evidence" / f"{evidence_id}.png",
+    ]
     
-    if not img_path.exists() or not img_path.is_file():
+    img_path = None
+    for p in candidate_paths:
+        if p.exists() and p.is_file() and p.stat().st_size > 0:
+            img_path = p
+            break
+            
+    if img_path is None:
         raise HTTPException(status_code=404, detail="Evidence image not found.")
         
     ext = img_path.suffix.lower()
     if ext not in (".png", ".jpg", ".jpeg"):
         raise HTTPException(status_code=400, detail="Requested file is not a supported image type.")
-        
-    if img_path.stat().st_size == 0:
-        raise HTTPException(status_code=400, detail="Requested file has zero size.")
-        
-    # --- PHASE 10.8J FAIL-SAFE: REJECT OLD FALLBACK ERROR IMAGES ---
     try:
         from PIL import Image
         with Image.open(img_path) as img:

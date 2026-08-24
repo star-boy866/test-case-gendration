@@ -24,6 +24,7 @@ import os
 from app.domain.cognos_test_case import TestSuite
 from app.domain.cognos_requirement import RequirementSet, RequirementCategory
 from app.domain.reporting_context import FinalReportContext
+from app.cognos.rules import order_cognos_test_cases
 
 
 # Color palette
@@ -160,7 +161,8 @@ def _build_primary_test_sheet(wb: Workbook, ts: TestSuite) -> None:
     _REVIEW_FILL = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
     _OPEN_ITEM_FILL = PatternFill(start_color="FFE4E1", end_color="FFE4E1", fill_type="solid")
 
-    for row_idx, tc in enumerate(ts.test_cases, start=2):
+    ordered_cases = order_cognos_test_cases(ts.test_cases)
+    for row_idx, tc in enumerate(ordered_cases, start=2):
         evidences_str = "\n".join(
             [f"- {e.description} ({e.placeholder})" for e in tc.evidence_requirements]
         ) if tc.evidence_requirements else tc.evidence_required

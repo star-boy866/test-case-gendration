@@ -33,6 +33,7 @@ class TestType(str, Enum):
 class TestCaseStatus(str, Enum):
     DRAFT = "Draft"
     GENERATED = "Generated"
+    REVIEW_REQUIRED = "Review Required"
     REVIEWED = "Reviewed"
     APPROVED = "Approved"
     DEPRECATED = "Deprecated"
@@ -61,6 +62,9 @@ class EvidenceReference(BaseModel):
     crop_path: str = ""
     bounding_box: dict = Field(default_factory=dict)
     description: str = ""
+    evidence_scope: str = ""
+    target_field: str = ""
+    methodology: str = ""
 
 
 
@@ -134,6 +138,23 @@ class CognosTestCase(BaseModel):
     llm_refinement_status: str = "NOT_ATTEMPTED"  # NOT_ATTEMPTED | REFINED | FALLBACK
     confidence: str = "High"         # High | Medium | Low — extraction confidence level
     methodology_pattern: str = ""    # The methodology family this test belongs to
+
+    # --- Added for Phase 12K & 12N (Dynamic SQL Generation, Source & Lookup Mapping) ---
+    selection_criteria: str = ""     # Authoritative selection criteria from DSD
+    validation_sql: str = ""         # Deterministic validation SQL query
+    sql_status: str = ""             # AVAILABLE | REQUIRES_COMPLETION | UNAVAILABLE
+    sql_reason: str = ""             # Explanation when SQL requires completion or is unavailable
+    expected_validation: str = ""    # Human-friendly expected database validation outcome
+    source_mappings: list[dict] = Field(default_factory=list) # Authoritative field -> column mappings
+    traceability_source: str = ""    # e.g., "Selection Criteria • Report Specification / Report Body"
+    lookup_table: str = ""           # Phase 12N Special Processing lookup table (e.g. R_VV_TB)
+    lookup_code_column: str = ""     # Phase 12N Lookup code column (e.g. R_VV_CD)
+    lookup_description_column: str = "" # Phase 12N Lookup description column (e.g. R_VV_SHORT_DESC)
+    lookup_domain: str = ""          # Phase 12N Lookup domain (e.g. P_REVLDTN_STAT_CD)
+    special_processing_type: str = "" # Phase 12N CODE_TO_DESCRIPTION_LOOKUP, etc.
+    sort_field: str = ""             # Phase 12K.3 Sort field name (e.g. Prov Lic Cert Num)
+    sort_direction: str = ""         # Phase 12K.3 Sort direction (Ascending / Descending)
+    scenario_order: int = 0          # Phase 12Q Authoritative execution scenario order (10, 20, ..., 240)
 
     @property
     def requirement_id(self) -> str:

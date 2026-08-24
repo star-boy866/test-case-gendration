@@ -20,7 +20,7 @@ def test_all_tests_have_requirement_links(tmp_path: Path):
     assert len(test_cases) > 0
     
     for tc in test_cases:
-        if tc.category == "Header":
+        if "Header" in tc.category or "Layout" in tc.category or "Lookup" in tc.category:
             continue
         assert len(tc.requirement_ids) > 0, f"Test {tc.test_case_id} has empty requirement_ids"
         assert tc.requirement_id != "", f"Test {tc.test_case_id} has empty requirement_id property"

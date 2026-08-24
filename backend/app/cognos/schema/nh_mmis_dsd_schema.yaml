@@ -24,6 +24,7 @@ report_generation:
 selection_criteria:
   - report_selection_criteria: string
     report_field: string
+    prompt: boolean
 
 parameters:
   - parameter_description: string

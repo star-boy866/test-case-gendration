@@ -48,6 +48,7 @@ from app.cognos.rules import (
     detect_and_mark_duplicates,
     assign_test_case_ids,
     validate_test_cases,
+    order_cognos_test_cases,
 )
 from app.cognos.validation.coverage_analyzer import (
     compute_coverage,
@@ -213,10 +214,14 @@ def run_cognos_pipeline(
             test_case_id=tc.test_case_id,
         )
         if snap_ref:
-            # Guard: do not append a duplicate snapshot (same section already present)
-            existing_sections = {ev.section for ev in tc.evidence_references}
-            if snap_ref.section not in existing_sections:
+            # Guard: ensure both SEMANTIC proof and SOURCE snapshot are retained without duplicate snapshot types
+            existing_types = {ev.evidence_type for ev in tc.evidence_references}
+            if "SOURCE_DSD_SNAPSHOT" not in existing_types:
                 tc.evidence_references.append(snap_ref)
+
+    # --- Stage 6.3: Deterministic SQL Generation & Source Mapping (PHASE 12K) ---
+    from app.cognos.rules.sql_generator import DeterministicSqlGenerator
+    DeterministicSqlGenerator.enrich_test_cases(test_cases, report_def, req_set)
 
     # --- Stage 6.5: LLM Assist Layer (Optional) ---
     if use_llm_assist:
@@ -234,7 +239,13 @@ def run_cognos_pipeline(
             
         test_cases = refined_test_cases
 
-    # --- Stage 7: Compute coverage ---
+    # --- Stage 7: Compute coverage & order test cases ---
+    test_cases = order_cognos_test_cases(test_cases)
+    
+    # Assert unique test case IDs
+    tc_ids = [tc.test_case_id for tc in test_cases]
+    assert len(tc_ids) == len(set(tc_ids)), f"Duplicate test_case_id found: {[id for id in tc_ids if tc_ids.count(id) > 1]}"
+
     coverage = compute_coverage(req_set, test_cases, report_def)
 
     # --- Stage 8: Build traceability matrix ---

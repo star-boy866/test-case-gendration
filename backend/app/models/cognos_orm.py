@@ -141,6 +141,8 @@ class CognosTestCaseModel(Base):
     notes = Column(Text, nullable=True)
     open_questions = Column(Text, nullable=True)
     evidence_references = Column(JSON, nullable=True)
+    # Phase 12Q Authoritative scenario execution order
+    scenario_order = Column(Integer, nullable=True, default=0)
     
     # Store history of human edits (if applicable in HITL phase)
     edit_history = Column(JSON, nullable=True)

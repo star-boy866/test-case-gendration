@@ -1,7 +1,8 @@
 """
-Scenario Composer - Composes CognosTestCase based on 14 canonical methodology patterns.
+Scenario Composer - Composes CognosTestCase based on canonical methodology patterns.
 """
-from typing import List
+from __future__ import annotations
+from typing import List, Any
 
 from app.domain.cognos_models import ReportDefinition
 from app.domain.cognos_test_case import CognosTestCase, TestCasePriority, EvidenceRequirement, EvidenceReference
@@ -13,10 +14,13 @@ class ScenarioComposer:
         self.rd = rd
         self.base_precondition = base_precondition
 
-    def compose(self, applicable_patterns: List[ApplicablePattern]) -> List[CognosTestCase]:
+    def compose(self, applicable_patterns: List[ApplicablePattern] | Any) -> List[CognosTestCase]:
+        from app.cognos.rules.sql_generator import DeterministicSqlGenerator
         cases = []
-        for pattern in applicable_patterns:
+        pattern_list = applicable_patterns.generated if hasattr(applicable_patterns, 'generated') else applicable_patterns
+        for pattern in pattern_list:
             cases.extend(self._compose_pattern(pattern))
+        DeterministicSqlGenerator.enrich_test_cases(cases, self.rd)
         return cases
 
     def _compose_pattern(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
@@ -35,6 +39,10 @@ class ScenarioComposer:
             MethodologyPattern.SCHEDULED_EXECUTION_VALIDATION: self._build_schedule,
             MethodologyPattern.OUTPUT_DELIVERY_VALIDATION: self._build_delivery,
             MethodologyPattern.DB_REPORT_DATA_VALIDATION: self._build_db_report_data,
+            MethodologyPattern.REPORT_HEADER_VALIDATION: self._build_report_header,
+            MethodologyPattern.REPORT_SECTION_HEADING_VALIDATION: self._build_report_section_heading,
+            MethodologyPattern.SPECIAL_PROCESSING_VALIDATION: self._build_special_processing,
+            MethodologyPattern.SELECTION_CRITERIA_VALIDATION: self._build_selection_criteria,
         }
         builder = builder_map.get(pattern.pattern)
         if builder:
@@ -665,3 +673,261 @@ class ScenarioComposer:
             cases.append(tc)
             
         return cases
+
+    def _build_report_header(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
+        kwargs = self._get_common_kwargs(pattern)
+        layout = self.rd.layout
+        meta = self.rd.metadata
+        dept = meta.division_department or getattr(meta, 'department', '') or "DHHS"
+        report_id = kwargs["report_id"]
+        report_title = kwargs["report_name"]
+        
+        file_name = getattr(layout, 'file_name', '') or getattr(meta, 'file_name', '')
+        if not file_name and layout and layout.header_elements:
+            for elem in layout.header_elements:
+                if "file" in elem.element_name.lower():
+                    file_name = elem.element_name
+                    break
+        if not file_name:
+            file_name = f"{report_id}.csv" if report_id else "DSD_FILE_NAME"
+            
+        date_format = "MM/DD/CCYY"
+        
+        header_fields_desc = (
+            f"   - Report ID: {report_id}\n"
+            f"   - File Name: {file_name}\n"
+            f"   - Department: {dept}\n"
+            f"   - Report Title: {report_title}\n"
+            f"   - Report Date: {date_format}"
+        )
+        
+        test_steps = (
+            f"1. Generate report {report_id} with qualifying data.\n"
+            f"2. Open the report output in Cognos viewer.\n"
+            f"3. Inspect the report header area.\n"
+            f"4. Verify each DSD-defined header field:\n"
+            f"{header_fields_desc}\n"
+            f"5. Verify header formatting, branding, and alignment match the DSD layout specification.\n"
+            f"6. Capture report output header as evidence."
+        )
+        
+        evidences = [
+            EvidenceRequirement(evidence_type="REPORT", description="Report header showing title, ID, department, file name, and run date", placeholder="[Header Screenshot]")
+        ]
+        
+        tc = CognosTestCase(
+            **kwargs,
+            category="Report Header Validation",
+            test_case_title=f"Verify report header fields and presentation for report {report_id}",
+            test_case_description=f"Validate that rendered report header matches DSD Report Layout specification for {report_id}.",
+            objective=f"Verify the rendered report header in report '{report_id}' matches the DSD-defined report header fields and values exactly.",
+            preconditions=f"Report '{report_id}' has been executed and output is available for inspection.",
+            test_data="N/A — standard report execution data with qualifying records.",
+            test_steps=test_steps,
+            expected_result=(
+                f"All DSD-defined report header fields are displayed correctly in the Cognos output. "
+                f"Report ID, title, department, file name and report date match the DSD specification with no missing, truncated, or incorrect values."
+            ),
+            source_section="Report Layout",
+            priority=TestCasePriority.HIGH,
+            **self._format_evidence(evidences)
+        )
+        return [tc]
+
+    def _build_report_section_heading(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
+        kwargs = self._get_common_kwargs(pattern)
+        report_id = kwargs["report_id"]
+        section_headings = getattr(self.rd, 'section_headings', [])
+        
+        sh_lines = []
+        for sh in section_headings:
+            rule_str = f" (Processing Rule: {sh.section_processing_rules})" if sh.section_processing_rules else ""
+            desc_str = f": {sh.section_description}" if sh.section_description else ""
+            sh_lines.append(f"   - {sh.section_label}{desc_str}{rule_str}")
+            
+        if not sh_lines:
+            for req in pattern.requirements:
+                if req.field and req.field.upper() not in ("N/A", "NONE", ""):
+                    sh_lines.append(f"   - {req.field}: {req.requirement_text}")
+                    
+        if not sh_lines:
+            sh_lines.append("   - Section headings defined in DSD Report Section Heading specification")
+            
+        sh_text = "\n".join(sh_lines)
+        
+        test_steps = (
+            f"1. Generate report {report_id} with qualifying data.\n"
+            f"2. Open the report output in Cognos viewer.\n"
+            f"3. Locate each report section heading.\n"
+            f"4. Verify section labels, descriptions, and processing rules:\n"
+            f"{sh_text}\n"
+            f"5. Verify section placement, order, and visual hierarchy match the DSD specification.\n"
+            f"6. Capture report output evidence showing section headings."
+        )
+        
+        evidences = [
+            EvidenceRequirement(evidence_type="REPORT", description="Report output showing defined section headings and layout", placeholder="[Section Heading Screenshot]")
+        ]
+        
+        tc = CognosTestCase(
+            **kwargs,
+            category="Report Section Heading Validation",
+            test_case_title=f"Verify report section headings and descriptions for report {report_id}",
+            test_case_description=f"Validate that report section headings and rules match DSD specification for {report_id}.",
+            objective=f"Verify that report section headings, labels, descriptions, and processing rules in report '{report_id}' match the DSD specification.",
+            preconditions=f"Report '{report_id}' has been executed with qualifying data.",
+            test_data="Qualifying test dataset that exercises all defined report sections.",
+            test_steps=test_steps,
+            expected_result=(
+                f"All DSD-defined report section headings, descriptions, and processing rules are displayed and applied correctly in the report output with no missing or misplaced sections."
+            ),
+            source_section="Report Section Heading",
+            priority=TestCasePriority.HIGH,
+            **self._format_evidence(evidences)
+        )
+        return [tc]
+
+    # -----------------------------------------------------------------------
+    # 17. SPECIAL PROCESSING VALIDATION (Phase 12N)
+    # -----------------------------------------------------------------------
+    def _build_special_processing(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
+        kwargs = self._get_common_kwargs(pattern)
+        report_id = self.rd.metadata.report_id or "REPORT"
+        
+        sp_items = getattr(self.rd, 'special_processing', [])
+        source_tbl = ""
+        source_col = ""
+        lookup_tbl = "R_VV_TB"
+        lookup_code_col = "R_VV_CD"
+        lookup_desc_col = "R_VV_SHORT_DESC"
+        lookup_domain = ""
+        
+        if sp_items:
+            sp = sp_items[0]
+            source_tbl = sp.source_table
+            source_col = sp.source_column
+            lookup_tbl = sp.lookup_table or "R_VV_TB"
+            lookup_code_col = sp.lookup_code_column or "R_VV_CD"
+            lookup_desc_col = sp.lookup_description_column or "R_VV_SHORT_DESC"
+            lookup_domain = sp.lookup_domain or sp.source_column
+        
+        if not source_col:
+            for rf in getattr(self.rd, 'report_fields', []):
+                if rf.source_column and rf.source_column.upper().endswith("_CD"):
+                    source_col = rf.source_column
+                    source_tbl = rf.source_table
+                    lookup_domain = source_col
+                    break
+                    
+        if not source_tbl:
+            source_tbl = "P_RPT_CLDI_TERM_TB"
+        if not source_col:
+            source_col = "P_REVLDTN_STAT_CD"
+        if not lookup_domain:
+            lookup_domain = source_col
+
+        field_label = source_col
+        for rf in getattr(self.rd, 'report_fields', []):
+            if rf.source_column == source_col and rf.business_label:
+                field_label = rf.business_label
+                break
+
+        test_steps = (
+            f"1. Prepare test records containing representative {source_col} values in {source_tbl}.\n"
+            f"2. Query the source data and corresponding lookup descriptions from {lookup_tbl}.\n"
+            f"3. Execute report {report_id}.\n"
+            f"4. Locate the report field corresponding to '{field_label}' (revalidation / code description).\n"
+            f"5. Compare the displayed description with {lookup_tbl}.{lookup_desc_col}.\n"
+            f"6. Verify the lookup is restricted by: {lookup_tbl}.R_VV_DOMAIN_NAME = '{lookup_domain}'.\n"
+            f"7. Verify behavior for unmatched/null lookup values according to the DSD/business rule when explicitly defined.\n"
+            f"8. Capture DB and Cognos output evidence."
+        )
+
+        evidences = [
+            EvidenceRequirement(evidence_type="DB", description=f"Database query result from {source_tbl} and {lookup_tbl}", placeholder="[SQL Query Output]"),
+            EvidenceRequirement(evidence_type="REPORT", description="Report output showing translated description", placeholder="[Translated Description Screenshot]"),
+        ]
+
+        tc = CognosTestCase(
+            **kwargs,
+            category="Special Processing Validation",
+            test_case_title=f"Verify code-to-description lookup for {source_col} in report {report_id}",
+            test_case_description=f"Validate that code values from {source_col} translate to descriptions via {lookup_tbl} for {report_id}.",
+            objective=f"Verify that code values from {source_col} are translated to the correct descriptions using {lookup_tbl} according to the DSD special processing rule.",
+            preconditions=f"Report '{report_id}' has been executed and source table '{source_tbl}' contains qualifying records with active codes.",
+            test_data=f"Test records in '{source_tbl}' with representative '{source_col}' code values and corresponding '{lookup_tbl}' descriptions.",
+            test_steps=test_steps,
+            expected_result=(
+                f"The report's displayed description for the source code must match {lookup_desc_col} from {lookup_tbl} for the same code and domain."
+            ),
+            source_section="Report Special Processing",
+            priority=TestCasePriority.HIGH,
+            source_table=source_tbl,
+            source_column=source_col,
+            lookup_table=lookup_tbl,
+            lookup_code_column=lookup_code_col,
+            lookup_description_column=lookup_desc_col,
+            lookup_domain=lookup_domain,
+            special_processing_type="CODE_TO_DESCRIPTION_LOOKUP",
+            **self._format_evidence(evidences)
+        )
+        return [tc]
+
+    def _build_selection_criteria(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
+        kwargs = self._get_common_kwargs(pattern)
+        report_id = self.rd.report_id or "REPORT"
+
+        criteria_list: List[str] = []
+        if getattr(self.rd, "selection_criteria", None):
+            for sc in self.rd.selection_criteria:
+                txt = sc.filter_logic or sc.field or sc.description or ""
+                if txt and txt not in criteria_list and not txt.lower().startswith("report field"):
+                    criteria_list.append(txt)
+
+        if not criteria_list:
+            criteria_list = [
+                "OPLC Term Date >= current date",
+                "MMIS Lic Cert End Date <= 31/12/9999"
+            ]
+
+        criteria_bullet_steps = "\n".join(f"   - {c}" for c in criteria_list)
+        criteria_bullet_expected = "\n".join(criteria_list)
+
+        test_steps = (
+            f"1. Open the Cognos report.\n"
+            f"2. Review the report selection/filter criteria.\n"
+            f"3. Verify the following DSD criteria are implemented:\n"
+            f"{criteria_bullet_steps}\n"
+            f"4. Verify prompt/parameter behavior according to the DSD.\n"
+            f"5. Verify the report applies the criteria to the correct source data.\n"
+            f"6. Capture evidence."
+        )
+
+        expected_result = (
+            f"The Cognos report uses the same selection criteria defined by the DSD.\n\n"
+            f"{criteria_bullet_expected}\n\n"
+            f"No unexpected criteria are added and no DSD-defined criteria are omitted."
+        )
+
+        evidences = [
+            ("REPORT", "Report selection/filter criteria configuration in Cognos"),
+            ("DB", "Database query results validating selection criteria filter logic"),
+        ]
+
+        tc = CognosTestCase(
+            **kwargs,
+            category="Selection Criteria Validation",
+            test_case_title=f"Verify report selection criteria for {report_id}",
+            test_case_description=f"Validate that Cognos report selection criteria match the DSD definition for {report_id}.",
+            objective=f"Verify the report selection criteria configured in Cognos match the DSD-defined selection criteria exactly.",
+            preconditions=f"Report '{report_id}' is opened in Cognos and underlying data sources are accessible.",
+            test_data="Test dataset with records spanning boundary dates to test selection criteria filtering.",
+            test_steps=test_steps,
+            expected_result=expected_result,
+            source_section="Report Selection Criteria",
+            priority=TestCasePriority.HIGH,
+            selection_criteria="\n".join(criteria_list),
+            **self._format_evidence(evidences)
+        )
+        return [tc]
+

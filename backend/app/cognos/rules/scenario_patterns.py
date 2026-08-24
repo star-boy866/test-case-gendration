@@ -37,11 +37,13 @@ class MethodologyPattern(str, Enum):
     DB_COUNT_VALIDATION = "DB_COUNT_VALIDATION"
     DUPLICATE_VALIDATION = "DUPLICATE_VALIDATION"
     LOOKUP_VALIDATION = "LOOKUP_VALIDATION"
-    BOX_EXECUTION_VALIDATION = "BOX_EXECUTION_VALIDATION"  # Deprecated
-    SDR_DELIVERY_VALIDATION = "SDR_DELIVERY_VALIDATION"  # Deprecated
     SCHEDULED_EXECUTION_VALIDATION = "SCHEDULED_EXECUTION_VALIDATION"
     OUTPUT_DELIVERY_VALIDATION = "OUTPUT_DELIVERY_VALIDATION"
     DB_REPORT_DATA_VALIDATION = "DB_REPORT_DATA_VALIDATION"
+    REPORT_HEADER_VALIDATION = "REPORT_HEADER_VALIDATION"
+    REPORT_SECTION_HEADING_VALIDATION = "REPORT_SECTION_HEADING_VALIDATION"
+    SPECIAL_PROCESSING_VALIDATION = "SPECIAL_PROCESSING_VALIDATION"
+    SELECTION_CRITERIA_VALIDATION = "SELECTION_CRITERIA_VALIDATION"
 
 
 @dataclass
@@ -132,11 +134,11 @@ METHODOLOGY_RULES = [
     ),
     MethodologyRule(
         pattern=MethodologyPattern.NO_DATA_VALIDATION,
-        predicate=lambda f: bool(f.has_selection_criteria or f.has_parameters or f.has_no_data_evidence),
-        reason_template="Report features selection criteria or parameters, necessitating empty-set boundary testing.",
+        predicate=lambda f: bool(f.has_no_data_evidence),
+        reason_template="Report explicitly defines no-data handling or empty-set boundary rules.",
         confidence=RequirementConfidence.HIGH,
-        requirement_filter=lambda r: r.category in (RequirementCategory.SELECTION_CRITERIA, RequirementCategory.PARAMETER) or (r.category in (RequirementCategory.SPECIAL_PROCESSING, RequirementCategory.COLUMN) and "no data" in (r.requirement_text or "").lower()),
-        not_applicable_reason="No selection criteria, parameters, or no-data special processing detected."
+        requirement_filter=lambda r: (r.category in (RequirementCategory.SPECIAL_PROCESSING, RequirementCategory.COLUMN) and "no data" in (r.requirement_text or "").lower()),
+        not_applicable_reason="No explicit no-data handling or empty-set special processing detected in DSD."
     ),
     MethodologyRule(
         pattern=MethodologyPattern.DATE_FORMAT_VALIDATION,
@@ -201,6 +203,38 @@ METHODOLOGY_RULES = [
         confidence=RequirementConfidence.HIGH,
         requirement_filter=lambda r: r.category in (RequirementCategory.COLUMN_SOURCE, RequirementCategory.COLUMN, RequirementCategory.COLUMN_LOGIC),
         not_applicable_reason="No source column mappings detected in DSD; DB data validation cannot be performed."
+    ),
+    MethodologyRule(
+        pattern=MethodologyPattern.REPORT_HEADER_VALIDATION,
+        predicate=lambda f: bool(f.has_report_header),
+        reason_template="Report layout defines explicit report header fields, branding, or formatting.",
+        confidence=RequirementConfidence.HIGH,
+        requirement_filter=lambda r: r.category in (RequirementCategory.HEADER, RequirementCategory.REPORT_HEADER, RequirementCategory.REPORT_ID, RequirementCategory.REPORT_TITLE),
+        not_applicable_reason="No report header fields or layout branding detected in DSD."
+    ),
+    MethodologyRule(
+        pattern=MethodologyPattern.REPORT_SECTION_HEADING_VALIDATION,
+        predicate=lambda f: bool(f.has_report_section_headings),
+        reason_template="Report DSD explicitly defines report section headings, descriptions, or processing rules.",
+        confidence=RequirementConfidence.HIGH,
+        requirement_filter=lambda r: r.category == RequirementCategory.SECTION_HEADING or "section heading" in (r.requirement_text or "").lower(),
+        not_applicable_reason="No explicit report section headings defined in DSD (section heading section is optional/empty)."
+    ),
+    MethodologyRule(
+        pattern=MethodologyPattern.SPECIAL_PROCESSING_VALIDATION,
+        predicate=lambda f: bool(f.has_special_processing),
+        reason_template="Explicit special processing / code-to-description lookup rule detected in DSD.",
+        confidence=RequirementConfidence.HIGH,
+        requirement_filter=lambda r: r.category == RequirementCategory.SPECIAL_PROCESSING or "special processing" in (r.requirement_text or "").lower() or "_cd" in (r.field or "").lower(),
+        not_applicable_reason="No special processing or code-to-description lookup rules defined in DSD."
+    ),
+    MethodologyRule(
+        pattern=MethodologyPattern.SELECTION_CRITERIA_VALIDATION,
+        predicate=lambda f: bool(f.has_selection_criteria),
+        reason_template="Explicit report selection criteria / filter logic detected in DSD.",
+        confidence=RequirementConfidence.HIGH,
+        requirement_filter=lambda r: r.category == RequirementCategory.SELECTION_CRITERIA or "selection criteria" in (r.requirement_text or "").lower(),
+        not_applicable_reason="No explicit report selection criteria defined in DSD (Report Selection Criteria section is empty)."
     )
 ]
 
@@ -210,7 +244,7 @@ def discover_applicable_patterns(
     report_def: Any = None
 ) -> MethodologyApplicabilityReport:
     """
-    Phase 11: Evaluate the requirement set against all 14 Golden Methodology Patterns.
+    Phase 11 & Phase 12M/N/R: Evaluate the requirement set against all Golden Methodology Patterns.
 
     Returns a MethodologyApplicabilityReport containing:
       - generated: ApplicablePattern list (each carrying evidence_source, supporting_sections,
@@ -233,7 +267,7 @@ def discover_applicable_patterns(
         MethodologyPattern.SORT_VALIDATION:                    lambda f: f.has_sorting,
         MethodologyPattern.SCRIPT_OUTPUT_VALIDATION:           lambda f: f.has_script_output,
         MethodologyPattern.REPORT_NAME_DESCRIPTION_VALIDATION: lambda f: f.has_metadata,
-        MethodologyPattern.NO_DATA_VALIDATION:                 lambda f: f.has_selection_criteria or f.has_parameters or f.has_no_data_evidence,
+        MethodologyPattern.NO_DATA_VALIDATION:                 lambda f: f.has_no_data_evidence,
         MethodologyPattern.DATE_FORMAT_VALIDATION:             lambda f: f.has_date_formatting,
         MethodologyPattern.CONTROL_BREAK_VALIDATION:           lambda f: f.has_control_breaks,
         MethodologyPattern.DB_COUNT_VALIDATION:                lambda f: f.has_counts_or_totals,
@@ -242,6 +276,10 @@ def discover_applicable_patterns(
         MethodologyPattern.SCHEDULED_EXECUTION_VALIDATION:     lambda f: f.has_distribution,
         MethodologyPattern.OUTPUT_DELIVERY_VALIDATION:         lambda f: f.has_delivery_destination,
         MethodologyPattern.DB_REPORT_DATA_VALIDATION:          lambda f: f.has_source_columns,
+        MethodologyPattern.REPORT_HEADER_VALIDATION:          lambda f: f.has_report_header,
+        MethodologyPattern.REPORT_SECTION_HEADING_VALIDATION: lambda f: f.has_report_section_headings,
+        MethodologyPattern.SPECIAL_PROCESSING_VALIDATION:     lambda f: f.has_special_processing,
+        MethodologyPattern.SELECTION_CRITERIA_VALIDATION:     lambda f: f.has_selection_criteria,
     }
 
     generated: list[ApplicablePattern] = []

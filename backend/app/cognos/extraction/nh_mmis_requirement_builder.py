@@ -108,7 +108,9 @@ class NhMmisRequirementBuilder:
         self._build_output()
         self._build_retention()
         self._build_layout()
+        self._build_section_headings()
         self._build_report_specification()
+        self._build_special_processing()
         
         self.req_set.compute_summary()
         return self.req_set
@@ -150,7 +152,7 @@ class NhMmisRequirementBuilder:
         for sc in self.dsd.selection_criteria:
             if sc.report_selection_criteria and sc.report_selection_criteria.lower().strip() not in ("report field", "criteria", ""):
                 text = f"Selection criterion: {sc.report_selection_criteria}"
-                if sc.report_field and sc.report_field.lower().strip() not in ("report field", ""):
+                if sc.report_field and sc.report_field.lower().strip() not in ("report field", "") and sc.report_field.lower() not in sc.report_selection_criteria.lower():
                     text += f". Filter logic: {sc.report_field}"
                 self._add_req(RequirementCategory.SELECTION_CRITERIA, sc.report_field or sc.report_selection_criteria, text, sc)
 
@@ -213,6 +215,14 @@ class NhMmisRequirementBuilder:
         if lay.report_section_label_names:
             self._add_req(RequirementCategory.LAYOUT, "Layout Sections", f"Report layout sections: {lay.report_section_label_names}", lay)
 
+    def _build_section_headings(self):
+        for sh in getattr(self.dsd, 'report_section_headings', []):
+            if sh.section_label and sh.section_label.upper() not in ("N/A", "NONE", ""):
+                req_text = f"Report section heading '{sh.section_label}': {sh.section_description or 'No description'}"
+                if sh.section_processing_rules:
+                    req_text += f" (Processing: {sh.section_processing_rules})"
+                self._add_req(RequirementCategory.SECTION_HEADING, sh.section_label, req_text, sh)
+
     def _build_report_specification(self):
         for rsr in self.dsd.report_specification:
             req_text = f"Report field '{rsr.business_label}' must be formatted and mapped to {rsr.source_table or 'NOT_DEFINED'}.{rsr.source_column or 'NOT_DEFINED'}"
@@ -226,3 +236,17 @@ class NhMmisRequirementBuilder:
             if rsr.source_column:
                 req.source_columns = [rsr.source_column]
             req.processing_rule = rsr.processing_rules
+
+    def _build_special_processing(self):
+        for sp in getattr(self.dsd, 'special_processing', []):
+            req_text = sp.raw_rule_text
+            if not req_text:
+                req_text = f"Special processing: Translate code column '{sp.source_column}' to description via {sp.lookup_table}.{sp.lookup_description_column}"
+                if sp.lookup_domain:
+                    req_text += f" where domain is '{sp.lookup_domain}'"
+            req = self._add_req(RequirementCategory.SPECIAL_PROCESSING, sp.source_column or "Special Processing", req_text, sp)
+            req.source_table = sp.source_table
+            if sp.source_column:
+                req.source_columns = [sp.source_column]
+            req.processing_rule = f"Lookup via {sp.lookup_table}"
+
