@@ -244,6 +244,11 @@ class ScenarioExpander:
         sort_direction: str = "",
         processing_rule: str = "",
         formatting_rule: str = "",
+        lookup_table: str = "",
+        lookup_code_column: str = "",
+        lookup_description_column: str = "",
+        lookup_domain: str = "",
+        special_processing_type: str = "",
         dsd_reference: str = "",
         open_item: str = "",
         confidence: str = "High",
@@ -281,6 +286,11 @@ class ScenarioExpander:
             sort_direction=sort_direction,
             processing_rule=processing_rule,
             formatting_rule=formatting_rule,
+            lookup_table=lookup_table,
+            lookup_code_column=lookup_code_column,
+            lookup_description_column=lookup_description_column,
+            lookup_domain=lookup_domain,
+            special_processing_type=special_processing_type,
             notes=f"Applicability: {pattern.applicable_reason} (Confidence: {pattern.confidence.value})",
             applicability_reason=pattern.applicable_reason,
             dsd_reference=dsd_reference,
@@ -970,6 +980,7 @@ class ScenarioExpander:
             r for r in self._col_reqs()
             if getattr(r, "source_logic_type", SourceLogicType.UNKNOWN) == SourceLogicType.LOOKUP
             or "lookup" in (r.processing_rule or "").lower()
+            or "valid values" in (r.processing_rule or "").lower()
             or ("description" in (r.requirement_text or "").lower() and r.category in (RequirementCategory.COLUMN_LOGIC, RequirementCategory.COLUMN))
         ]
 
@@ -984,13 +995,13 @@ class ScenarioExpander:
         for req in lookup_reqs:
             field_name = req.business_label or req.field or "NOT_DEFINED"
             src_table = req.source_table or self.primary_table
-            src_col = req.source_column or "NOT_DEFINED"
+            src_col = req.source_column or (req.source_columns[0] if req.source_columns else "NOT_DEFINED")
             proc = req.processing_rule or req.description or ""
 
             # Extract lookup table hint if available
             import re
             lookup_table_match = re.search(r'[A-Z][_A-Z0-9]+_TB\b', proc)
-            lookup_table = lookup_table_match.group(0) if lookup_table_match else "lookup table"
+            lookup_table = lookup_table_match.group(0) if lookup_table_match else "R_VV_TB"
 
             test_steps = (
                 f"1. Query source table '{src_table}' for test records with '{src_col}' code values.\n"
@@ -1019,7 +1030,12 @@ class ScenarioExpander:
                 req_ids=[req.requirement_id] if req.requirement_id else [],
                 source_table=src_table,
                 source_column=src_col,
+                source_field=field_name,
                 processing_rule=proc,
+                lookup_table=lookup_table,
+                lookup_code_column="R_VV_CD",
+                lookup_description_column="R_VV_SHORT_DESC",
+                lookup_domain=src_col,
                 source_section="Report Body",
                 dsd_reference=f"DSD § Report Body: {field_name} → {src_table}.{src_col} (lookup via {lookup_table})",
                 ev_refs=self._gather_ev_refs([req], "DSD_EVIDENCE"),

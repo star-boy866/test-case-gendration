@@ -760,19 +760,16 @@ function ScenarioDetailContent({
         </div>
       </CollapsibleSection>
 
-      {/* DSD Evidence (Open by default) */}
+      {/* DSD Evidence (Open by default) — Reviewer-Facing: Authoritative Source DSD Snapshot */}
       <CollapsibleSection title="DSD Evidence" defaultOpen={true}>
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {proof.map((ev, idx) => (
-            <SemanticProofCard key={`proof-${idx}`} ev={ev} onZoom={setZoomImage} />
-          ))}
           {snapshots.map((ev, idx) => (
             <SourceDsdSnapshotCard key={`snap-${idx}`} ev={ev} onZoom={setZoomImage} />
           ))}
           {others.map((ev, idx) => (
             <GenericEvidenceCard key={`other-${idx}`} ev={ev} onZoom={setZoomImage} />
           ))}
-          {evidenceRefs.length === 0 && (
+          {snapshots.length === 0 && others.length === 0 && (
             <div className="col-span-full p-8 bg-slate-50 rounded-lg border border-slate-200 text-center flex flex-col items-center justify-center">
               <ImageIcon className="h-10 w-10 text-slate-300 mb-2" />
               <p className="text-sm text-slate-500 font-medium">No evidence available</p>

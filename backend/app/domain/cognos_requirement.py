@@ -558,13 +558,16 @@ class ReportFeatures(BaseModel):
             # ── LOOKUP (Phase 11 strict rules) ────────────────────────────────
             # Only trigger if there is corroborating evidence beyond the suffix alone.
             is_lookup = False
+            col_name_lower = (r.source_column or (r.source_columns[0] if r.source_columns else "")).lower()
             if logic == SourceLogicType.LOOKUP:
                 is_lookup = True
-            elif "lookup" in text:
+            elif "lookup" in text or "lookup" in proc:
+                is_lookup = True
+            elif "valid values" in text or "valid values" in proc or "valid value" in text or "valid value" in proc:
                 is_lookup = True
             elif "description" in text and cat in (RequirementCategory.COLUMN_LOGIC, RequirementCategory.BUSINESS_RULE):
                 is_lookup = True
-            elif any(field_name_lower.endswith(sfx) for sfx in _LOOKUP_SUFFIXES):
+            elif any(field_name_lower.endswith(sfx) or col_name_lower.endswith(sfx) for sfx in _LOOKUP_SUFFIXES):
                 # Suffix-based: only accept if processing_rule or requirement_text provides corroboration
                 corroborating_keywords = ("description", "lookup", "code", "indicator", "resolve", "translate", "valid value")
                 if any(kw in text or kw in proc for kw in corroborating_keywords):

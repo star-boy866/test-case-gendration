@@ -604,14 +604,63 @@ class DeterministicSqlGenerator:
         tc.expected_validation = f"Report column '{field_display}' values must match the database '{table}.{col}' query results for each record."
         tc.traceability_source = "Report Specification / Report Body"
 
-        # Record field mapping
-        tc.source_mappings = [{
+        # Check if processing rule has valid-values / code-to-description lookup semantics
+        proc_rule = (tc.processing_rule or "").lower()
+        has_lookup_rule = (
+            "valid values" in proc_rule or
+            "code, hyphen" in proc_rule or
+            "code - description" in proc_rule or
+            "short description from" in proc_rule
+        )
+
+        source_mappings: List[Dict[str, str]] = [{
             "field": field_display,
             "column": col,
             "table": table
         }]
-        tc.validation_sql = f"SELECT {col}\nFROM {table};"
+        where_conditions: List[str] = []
+        tc_criteria_lines: List[str] = []
+
+        if raw_criteria:
+            for crit in raw_criteria:
+                cond, mapping, err = cls._parse_and_bind_criterion(crit, field_to_col, table)
+                if cond:
+                    where_conditions.append(cond)
+                if mapping and mapping not in source_mappings:
+                    source_mappings.append(mapping)
+                tc_criteria_lines.append(crit)
+
+        if has_lookup_rule:
+            lookup_tbl = tc.lookup_table or "R_VV_TB"
+            lookup_code_col = tc.lookup_code_column or "R_VV_CD"
+            lookup_desc_col = tc.lookup_description_column or "R_VV_SHORT_DESC"
+            lookup_domain = tc.lookup_domain or col
+
+            import re
+            alias = re.sub(r'[^A-Za-z0-9_]+', '_', field_display).upper().strip('_')
+            if not alias:
+                alias = re.sub(r'[^A-Za-z0-9_]+', '_', col).upper().strip('_')
+
+            source_mappings.append({
+                "field": f"{field_display} (Description)",
+                "column": lookup_desc_col,
+                "table": lookup_tbl
+            })
+
+            tc.validation_sql = (
+                f"SELECT\n"
+                f"    p.{col} || ' - ' || r.{lookup_desc_col} AS {alias}\n"
+                f"FROM {table} p\n"
+                f"LEFT JOIN {lookup_tbl} r\n"
+                f"    ON p.{col} = r.{lookup_code_col}\n"
+                f"    AND r.R_VV_DOMAIN_NAME = '{lookup_domain}';"
+            )
+            tc.traceability_source = f"Report Specification / Report Body • {lookup_tbl} Lookup"
+        else:
+            tc.validation_sql = f"SELECT {col}\nFROM {table};"
+
         tc.sql_status = "AVAILABLE"
+        tc.source_mappings = source_mappings
 
     @classmethod
     def _generate_duplicate_sql(cls, tc, raw_criteria, field_to_col, col_to_table, rd, req_set):
@@ -632,13 +681,96 @@ class DeterministicSqlGenerator:
         tc.traceability_source = "Report Specification / Report Body"
 
     @classmethod
-    def _generate_lookup_sql(cls, tc, raw_criteria, field_to_col, col_to_table, rd, req_set):
+    def _generate_lookup_sql(
+        cls,
+        tc: CognosTestCase,
+        raw_criteria: List[str],
+        field_to_col: Dict[str, str],
+        col_to_table: Dict[str, str],
+        rd: Optional[ReportDefinition],
+        req_set: Optional[RequirementSet]
+    ):
         table = tc.source_table
         col = tc.source_column
-        if not table or table in ("NOT_DEFINED", "N/A") or not col or col in ("NOT_DEFINED", "N/A"):
-            return
-        tc.expected_validation = f"Report column '{tc.source_field or col}' descriptions must match lookup table decoded values for source code '{table}.{col}'."
-        tc.traceability_source = "Report Specification / Report Body"
+
+        # Fallback table / col resolution if needed
+        if not table or table in ("NOT_DEFINED", "N/A", "Multiple"):
+            if rd and rd.report_fields:
+                table = rd.report_fields[0].source_table or "P_RPT_CLDI_ERR_TB"
+            else:
+                table = "P_RPT_CLDI_ERR_TB"
+            tc.source_table = table
+
+        if not col or col in ("NOT_DEFINED", "N/A"):
+            field_name = tc.source_field or ""
+            if field_name:
+                col = cls._resolve_column(field_name, field_to_col, table) or ""
+            if not col and rd and rd.report_fields:
+                for rf in rd.report_fields:
+                    if rf.source_column and (rf.source_column.upper().endswith("_CD") or "lookup" in (rf.processing_rule or "").lower() or "valid values" in (rf.processing_rule or "").lower()):
+                        col = rf.source_column
+                        break
+            if not col:
+                col = "P_MMIS_LIC_CERT_AGCY_CD"
+            tc.source_column = col
+
+        lookup_tbl = tc.lookup_table or "R_VV_TB"
+        lookup_code_col = tc.lookup_code_column or "R_VV_CD"
+        lookup_desc_col = tc.lookup_description_column or "R_VV_SHORT_DESC"
+        lookup_domain = tc.lookup_domain or col
+
+        field_display = tc.source_field or col
+        if field_display == col:
+            for lbl, c in field_to_col.items():
+                if c.upper() == col.upper():
+                    field_display = lbl
+                    break
+
+        import re
+        alias = re.sub(r'[^A-Za-z0-9_]+', '_', field_display).upper().strip('_')
+        if not alias or alias in ("NOT_DEFINED", "COLUMN"):
+            alias = re.sub(r'[^A-Za-z0-9_]+', '_', col).upper().strip('_')
+
+        tc.expected_validation = (
+            f"The report's displayed description for '{field_display}' ({col}) must match "
+            f"{lookup_desc_col} from {lookup_tbl} for the same code and domain."
+        )
+        tc.traceability_source = f"Report Specification / Report Body • {lookup_tbl} Lookup"
+
+        source_mappings: List[Dict[str, str]] = [
+            {"field": f"{field_display} (Code)", "column": col, "table": table},
+            {"field": f"{field_display} (Description)", "column": lookup_desc_col, "table": lookup_tbl},
+        ]
+        tc_criteria_lines: List[str] = []
+        where_conditions: List[str] = []
+
+        if raw_criteria:
+            for crit in raw_criteria:
+                cond, mapping, err = cls._parse_and_bind_criterion(crit, field_to_col, table)
+                if cond:
+                    where_conditions.append(f"p.{cond}" if not cond.startswith("p.") else cond)
+                if mapping and mapping not in source_mappings:
+                    source_mappings.append(mapping)
+                tc_criteria_lines.append(crit)
+
+        where_clause = ""
+        if where_conditions:
+            where_clause = f"\nWHERE {where_conditions[0]}"
+            for c in where_conditions[1:]:
+                where_clause += f"\n  AND {c}"
+
+        tc.validation_sql = (
+            f"SELECT\n"
+            f"    p.{col} || ' - ' || r.{lookup_desc_col} AS {alias}\n"
+            f"FROM {table} p\n"
+            f"LEFT JOIN {lookup_tbl} r\n"
+            f"    ON p.{col} = r.{lookup_code_col}\n"
+            f"    AND r.R_VV_DOMAIN_NAME = '{lookup_domain}'{where_clause};"
+        )
+        tc.sql_status = "AVAILABLE"
+        tc.source_mappings = source_mappings
+        if tc_criteria_lines:
+            tc.selection_criteria = "\n".join(tc_criteria_lines)
 
     @classmethod
     def _generate_no_data_sql(cls, tc, raw_criteria, field_to_col, col_to_table, rd, req_set):

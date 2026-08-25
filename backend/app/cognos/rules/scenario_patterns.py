@@ -177,7 +177,7 @@ METHODOLOGY_RULES = [
         predicate=lambda f: bool(f.has_lookup_semantics),
         reason_template="Discovered lookup tables or code/indicator translation logic.",
         confidence=RequirementConfidence.HIGH,
-        requirement_filter=lambda r: getattr(r, "source_logic_type", SourceLogicType.UNKNOWN) == SourceLogicType.LOOKUP or "lookup" in (r.requirement_text or "").lower() or ("description" in (r.requirement_text or "").lower() and r.category in (RequirementCategory.COLUMN_LOGIC, RequirementCategory.BUSINESS_RULE)),
+        requirement_filter=lambda r: getattr(r, "source_logic_type", SourceLogicType.UNKNOWN) == SourceLogicType.LOOKUP or "lookup" in (r.requirement_text or "").lower() or "valid value" in (r.requirement_text or "").lower() or "valid value" in (r.processing_rule or "").lower() or ("description" in (r.requirement_text or "").lower() and r.category in (RequirementCategory.COLUMN_LOGIC, RequirementCategory.BUSINESS_RULE, RequirementCategory.COLUMN)),
         not_applicable_reason="No lookup semantics, code/description mappings, or indicator fields detected in DSD."
     ),
     MethodologyRule(

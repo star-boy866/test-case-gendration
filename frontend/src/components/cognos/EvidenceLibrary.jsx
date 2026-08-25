@@ -64,6 +64,7 @@ export default function EvidenceLibrary({ result }) {
     testCases.forEach(tc => {
       if (tc.evidence_references) {
         tc.evidence_references.forEach(ev => {
+          if (ev?.evidence_type === "DSD_SEMANTIC_PROOF") return;
           if (ev.snapshot_url) {
             if (!evidenceMap.has(ev.snapshot_url)) {
               evidenceMap.set(ev.snapshot_url, {
@@ -96,7 +97,7 @@ export default function EvidenceLibrary({ result }) {
       <div className="flex flex-col items-center justify-center py-20 text-slate-500">
         <ImageIcon className="h-10 w-10 mb-4 text-slate-300" />
         <h3 className="text-lg font-medium text-slate-900">No Evidence Found</h3>
-        <p className="text-sm mt-1">No semantic proofs or snapshots were generated for this run.</p>
+        <p className="text-sm mt-1">No source snapshots were generated for this run.</p>
       </div>
     );
   }
@@ -107,7 +108,7 @@ export default function EvidenceLibrary({ result }) {
         <div className="flex justify-between items-center mb-4">
           <div>
             <h2 className="text-lg font-bold text-slate-900">Evidence Library</h2>
-            <p className="text-sm text-slate-500 font-normal mt-0.5">Centralized gallery of all DSD screenshots and semantic proofs</p>
+            <p className="text-sm text-slate-500 font-normal mt-0.5">Centralized gallery of authoritative Source DSD Snapshots</p>
           </div>
           <span className="inline-flex items-center rounded-md bg-purple-50 px-3 py-1 text-sm font-medium text-purple-700 border border-purple-200 shadow-sm">
             Total Unique Images: {allEvidence.length}
