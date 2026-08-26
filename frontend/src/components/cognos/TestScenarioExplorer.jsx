@@ -166,7 +166,8 @@ function EvidenceImage({ url, alt, className, onClick, onLoaded }) {
 
 function SemanticProofCard({ ev, onZoom }) {
   const [currentBlobUrl, setCurrentBlobUrl] = useState(null);
-  const pageText = ev?.page_number ? `Page ${ev.page_number} \u2022 ` : "";
+  const pageDisplay = ev?.page_display || (ev?.source_pages?.length > 1 ? ev.source_pages.join('–') : ev?.page_number);
+  const pageText = pageDisplay ? `Page ${pageDisplay} \u2022 ` : "";
   const sectionText = ev?.section || "Report Layout";
 
   const handleOpenFull = (e) => {
@@ -217,7 +218,9 @@ function SemanticProofCard({ ev, onZoom }) {
 
 function SourceDsdSnapshotCard({ ev, onZoom }) {
   const [loading, setLoading] = useState(false);
+  const blobRef = useRef(null);
   const blobUrlRef = useRef(null);
+  const previewMetaRef = useRef(null);
   const [snapshotObjectUrl, setSnapshotObjectUrl] = useState(null);
   const [snapshotFailed, setSnapshotFailed] = useState(false);
 
@@ -245,10 +248,31 @@ function SourceDsdSnapshotCard({ ev, onZoom }) {
         test_case_id: ev.test_case_id || ''
       }
     })
-      .then((res) => {
+      .then(async (res) => {
         if (!active) return;
-        const blobUrl = URL.createObjectURL(res.data);
+        const blob = res.data;
+        blobRef.current = blob;
+        const blobUrl = URL.createObjectURL(blob);
         blobUrlRef.current = blobUrl;
+
+        let sha256 = "N/A";
+        try {
+          const buffer = await blob.arrayBuffer();
+          const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+          sha256 = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+        } catch (e) {
+          sha256 = "hash_calc_error";
+        }
+
+        previewMetaRef.current = {
+          url: blobUrl,
+          size: blob.size,
+          type: blob.type,
+          sha256,
+          naturalWidth: 0,
+          naturalHeight: 0
+        };
+
         setSnapshotObjectUrl(blobUrl);
         setLoading(false);
       })
@@ -269,11 +293,18 @@ function SourceDsdSnapshotCard({ ev, onZoom }) {
   const handleOpenFull = (e) => {
     e.stopPropagation();
     if (snapshotObjectUrl && onZoom) {
-      onZoom({ imageUrl: snapshotObjectUrl, evidence: ev, title: ev?.description });
+      onZoom({
+        blob: blobRef.current,
+        imageUrl: snapshotObjectUrl,
+        evidence: ev,
+        title: ev?.description,
+        previewMeta: previewMetaRef.current
+      });
     }
   };
 
-  const pageText = ev?.page_number ? `Page ${ev.page_number} \u2022 ` : "";
+  const pageDisplay = ev?.page_display || (ev?.source_pages?.length > 1 ? ev.source_pages.join('–') : ev?.page_number);
+  const pageText = pageDisplay ? `Page ${pageDisplay} \u2022 ` : "";
   const sectionText = ev?.section || "Source Document";
   let rawScope = ev?.evidence_scope || "";
   if (rawScope === "REPORT_FREQUENCY_SCHEDULING") {
@@ -314,7 +345,29 @@ function SourceDsdSnapshotCard({ ev, onZoom }) {
                   ? "source-dsd-full-page-preview w-full h-auto max-w-full block rounded border border-slate-200 shadow-sm bg-white cursor-zoom-in hover:opacity-95 transition-opacity"
                   : "max-h-48 object-contain border border-slate-200 rounded shadow-sm bg-white cursor-zoom-in hover:opacity-95 transition-opacity"
               }
-              onClick={() => onZoom && onZoom({ imageUrl: snapshotObjectUrl, evidence: ev, title: ev?.description })}
+              onLoad={(e) => {
+                const nw = e.target.naturalWidth;
+                const nh = e.target.naturalHeight;
+                if (previewMetaRef.current) {
+                  previewMetaRef.current.naturalWidth = nw;
+                  previewMetaRef.current.naturalHeight = nh;
+                }
+                console.log({
+                  area: "PREVIEW",
+                  src: e.target.src,
+                  size: blobRef.current?.size,
+                  sha256: previewMetaRef.current?.sha256,
+                  naturalWidth: nw,
+                  naturalHeight: nh
+                });
+              }}
+              onClick={() => onZoom && onZoom({
+                blob: blobRef.current,
+                imageUrl: snapshotObjectUrl,
+                evidence: ev,
+                title: ev?.description,
+                previewMeta: previewMetaRef.current
+              })}
             />
           </div>
         ) : snapshotFailed ? (
@@ -351,7 +404,8 @@ function SourceDsdSnapshotCard({ ev, onZoom }) {
 }
 
 function GenericEvidenceCard({ ev, onZoom }) {
-  const pageText = ev?.page_number ? `Page ${ev.page_number} \u2022 ` : "";
+  const pageDisplay = ev?.page_display || (ev?.source_pages?.length > 1 ? ev.source_pages.join('–') : ev?.page_number);
+  const pageText = pageDisplay ? `Page ${pageDisplay} \u2022 ` : "";
   const sectionText = ev?.section || "Source Document";
   const typeText = (ev?.evidence_type || "Evidence").replace(/_/g, " ");
 
@@ -1097,8 +1151,10 @@ export default function TestScenarioExplorer({ result }) {
             isOpen={Boolean(zoomImage)}
             onClose={() => setZoomImage(null)}
             imageUrl={typeof zoomImage === 'object' ? zoomImage.imageUrl : zoomImage}
+            blob={typeof zoomImage === 'object' ? zoomImage.blob : null}
             evidence={typeof zoomImage === 'object' ? zoomImage.evidence : null}
             title={typeof zoomImage === 'object' ? zoomImage.title : null}
+            previewMeta={typeof zoomImage === 'object' ? zoomImage.previewMeta : null}
           />
         )}
 

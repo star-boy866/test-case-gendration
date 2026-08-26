@@ -33,8 +33,10 @@ export default function InteractiveEvidenceViewer({
   isOpen,
   onClose,
   imageUrl,
+  blob,
   evidence,
-  title
+  title,
+  previewMeta
 }) {
   if (!isOpen || !imageUrl) return null;
 
@@ -189,29 +191,107 @@ export default function InteractiveEvidenceViewer({
     }
   }, [history, historyIndex]);
 
-  // Restore on Load from localStorage
+  // Handle Image Load & Initial Fit on Opening
   useEffect(() => {
-    const key = getStorageKey();
-    const saved = localStorage.getItem(key);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed && (parsed.annotations?.length > 0 || parsed.appliedCrop)) {
-          const restoredAnnos = parsed.annotations || [];
-          const restoredCrop = parsed.appliedCrop || null;
-          setAnnotations(restoredAnnos);
-          setAppliedCrop(restoredCrop);
-          if (typeof parsed.zoom === 'number') setZoom(parsed.zoom);
-          if (parsed.pan && typeof parsed.pan.x === 'number') setPan(parsed.pan);
-          setHistory([{ annotations: restoredAnnos, appliedCrop: restoredCrop }]);
-          setHistoryIndex(0);
-          setIsAnnotatedView(true);
-        }
-      } catch (e) {
-        console.error("Failed to restore annotations from localStorage", e);
+    if (!isOpen || !imageUrl) return;
+
+    // Reset view transform, pan, and crop on opening Full Size
+    setAppliedCrop(null);
+    setDraftCrop(null);
+    setSelectedAnnoId(null);
+    setEditingText(null);
+    setPan({ x: 0, y: 0 });
+    setHistory([{ annotations: [], appliedCrop: null }]);
+    setHistoryIndex(0);
+    setIsAnnotatedView(false);
+
+    let active = true;
+
+    async function processBlobAndInit() {
+      let editorBlob = blob;
+      if (!editorBlob && imageUrl.startsWith('blob:')) {
+        try {
+          const r = await fetch(imageUrl);
+          editorBlob = await r.blob();
+        } catch (e) {}
       }
+
+      let editorSha256 = "N/A";
+      if (editorBlob) {
+        try {
+          const buffer = await editorBlob.arrayBuffer();
+          const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+          editorSha256 = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+        } catch (e) {
+          editorSha256 = "hash_calc_error";
+        }
+      }
+
+      const img = new window.Image();
+      img.src = imageUrl;
+      img.onload = () => {
+        if (!active) return;
+        const nw = img.naturalWidth || 1718;
+        const nh = img.naturalHeight || 171;
+        setNaturalSize({ width: nw, height: nh });
+        setImageLoaded(true);
+
+        const sameBlob = (blob && previewMeta?.size && blob.size === previewMeta.size) || (editorBlob && previewMeta?.size && editorBlob.size === previewMeta.size) ? "YES" : "NO";
+        const sameHash = (previewMeta?.sha256 && editorSha256 !== "N/A" && previewMeta.sha256 === editorSha256) ? "YES" : "NO";
+
+        console.log("=== SOURCE IMAGE IDENTITY ===\n");
+        console.log("preview:");
+        console.log(`    url: ${previewMeta?.url || imageUrl}`);
+        console.log(`    size: ${previewMeta?.size || (editorBlob ? editorBlob.size : 'N/A')} bytes`);
+        console.log(`    type: ${previewMeta?.type || (editorBlob ? editorBlob.type : 'image/png')}`);
+        console.log(`    sha256: ${previewMeta?.sha256 || editorSha256}`);
+        console.log(`    naturalWidth: ${previewMeta?.naturalWidth || nw}`);
+        console.log(`    naturalHeight: ${previewMeta?.naturalHeight || nh}\n`);
+
+        console.log("editor:");
+        console.log(`    url: ${imageUrl}`);
+        console.log(`    size: ${editorBlob ? editorBlob.size : 'N/A'} bytes`);
+        console.log(`    type: ${editorBlob ? editorBlob.type : 'image/png'}`);
+        console.log(`    sha256: ${editorSha256}`);
+        console.log(`    naturalWidth: ${nw}`);
+        console.log(`    naturalHeight: ${nh}\n`);
+
+        console.log(`sameBlob:\n    ${sameBlob}\n`);
+        console.log(`sameHash:\n    ${sameHash}\n`);
+
+        setTimeout(() => {
+          if (!active) return;
+          if (containerRef.current) {
+            const rect = containerRef.current.getBoundingClientRect();
+            const scaleX = (rect.width - 60) / nw;
+            const scaleY = (rect.height - 60) / nh;
+            const fitZoom = Math.min(scaleX, scaleY);
+            const clampedZoom = Math.min(Math.max(fitZoom, 0.05), 3.0);
+            setZoom(clampedZoom);
+            setPan({ x: 0, y: 0 });
+
+            console.log("=== SOURCE SNAPSHOT EDITOR INIT ===");
+            console.log("source URL:", imageUrl);
+            console.log("blob size:", editorBlob ? `${editorBlob.size} bytes` : 'N/A');
+            console.log("naturalWidth:", nw);
+            console.log("naturalHeight:", nh);
+            console.log("editor canvas:", { width: nw, height: nh });
+            console.log("viewport:", { width: Math.round(rect.width), height: Math.round(rect.height) });
+            console.log("zoom:", clampedZoom);
+            console.log("panX:", 0);
+            console.log("panY:", 0);
+            console.log("crop:", null);
+          }
+        }, 50);
+      };
     }
-  }, [getStorageKey]);
+
+    processBlobAndInit();
+
+    return () => {
+      active = false;
+    };
+  }, [isOpen, imageUrl, blob, previewMeta]);
 
   // Debounced Auto-Save to localStorage on every annotation or crop change
   useEffect(() => {
@@ -230,34 +310,23 @@ export default function InteractiveEvidenceViewer({
           updatedAt: new Date().toISOString()
         };
         localStorage.setItem(key, JSON.stringify(payload));
-      } else {
-        localStorage.removeItem(key);
       }
     }, 250);
 
     return () => clearTimeout(timer);
   }, [annotations, appliedCrop, zoom, pan, imageLoaded, getStorageKey, evidence]);
 
-  // Handle Image Load & Initial Fit
+  // Handle Image Load fallback from DOM img element
   const handleImageLoad = (e) => {
-    const nw = e.target.naturalWidth || 1200;
-    const nh = e.target.naturalHeight || 1600;
+    const nw = e.target.naturalWidth || 1718;
+    const nh = e.target.naturalHeight || 171;
     setNaturalSize({ width: nw, height: nh });
     setImageLoaded(true);
-
-    if (containerRef.current) {
-      const rect = containerRef.current.getBoundingClientRect();
-      const scaleX = (rect.width - 80) / nw;
-      const scaleY = (rect.height - 80) / nh;
-      const initialZoom = Math.min(Math.max(Math.min(scaleX, scaleY), 0.3), 1.5);
-      setZoom(initialZoom);
-      setPan({ x: 0, y: 0 });
-    }
   };
 
   // Zoom helpers
   const handleZoomChange = (newZoom) => {
-    const clamped = Math.min(Math.max(newZoom, 0.25), 4.0);
+    const clamped = Math.min(Math.max(newZoom, 0.05), 4.0);
     setZoom(clamped);
   };
 
@@ -266,9 +335,10 @@ export default function InteractiveEvidenceViewer({
     const rect = containerRef.current.getBoundingClientRect();
     const effectiveW = appliedCrop ? appliedCrop.width : naturalSize.width;
     const effectiveH = appliedCrop ? appliedCrop.height : naturalSize.height;
-    const scaleX = (rect.width - 80) / effectiveW;
-    const scaleY = (rect.height - 80) / effectiveH;
-    setZoom(Math.min(Math.max(Math.min(scaleX, scaleY), 0.25), 2.5));
+    const scaleX = (rect.width - 60) / effectiveW;
+    const scaleY = (rect.height - 60) / effectiveH;
+    const fitZoom = Math.min(scaleX, scaleY);
+    setZoom(Math.min(Math.max(fitZoom, 0.05), 3.0));
     setPan({ x: 0, y: 0 });
   };
 
@@ -276,8 +346,8 @@ export default function InteractiveEvidenceViewer({
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     const effectiveW = appliedCrop ? appliedCrop.width : naturalSize.width;
-    const scale = (rect.width - 80) / effectiveW;
-    setZoom(Math.min(Math.max(scale, 0.25), 3.0));
+    const scale = (rect.width - 60) / effectiveW;
+    setZoom(Math.min(Math.max(scale, 0.05), 4.0));
     setPan({ x: 0, y: 0 });
   };
 
@@ -789,7 +859,8 @@ export default function InteractiveEvidenceViewer({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose, draftCrop, selectedAnnoId, handleDeleteSelected, handleUndo, handleRedo, handleCopyImageToClipboard]);
 
-  const pageLabel = evidence?.page_number ? `Page ${evidence.page_number}` : 'DSD Page';
+  const pageDisplay = evidence?.page_display || (evidence?.source_pages?.length > 1 ? evidence.source_pages.join('–') : evidence?.page_number);
+  const pageLabel = pageDisplay ? `Page ${pageDisplay}` : 'DSD Page';
   const sectionLabel = evidence?.section || 'Report Layout';
   const scopeLabel = evidence?.evidence_scope?.replace(/_/g, ' ') || '';
 
@@ -1629,6 +1700,18 @@ export default function InteractiveEvidenceViewer({
             </button>
           </div>
         )}
+
+        {/* Diagnostic Telemetry Overlay HUD (Phase 13C.7) */}
+        <div className="absolute top-4 left-4 z-40 bg-slate-900/90 border border-slate-700/80 rounded-lg p-2.5 text-[10px] font-mono text-slate-300 shadow-xl pointer-events-none select-none backdrop-blur-sm max-w-xs space-y-1">
+          <div><span className="text-slate-500 font-bold">SOURCE IMAGE:</span></div>
+          <div className="pl-2">width: <span className="text-emerald-400 font-semibold">{naturalSize.width}px</span></div>
+          <div className="pl-2">height: <span className="text-emerald-400 font-semibold">{naturalSize.height}px</span></div>
+          <div className="pl-2 truncate" title={imageUrl}>src: <span className="text-blue-300">{imageUrl?.slice(0, 30)}...</span></div>
+          <div className="pt-1"><span className="text-slate-500 font-bold">CURRENT VIEW:</span></div>
+          <div className="pl-2">zoom: <span className="text-amber-300 font-semibold">{Math.round(zoom * 100)}%</span></div>
+          <div className="pl-2">panX: <span className="text-slate-300">{Math.round(pan.x)}</span>, panY: <span className="text-slate-300">{Math.round(pan.y)}</span></div>
+          <div className="pt-1"><span className="text-slate-500 font-bold">CROP:</span> <span className="text-slate-400">{appliedCrop ? `${appliedCrop.width}x${appliedCrop.height}` : 'none'}</span></div>
+        </div>
 
       </div>
 

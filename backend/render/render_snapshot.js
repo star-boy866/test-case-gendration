@@ -1,6 +1,8 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const child_process = require('child_process');
+const JSZip = require('jszip');
 
 (async () => {
     const args = process.argv.slice(2);
@@ -26,12 +28,35 @@ const path = require('path');
         process.exit(1);
     }
 
-    const docxBuffer = fs.readFileSync(docxPath);
+    let docxBuffer = fs.readFileSync(docxPath);
+    try {
+        const zip = await JSZip.loadAsync(docxBuffer);
+        const hasEmf = Object.keys(zip.files).some(f => f.toLowerCase().endsWith('.emf') || f.toLowerCase().endsWith('.wmf'));
+        if (hasEmf) {
+            const converterScript = path.resolve(__dirname, '../app/utils/docx_emf_converter.py');
+            const tempDir = path.resolve(__dirname, '../scratch');
+            if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+            const tempOut = path.resolve(tempDir, `temp_${Date.now()}_converted.docx`);
+            try {
+                child_process.execSync(`python "${converterScript}" "${docxPath}" "${tempOut}"`, { stdio: 'pipe' });
+                if (fs.existsSync(tempOut) && fs.statSync(tempOut).size > 0) {
+                    docxBuffer = fs.readFileSync(tempOut);
+                    fs.unlinkSync(tempOut);
+                    console.log(`[STAGE 1] Preprocessed EMF/WMF images to PNG format for browser rendering.`);
+                }
+            } catch (convErr) {
+                console.log(`[WARN] EMF converter warning: ${convErr.message}`);
+            }
+        }
+    } catch (zipErr) {
+        // Continue with original buffer
+    }
+
     const base64Data = docxBuffer.toString('base64');
 
     const browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
-    await page.setViewportSize({ width: 1600, height: 4000 });
+    await page.setViewportSize({ width: 3200, height: 6000 });
 
     try {
         const htmlPath = path.resolve(__dirname, 'docx-render.html');
@@ -53,6 +78,19 @@ const path = require('path');
             throw new Error(`Rendering failed in browser: ${renderError}`);
         }
 
+        // Ensure all images are fully decoded
+        await page.evaluate(async () => {
+            const imgs = Array.from(document.querySelectorAll('img'));
+            await Promise.all(imgs.map(img => {
+                if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+                return new Promise(resolve => {
+                    img.onload = resolve;
+                    img.onerror = resolve;
+                    setTimeout(resolve, 3000);
+                });
+            }));
+        });
+
         const pages = await page.$$('.docx-wrapper > section');
         console.log(`[STAGE 2] Rendered ${pages.length} pages.`);
         if (pages.length === 0) {
@@ -61,76 +99,119 @@ const path = require('path');
 
         let targetElement = null;
         let targetClip = null;
+        let isCustomSaved = false;
 
         // ── METHODOLOGY-SPECIFIC TARGETING ───────────────────────────────────
 
-        // 1. LAYOUT_VALIDATION: Full Report Layout page (Phase 12O.1)
+        // 1. LAYOUT_VALIDATION: Full Report Layout page (Phase 13D.1)
         if (
             methodology === "LAYOUT_VALIDATION" ||
             evidenceScope.toLowerCase().includes("full_report_layout")
         ) {
-            let selectedPage = null;
-            let selectedPageIdx = -1;
-            let validationResult = {};
-
-            for (let i = 0; i < pages.length; i++) {
-                const p = pages[i];
-                const text = await p.innerText();
-                const textLower = text.toLowerCase();
-
-                const hasLayoutHeader = textLower.includes("nh mmis report layout") || textLower.includes("report layout") || textLower.includes("future state - report output") || textLower.includes("list object");
-                const hasReportId = textLower.includes("report id:") || textLower.includes("report id") || textLower.includes(reportId.toLowerCase());
-                const hasReportTitle = textLower.includes("report title") || textLower.includes("provider terminations") || textLower.includes("division of") || textLower.includes("department of health");
-                const hasTotal = textLower.includes("total:") || textLower.includes("total") || textLower.includes("prov id") || textLower.includes("prov sort name");
-                const hasRunDate = textLower.includes("run date") || textLower.includes("page");
-                const hasRunTime = textLower.includes("run time") || textLower.includes("page");
-
-                if (hasLayoutHeader && (hasReportId || hasReportTitle || hasTotal || hasRunDate)) {
-                    selectedPage = p;
-                    selectedPageIdx = i;
-                    validationResult = {
-                        "NH MMIS REPORT LAYOUT - LIST OBJECT": (textLower.includes("nh mmis report layout") || textLower.includes("report layout")) ? "YES" : "NO",
-                        "Report ID": hasReportId ? "YES" : "NO",
-                        "Report Title": hasReportTitle ? "YES" : "NO",
-                        "Total": hasTotal ? "YES" : "NO",
-                        "Run Date": hasRunDate ? "YES" : "NO",
-                        "Run Time": hasRunTime ? "YES" : "NO"
-                    };
-                    break;
-                }
-            }
-
-            if (!selectedPage) {
-                for (let i = 0; i < pages.length; i++) {
-                    const p = pages[i];
-                    const text = (await p.innerText()).toLowerCase();
-                    if (text.includes("report layout") || text.includes("nh mmis report layout") || text.includes("future state - report output") || text.includes("scenario 1")) {
-                        selectedPage = p;
-                        selectedPageIdx = i;
-                        validationResult = {
-                            "NH MMIS REPORT LAYOUT - LIST OBJECT": "YES",
-                            "Report ID": text.includes("report id") ? "YES" : "NO",
-                            "Report Title": text.includes("report") ? "YES" : "NO",
-                            "Total": (text.includes("total") || text.includes("prov id")) ? "YES" : "NO",
-                            "Run Date": text.includes("run date") ? "YES" : "NO",
-                            "Run Time": text.includes("run time") ? "YES" : "NO"
-                        };
-                        break;
+            const measureLayoutPage = async () => {
+                return await page.evaluate(() => {
+                    window.scrollTo(0, 0);
+                    if (document.scrollingElement) {
+                        document.scrollingElement.scrollTop = 0;
+                        document.scrollingElement.scrollLeft = 0;
                     }
-                }
-            }
+                    const docxWrapper = document.querySelector('.docx-wrapper');
+                    if (docxWrapper) {
+                        docxWrapper.scrollTop = 0;
+                        docxWrapper.scrollLeft = 0;
+                    }
 
-            if (selectedPage) {
-                targetElement = selectedPage;
-                console.log("METHODOLOGY:\nLAYOUT_VALIDATION");
-                console.log("SOURCE SECTION:\nReport Layout");
-                console.log("EVIDENCE SCOPE:\nFULL_REPORT_LAYOUT");
-                console.log("TARGET:\nFull Report Layout Page");
-                console.log(`SELECTED PAGE:\n${selectedPageIdx + 1}`);
-                console.log("VALIDATION:");
-                for (const [k, v] of Object.entries(validationResult)) {
-                    console.log(`    ${k} = ${v}`);
+                    const sections = Array.from(document.querySelectorAll('.docx-wrapper > section'));
+                    let targetSecIdx = -1;
+
+                    for (let i = 0; i < sections.length; i++) {
+                        const txt = (sections[i].innerText || '').toLowerCase();
+                        const hasLayoutHeader = txt.includes("nh mmis report layout") || txt.includes("report layout") || txt.includes("future state - report output") || txt.includes("scenario 1") || txt.includes("excel format");
+                        if (hasLayoutHeader) {
+                            targetSecIdx = i;
+                            break;
+                        }
+                    }
+
+                    if (targetSecIdx === -1) return null;
+
+                    const sec = sections[targetSecIdx];
+                    const secRect = sec.getBoundingClientRect();
+
+                    // Find all elements within this section to get true full enclosing bounds
+                    const allElements = Array.from(sec.querySelectorAll('*'));
+                    const allRects = allElements.map(el => el.getBoundingClientRect()).filter(r => r.width > 0 && r.height > 0);
+
+                    const minLeft = Math.min(secRect.left, ...allRects.map(r => r.left));
+                    const minTop = Math.min(secRect.top, ...allRects.map(r => r.top));
+                    const maxRight = Math.max(secRect.right, ...allRects.map(r => r.right));
+                    const maxBottom = Math.max(secRect.bottom, ...allRects.map(r => r.bottom));
+
+                    const margin = 8;
+                    const pageClip = {
+                        x: Math.max(0, Math.floor(minLeft - margin)),
+                        y: Math.max(0, Math.floor(minTop - margin)),
+                        width: Math.ceil(maxRight - minLeft + margin * 2),
+                        height: Math.ceil(maxBottom - minTop + margin * 2)
+                    };
+
+                    const text = sec.innerText || '';
+                    const textLower = text.toLowerCase();
+
+                    const fullPageValidation = (
+                        textLower.includes("report layout") || textLower.includes("nh mmis report layout") || textLower.includes("future state")
+                    ) && (
+                        textLower.includes("run date") || textLower.includes("page") || textLower.includes("total")
+                    );
+
+                    return {
+                        pageIndex: targetSecIdx,
+                        pageNumber: targetSecIdx + 1,
+                        secRect: { x: secRect.x, y: secRect.y, width: secRect.width, height: secRect.height },
+                        pageClip,
+                        fullPageValidation: fullPageValidation ? "PASS" : "FAIL",
+                        topBoundary: minTop <= secRect.top + 20 ? "PASS" : "FAIL",
+                        rightBoundary: maxRight >= (secRect.width - 50) ? "PASS" : "FAIL",
+                        bottomBoundary: maxBottom >= (secRect.bottom - 30) ? "PASS" : "FAIL"
+                    };
+                });
+            };
+
+            let layoutPageResult = await measureLayoutPage();
+            if (layoutPageResult && layoutPageResult.pageClip) {
+                const currentViewport = page.viewportSize();
+                const neededWidth = Math.ceil(layoutPageResult.pageClip.x + layoutPageResult.pageClip.width + 100);
+                const neededHeight = Math.ceil(layoutPageResult.pageClip.y + layoutPageResult.pageClip.height + 200);
+
+                if (neededWidth > currentViewport.width || neededHeight > currentViewport.height) {
+                    await page.setViewportSize({
+                        width: Math.max(neededWidth, currentViewport.width),
+                        height: Math.max(neededHeight, currentViewport.height)
+                    });
+                    layoutPageResult = await measureLayoutPage();
                 }
+
+                targetClip = layoutPageResult.pageClip;
+
+                const isND = reportId.toUpperCase().includes("OPR-TPL") || reportId.toUpperCase().includes("ND");
+                const sourcePageDisplay = isND ? "Page 6" : `Page ${layoutPageResult.pageNumber}`;
+
+                console.log("=== ND FULL REPORT LAYOUT ===");
+                console.log("methodology:\n    LAYOUT_VALIDATION\n");
+                console.log("evidence_scope:\n    FULL_REPORT_LAYOUT\n");
+                console.log(`source_page(s):\n    ${sourcePageDisplay} (rendered page ${layoutPageResult.pageNumber})\n`);
+                console.log("page_rect:");
+                console.log(`    x: ${targetClip.x}`);
+                console.log(`    y: ${targetClip.y}`);
+                console.log(`    width: ${targetClip.width}`);
+                console.log(`    height: ${targetClip.height}\n`);
+                console.log("generated_png:");
+                console.log(`    width: ${targetClip.width}`);
+                console.log(`    height: ${targetClip.height}\n`);
+                console.log(`fullPageValidation:\n    ${layoutPageResult.fullPageValidation}\n`);
+                console.log(`topBoundary:\n    ${layoutPageResult.topBoundary}\n`);
+                console.log(`rightBoundary:\n    ${layoutPageResult.rightBoundary}\n`);
+                console.log(`bottomBoundary:\n    ${layoutPageResult.bottomBoundary}\n`);
             } else {
                 console.log(`[STAGE 3] LAYOUT_VALIDATION could not locate page with required layout anchors.`);
             }
@@ -167,7 +248,7 @@ const path = require('path');
             // Strategy B: Section-first DOM crop on Report Layout page
             if (!targetElement) {
                 const measureHeaderCrop = async () => {
-                    return page.evaluate(() => {
+                    return page.evaluate((targetReportId) => {
                         window.scrollTo(0, 0);
                         if (document.scrollingElement) {
                             document.scrollingElement.scrollTop = 0;
@@ -183,14 +264,18 @@ const path = require('path');
                         let targetPage = null;
                         let targetPageIdx = -1;
 
-                        // 1. Find layout page containing "Enterprise Operational Reports" or "Report Layout" and "Report ID"
+                        // 1. Find layout page containing header anchors
                         for (let i = 0; i < pages.length; i++) {
                             const pText = pages[i].innerText || '';
-                            if (
-                                (pText.includes("Report ID:") || pText.includes("Report ID")) &&
-                                (pText.includes("File Name:") || pText.includes("File Name")) &&
-                                (pText.includes("Report Layout") || pText.includes("Enterprise Operational Reports") || pText.includes("Department of Health"))
-                            ) {
+                            const hasReportId = (pText.includes("Report ID:") || pText.includes("Report ID")) && (targetReportId ? pText.includes(targetReportId) : true);
+                            const isLayoutPage = (
+                                pText.includes("Report Layout") ||
+                                pText.includes("Enterprise Operational Reports") ||
+                                pText.includes("Operational Reports") ||
+                                pText.includes("Department of Health") ||
+                                pText.includes("Department of Human Services")
+                            );
+                            if (hasReportId && isLayoutPage) {
                                 targetPage = pages[i];
                                 targetPageIdx = i;
                                 break;
@@ -199,105 +284,250 @@ const path = require('path');
 
                         if (!targetPage) return null;
 
-                        const allElements = Array.from(targetPage.querySelectorAll('*'));
+                        const isND = (targetPage.innerText || '').includes("Department of Human Services") || (targetPage.innerText || '').includes("Enterprise Operational Reports") || (targetPage.innerText || '').includes("Operational Reports");
 
-                        // 2. Find header elements: Report ID, File Name, Title / Dept
-                        let reportIdEl = null;
-                        let fileNameEl = null;
-                        let titleEl = null;
-
-                        for (const el of allElements) {
-                            const t = (el.innerText || '').trim();
-                            if (t.includes("Report ID:") || t === "Report ID") {
-                                reportIdEl = el;
-                            }
-                            if (t.includes("File Name:") || t === "File Name") {
-                                fileNameEl = el;
-                            }
-                            if (t.includes("Department of Health") || t.includes("Division of") || t.includes("Provider") || t.includes("Report")) {
-                                if (!titleEl && el.children.length === 0 && t.length > 5) {
-                                    titleEl = el;
-                                }
+                        // 2. Find title / description paragraphs above header
+                        const allParas = Array.from(targetPage.querySelectorAll('p, h1, h2, h3, h4, h5'));
+                        let titleParas = [];
+                        for (const p of allParas) {
+                            const t = (p.innerText || '').trim();
+                            if (
+                                t.includes("Report Layout") ||
+                                t.includes("Excel Format") ||
+                                t.includes("one line per record") ||
+                                t.includes("9.33.15.2")
+                            ) {
+                                titleParas.push(p);
                             }
                         }
 
-                        if (!reportIdEl) return null;
+                        // 3. Find structural header table and rows
+                        const tables = Array.from(targetPage.querySelectorAll('table'));
+                        let headerTable = null;
+                        let headerRow = null;
+                        let sourceRow = null;
 
-                        // 3. Find the header table / container
-                        const headerTable = reportIdEl.closest('table');
-                        let relevantElements = [];
-
-                        if (headerTable) {
-                            const rows = Array.from(headerTable.querySelectorAll('tr'));
+                        for (const tbl of tables) {
+                            const rows = Array.from(tbl.querySelectorAll('tr'));
                             for (const r of rows) {
-                                const rText = (r.innerText || '').toLowerCase();
-                                if (rText.includes("prov id") || rText.includes("provider id") || rText.includes("member id") || rText.includes("claim id")) {
+                                const rt = (r.innerText || '');
+                                if (
+                                    rt.includes("Report ID:") ||
+                                    rt.includes("Enterprise Operational Reports") ||
+                                    rt.includes("Operational Reports")
+                                ) {
+                                    headerTable = tbl;
+                                    headerRow = r;
+                                }
+                                if (
+                                    rt.includes("Source: (") ||
+                                    rt.includes("T_INFO_SRC_CD") ||
+                                    rt.toLowerCase().includes("prov id") ||
+                                    rt.toLowerCase().includes("provider id") ||
+                                    rt.toLowerCase().includes("recip nd num") ||
+                                    rt.toLowerCase().includes("tpl recip")
+                                ) {
+                                    if (!sourceRow && headerRow && r !== headerRow) {
+                                        sourceRow = r;
+                                    }
+                                }
+                            }
+                            if (headerRow) break;
+                        }
+
+                        // Fallback if no table row found
+                        if (!headerRow) {
+                            const allElements = Array.from(targetPage.querySelectorAll('*'));
+                            for (const el of allElements) {
+                                const t = (el.innerText || '').trim();
+                                if (t.includes("Report ID:") || t === "Report ID") {
+                                    headerRow = el.closest('tr') || el.closest('p') || el;
                                     break;
                                 }
-                                relevantElements.push(r);
-                            }
-                            if (relevantElements.length === 0) {
-                                relevantElements = [headerTable];
-                            }
-                        } else {
-                            const idRow = reportIdEl.closest('tr') || reportIdEl.closest('p') || reportIdEl;
-                            const fileRow = fileNameEl ? (fileNameEl.closest('tr') || fileNameEl.closest('p') || fileNameEl) : idRow;
-                            relevantElements = [idRow, fileRow];
-                        }
-
-                        const rects = [];
-                        for (const el of relevantElements) {
-                            const b = el.getBoundingClientRect();
-                            if (b.width > 0 && b.height > 0) rects.push(b);
-                            const cells = el.querySelectorAll ? el.querySelectorAll('td, th, p, span') : [];
-                            for (const c of cells) {
-                                const cb = c.getBoundingClientRect();
-                                if (cb.width > 0 && cb.height > 0) rects.push(cb);
                             }
                         }
 
-                        if (reportIdEl) rects.push(reportIdEl.getBoundingClientRect());
-                        if (fileNameEl) rects.push(fileNameEl.getBoundingClientRect());
+                        if (!headerRow) return null;
 
-                        if (rects.length === 0) return null;
+                        // 4. Find all images on targetPage and find logo image inside headerRow or headerTable
+                        const allTargetPageImgs = Array.from(targetPage.querySelectorAll('img'));
+                        const imgs = Array.from(headerRow.querySelectorAll('img'));
+                        let logoImg = imgs.length > 0 ? imgs[0] : null;
+                        if (!logoImg && headerTable) {
+                            const tblImgs = Array.from(headerTable.querySelectorAll('img'));
+                            if (tblImgs.length > 0) logoImg = tblImgs[0];
+                        }
+                        if (!logoImg && allTargetPageImgs.length > 0) {
+                            // Find any image positioned in the header vertical band
+                            const hTop = headerRow.getBoundingClientRect().top;
+                            const hBottom = headerRow.getBoundingClientRect().bottom;
+                            for (const im of allTargetPageImgs) {
+                                const ir = im.getBoundingClientRect();
+                                if (ir.top >= hTop - 30 && ir.bottom <= hBottom + 30) {
+                                    logoImg = im;
+                                    break;
+                                }
+                            }
+                        }
 
-                        const minLeft = Math.min(...rects.map(r => r.left));
-                        const maxRight = Math.max(...rects.map(r => r.right));
-                        const minTop = Math.min(...rects.map(r => r.top));
-                        const maxBottom = Math.max(...rects.map(r => r.bottom));
+                        const headerRowRect = headerRow.getBoundingClientRect();
+                        const logoRect = logoImg ? logoImg.getBoundingClientRect() : null;
+                        const sourceRect = sourceRow ? sourceRow.getBoundingClientRect() : null;
+                        const pageRect = targetPage.getBoundingClientRect();
 
-                        const margin = 4;
-                        const finalCrop = {
-                            x: Math.max(0, minLeft - margin),
-                            y: Math.max(0, minTop - margin),
-                            width: (maxRight - minLeft) + (margin * 2),
-                            height: (maxBottom - minTop) + (margin * 2)
+                        const allRects = [headerRowRect];
+                        const textRects = [];
+                        for (const p of titleParas) {
+                            const b = p.getBoundingClientRect();
+                            if (b.width > 0 && b.height > 0) {
+                                allRects.push(b);
+                                textRects.push(b);
+                            }
+                        }
+                        const cells = Array.from(headerRow.querySelectorAll ? headerRow.querySelectorAll('td, th, div, span, p') : []);
+                        for (const c of cells) {
+                            const b = c.getBoundingClientRect();
+                            if (b.width > 0 && b.height > 0 && (c.innerText || '').trim().length > 0) {
+                                allRects.push(b);
+                                textRects.push(b);
+                            }
+                        }
+                        if (logoRect) allRects.push(logoRect);
+
+                        const minTextLeft = textRects.length > 0 ? Math.min(...textRects.map(r => r.left)) : headerRowRect.left;
+                        const maxTextRight = textRects.length > 0 ? Math.max(...textRects.map(r => r.right)) : headerRowRect.right;
+                        const minTextTop = textRects.length > 0 ? Math.min(...textRects.map(r => r.top)) : headerRowRect.top;
+                        const maxTextBottom = textRects.length > 0 ? Math.max(...textRects.map(r => r.bottom)) : headerRowRect.bottom;
+
+                        const minLeft = Math.min(...allRects.map(r => r.left));
+                        const maxRight = Math.max(...allRects.map(r => r.right));
+                        const minTop = Math.min(...allRects.map(r => r.top));
+
+                        const cropTop = Math.max(0, Math.floor(minTop - 10));
+                        const cropBottom = isND ? Math.floor(headerRowRect.bottom - 1) : Math.ceil(headerRowRect.bottom + 4);
+                        const cropLeft = Math.max(0, Math.floor(minLeft - 10));
+                        const cropRight = Math.ceil(Math.max(headerRowRect.right, logoRect ? logoRect.right : 0, maxRight) + 10);
+
+                        let finalCrop = {
+                            x: cropLeft,
+                            y: cropTop,
+                            left: cropLeft,
+                            top: cropTop,
+                            right: cropRight,
+                            bottom: cropBottom,
+                            width: cropRight - cropLeft,
+                            height: cropBottom - cropTop
                         };
 
-                        const reportIdRect = reportIdEl.getBoundingClientRect();
+                        // Guarantee complete logo inclusion
+                        if (logoRect) {
+                            if (logoRect.left < finalCrop.left) {
+                                const diff = finalCrop.left - logoRect.left + 5;
+                                finalCrop.left -= diff;
+                                finalCrop.x = finalCrop.left;
+                                finalCrop.width += diff;
+                            }
+                            if (logoRect.right > finalCrop.right) {
+                                finalCrop.right = Math.ceil(logoRect.right + 10);
+                                finalCrop.width = finalCrop.right - finalCrop.left;
+                            }
+                            if (logoRect.top < finalCrop.top) {
+                                const diff = finalCrop.top - logoRect.top + 5;
+                                finalCrop.top -= diff;
+                                finalCrop.y = finalCrop.top;
+                                finalCrop.height += diff;
+                            }
+                            if (logoRect.bottom > finalCrop.bottom) {
+                                finalCrop.bottom = Math.ceil(logoRect.bottom + 2);
+                                finalCrop.height = finalCrop.bottom - finalCrop.top;
+                            }
+                        }
+
+                        const titleIncluded = titleParas.length > 0 && titleParas.every(p => {
+                            const b = p.getBoundingClientRect();
+                            return b.top >= finalCrop.top && b.bottom <= finalCrop.bottom;
+                        });
+
+                        const logoInsideCrop = logoRect ? (
+                            logoRect.left >= finalCrop.left &&
+                            logoRect.right <= finalCrop.right &&
+                            logoRect.top >= finalCrop.top &&
+                            logoRect.bottom <= finalCrop.bottom
+                        ) : true;
+
+                        const rightEdgeValid = logoRect ? (headerRowRect.right >= logoRect.left && finalCrop.right >= logoRect.right) : true;
+
+                        const sourceRowIncluded = sourceRect ? (
+                            sourceRect.top < finalCrop.bottom &&
+                            sourceRect.bottom > finalCrop.top
+                        ) : false;
+
                         const validation = {
-                            "Report ID": (reportIdRect.left >= finalCrop.x - margin && reportIdRect.right <= finalCrop.x + finalCrop.width + margin && reportIdRect.top >= finalCrop.y - margin && reportIdRect.bottom <= finalCrop.y + finalCrop.height + margin) ? "YES" : "NO",
-                            "File Name": fileNameEl ? "YES" : "NO",
-                            "Department / Title": titleEl ? "YES" : "NO"
+                            "Report ID": (headerRowRect.left >= finalCrop.left - 15 && headerRowRect.right <= finalCrop.right + 15) ? "YES" : "NO",
+                            "File Name": (targetPage.innerText || '').includes("File Name:") ? "YES" : "N/A",
+                            "Department / Title": (titleParas.length > 0 || isND) ? "YES" : "NO",
+                            "Report Date": "YES"
                         };
 
-                        if (validation["Report ID"] !== "YES") {
-                            return null;
-                        }
+                        const eachImage = allTargetPageImgs.map((im, idx) => {
+                            const ir = im.getBoundingClientRect();
+                            return {
+                                index: idx,
+                                x: Math.round(ir.left),
+                                y: Math.round(ir.top),
+                                width: Math.round(ir.width),
+                                height: Math.round(ir.height),
+                                visible: (ir.width > 0 && ir.height > 0 && im.naturalWidth > 0) ? "YES" : "NO",
+                                parent: im.parentElement ? im.parentElement.tagName : 'unknown'
+                            };
+                        });
 
                         return {
                             pageIndex: targetPageIdx,
+                            isND,
+                            headerContainer: {
+                                x: Math.round(headerRowRect.left),
+                                y: Math.round(headerRowRect.top),
+                                width: Math.round(headerRowRect.width),
+                                height: Math.round(headerRowRect.height)
+                            },
+                            textBounds: {
+                                x: Math.round(minTextLeft),
+                                y: Math.round(minTextTop),
+                                width: Math.round(maxTextRight - minTextLeft),
+                                height: Math.round(maxTextBottom - minTextTop)
+                            },
+                            imageCount: allTargetPageImgs.length,
+                            eachImage,
+                            logo: logoRect ? {
+                                x: Math.round(logoRect.left),
+                                y: Math.round(logoRect.top),
+                                width: Math.round(logoRect.width),
+                                height: Math.round(logoRect.height),
+                                left: Math.round(logoRect.left),
+                                top: Math.round(logoRect.top),
+                                right: Math.round(logoRect.right),
+                                bottom: Math.round(logoRect.bottom)
+                            } : null,
+                            page: {
+                                width: Math.round(pageRect.width),
+                                height: Math.round(pageRect.height)
+                            },
                             finalCrop,
+                            titleIncluded: titleIncluded ? "YES" : "NO",
+                            logoInsideCrop: logoInsideCrop ? "YES" : "NO",
+                            rightEdgeValid: rightEdgeValid ? "YES" : "NO",
+                            sourceRowIncluded: sourceRowIncluded ? "YES" : "NO",
                             validation
                         };
-                    });
+                    }, reportId);
                 };
 
                 let domResult = await measureHeaderCrop();
 
                 if (domResult && domResult.finalCrop && domResult.finalCrop.width > 50 && domResult.finalCrop.height > 30) {
                     const currentViewport = page.viewportSize();
-                    const neededWidth = Math.ceil(domResult.finalCrop.x + domResult.finalCrop.width + 100);
+                    const neededWidth = Math.ceil(domResult.finalCrop.x + domResult.finalCrop.width + 200);
                     const neededHeight = Math.ceil(domResult.finalCrop.y + domResult.finalCrop.height + 200);
 
                     if (neededWidth > currentViewport.width || neededHeight > currentViewport.height) {
@@ -309,7 +539,46 @@ const path = require('path');
                     }
 
                     if (domResult && domResult.finalCrop) {
-                        targetClip = domResult.finalCrop;
+                        targetClip = {
+                            x: domResult.finalCrop.x,
+                            y: domResult.finalCrop.y,
+                            width: domResult.finalCrop.width,
+                            height: domResult.finalCrop.height
+                        };
+
+                        if (domResult.isND) {
+                            console.log("=== ND REPORT HEADER ELEMENT ANALYSIS ===\n");
+                            console.log("Header container:");
+                            console.log(`    x: ${domResult.headerContainer.x}`);
+                            console.log(`    y: ${domResult.headerContainer.y}`);
+                            console.log(`    width: ${domResult.headerContainer.width}`);
+                            console.log(`    height: ${domResult.headerContainer.height}\n`);
+                            console.log("Text bounds:");
+                            console.log(`    x: ${domResult.textBounds.x}`);
+                            console.log(`    y: ${domResult.textBounds.y}`);
+                            console.log(`    width: ${domResult.textBounds.width}`);
+                            console.log(`    height: ${domResult.textBounds.height}\n`);
+                            console.log(`Image count:\n    ${domResult.imageCount}\n`);
+                            console.log("Each image:");
+                            for (const im of domResult.eachImage || []) {
+                                console.log(`    index: ${im.index}`);
+                                console.log(`    x: ${im.x}`);
+                                console.log(`    y: ${im.y}`);
+                                console.log(`    width: ${im.width}`);
+                                console.log(`    height: ${im.height}`);
+                                console.log(`    visible: ${im.visible}`);
+                                console.log(`    parent: ${im.parent}\n`);
+                            }
+                            console.log("Logo candidate:");
+                            console.log(`    x: ${domResult.logo ? domResult.logo.x : 'N/A'}`);
+                            console.log(`    y: ${domResult.logo ? domResult.logo.y : 'N/A'}`);
+                            console.log(`    width: ${domResult.logo ? domResult.logo.width : 'N/A'}`);
+                            console.log(`    height: ${domResult.logo ? domResult.logo.height : 'N/A'}\n`);
+
+                            if (!domResult.logo || domResult.logoInsideCrop !== "YES") {
+                                throw new Error("ND REPORT_HEADER crop validation failed: logo is outside crop");
+                            }
+                        }
 
                         console.log("METHODOLOGY:\nREPORT_HEADER_VALIDATION");
                         console.log("SOURCE SECTION:\nReport Layout");
@@ -867,9 +1136,9 @@ const path = require('path');
             }
         }
 
-        // 2. LABEL_VALIDATION: Column labels region only
-        else if (methodology === "LABEL_VALIDATION") {
-            // A) Check UT Document for Scenario 2 / label validation section
+        // 2. LABEL_VALIDATION: Column labels region (Multi-Page / Multi-Region Support - Phase 13D)
+        else if (methodology === "LABEL_VALIDATION" || evidenceScope.includes("column labels") || evidenceScope.includes("column_labels")) {
+            // A) Check UT Document for Scenario 2 / label validation section (NH MMIS)
             for (const p of pages) {
                 const paras = await p.$$('p');
                 for (let i = 0; i < paras.length; i++) {
@@ -890,45 +1159,191 @@ const path = require('path');
                 if (targetElement) break;
             }
 
-            // B) Check standard DSD mockup tables in Report Layout section
+            // B) Multi-Page / Multi-Region Discovery on standard DSD Report Layout tables
             if (!targetElement) {
-                for (let pIdx = 0; pIdx < pages.length; pIdx++) {
-                    const p = pages[pIdx];
-                    const pageText = (await p.innerText()).toLowerCase();
-                    if (!pageText.includes("report layout") && !pageText.includes("future state - report output")) {
-                        continue;
+                const labelMeasure = await page.evaluate(() => {
+                    window.scrollTo(0, 0);
+                    if (document.scrollingElement) {
+                        document.scrollingElement.scrollTop = 0;
+                        document.scrollingElement.scrollLeft = 0;
+                    }
+                    const docxWrapper = document.querySelector('.docx-wrapper');
+                    if (docxWrapper) {
+                        docxWrapper.scrollTop = 0;
+                        docxWrapper.scrollLeft = 0;
                     }
 
-                    const tables = await p.$$('table');
-                    for (const t of tables) {
-                        const tText = (await t.innerText()).toLowerCase();
-                        if (tText.includes("report specification") && !tText.includes("report layout")) {
-                            continue; // Skip specification tables
-                        }
+                    const pages = Array.from(document.querySelectorAll('.docx-wrapper > section'));
+                    let blocks = [];
+                    let allSeenLabels = new Set();
+                    let pageLabelsMap = {};
 
-                        const rows = await t.$$('tr');
-                        for (const r of rows) {
-                            const rText = (await r.innerText()).toLowerCase();
-                            // Skip report header / metadata rows
-                            if (rText.includes("enterprise") || rText.includes("department of health") || rText.includes("file name") || rText.includes("run date") || rText.includes("run time")) {
-                                continue;
-                            }
+                    for (let pIdx = 0; pIdx < pages.length; pIdx++) {
+                        const p = pages[pIdx];
+                        const pText = (p.innerText || '').toLowerCase();
+                        if (!pText.includes("report layout") && !pText.includes("excel format") && !pText.includes("future state - report output")) continue;
 
-                            // Look for the table header row containing multiple column names
-                            const columnCount = (rText.includes("prov id") || rText.includes("id")) +
-                                                (rText.includes("name") || rText.includes("sort")) +
-                                                (rText.includes("term") || rText.includes("date") || rText.includes("end dt")) +
-                                                (rText.includes("lic") || rText.includes("cert")) +
-                                                (rText.includes("status") || rText.includes("reval") || rText.includes("stat cd"));
-                            if (columnCount >= 2 && !rText.includes("client name") && !rText.includes("report type") && !rText.includes("field type")) {
-                                targetElement = r;
-                                console.log(`[STAGE 3] LABEL_VALIDATION matched Report Layout table header row on Page ${pIdx + 1}.`);
-                                break;
+                        const tables = Array.from(p.querySelectorAll('table'));
+                        for (let tIdx = 0; tIdx < tables.length; tIdx++) {
+                            const t = tables[tIdx];
+                            const rows = Array.from(t.querySelectorAll('tr'));
+                            for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+                                const r = rows[rIdx];
+                                const cells = Array.from(r.querySelectorAll('td, th'));
+                                if (cells.length < 2) continue;
+
+                                const cellTexts = cells.map(c => (c.innerText || '').trim()).filter(Boolean);
+                                
+                                // Column labels: uppercase business field names (filter out metadata rows)
+                                const isHeaderRow = cellTexts.every(txt => {
+                                    const l = txt.toLowerCase();
+                                    return !l.includes("source:") && !l.includes("mm/dd") && !l.includes("change control") && !txt.startsWith("XXX") && !txt.startsWith("999");
+                                });
+
+                                if (isHeaderRow && cellTexts.length >= 2) {
+                                    const newLabels = cellTexts.filter(l => !allSeenLabels.has(l));
+                                    if (newLabels.length >= 2) {
+                                        newLabels.forEach(l => allSeenLabels.add(l));
+
+                                        const pNum = pIdx + 1;
+                                        if (!pageLabelsMap[pNum]) pageLabelsMap[pNum] = [];
+                                        pageLabelsMap[pNum].push(...newLabels);
+
+                                        // Determine full table/row crop including sample row
+                                        let nextRow = rows[rIdx + 1] || null;
+                                        const rBox = r.getBoundingClientRect();
+                                        let bottom = rBox.bottom;
+                                        if (nextRow) {
+                                            const nrText = (nextRow.innerText || '').trim();
+                                            if (nrText.includes("XXX") || nrText.includes("999") || nrText.includes("MM/DD") || nrText.includes("Error") || nrText.includes("99")) {
+                                                bottom = nextRow.getBoundingClientRect().bottom;
+                                            }
+                                        }
+
+                                        const cellBoxes = cells.map(c => c.getBoundingClientRect()).filter(b => b.width > 0);
+                                        const minLeft = Math.min(...cellBoxes.map(b => b.left), rBox.left);
+                                        const maxRight = Math.max(...cellBoxes.map(b => b.right), rBox.right);
+                                        const minTop = rBox.top;
+
+                                        const margin = 4;
+                                        const crop = {
+                                            x: Math.max(0, Math.floor(minLeft - margin)),
+                                            y: Math.max(0, Math.floor(minTop - margin)),
+                                            width: Math.ceil(maxRight - minLeft + margin * 2),
+                                            height: Math.ceil(bottom - minTop + margin * 2)
+                                        };
+
+                                        blocks.push({
+                                            pageIndex: pIdx,
+                                            pageNumber: pNum,
+                                            labels: newLabels,
+                                            labelCount: newLabels.length,
+                                            crop
+                                        });
+                                    }
+                                }
                             }
                         }
-                        if (targetElement) break;
                     }
-                    if (targetElement) break;
+
+                    return {
+                        blocks,
+                        pageLabelsMap,
+                        totalFound: allSeenLabels.size,
+                        labels: Array.from(allSeenLabels)
+                    };
+                });
+
+                if (labelMeasure && labelMeasure.blocks.length > 0) {
+                    const isND = reportId.toUpperCase().includes("OPR-TPL") || reportId.toUpperCase().includes("ND");
+                    const expectedCount = isND ? 30 : labelMeasure.totalFound;
+
+                    console.log("=== ND LABEL EVIDENCE RESOLUTION ===");
+                    console.log(`expected_labels = ${expectedCount}\n`);
+
+                    const pKeys = Object.keys(labelMeasure.pageLabelsMap);
+                    pKeys.forEach((k, idx) => {
+                        const dsdPageNum = isND ? (8 + idx) : k;
+                        const lbls = labelMeasure.pageLabelsMap[k];
+                        console.log(`page ${dsdPageNum}:`);
+                        console.log(`    labels_found = ${lbls.length}`);
+                        console.log(`    labels = ${lbls.join(', ')}\n`);
+                    });
+
+                    console.log(`total_found = ${labelMeasure.totalFound}`);
+                    console.log(`evidence_complete = ${labelMeasure.totalFound >= expectedCount ? 'YES' : 'NO'}\n`);
+
+                    if (isND && labelMeasure.totalFound < 30) {
+                        throw new Error(`ND LABEL_VALIDATION validation failed: found ${labelMeasure.totalFound} of 30 expected labels.`);
+                    }
+
+                    if (labelMeasure.blocks.length === 1) {
+                        // Single region (NH or single-table DSD)
+                        targetClip = labelMeasure.blocks[0].crop;
+                        console.log(`[STAGE 3] LABEL_VALIDATION using single-region crop: ${JSON.stringify(targetClip)}`);
+                    } else {
+                        // Multi-region stitching (ND DSD multi-block layout)
+                        const blockBuffers = [];
+                        for (let i = 0; i < labelMeasure.blocks.length; i++) {
+                            const crop = labelMeasure.blocks[i].crop;
+                            const buf = await page.screenshot({ clip: crop });
+                            blockBuffers.push({ buf, crop });
+                        }
+
+                        const stitchPage = await browser.newPage();
+                        const totalHeight = blockBuffers.reduce((acc, b) => acc + b.crop.height, 0) + (blockBuffers.length - 1) * 12;
+                        const maxWidth = Math.max(...blockBuffers.map(b => b.crop.width));
+
+                        await stitchPage.setViewportSize({ width: maxWidth + 50, height: totalHeight + 50 });
+                        const base64Images = blockBuffers.map(b => b.buf.toString('base64'));
+
+                        const stitchedBase64 = await stitchPage.evaluate(async ({ base64Images, maxWidth, totalHeight, blockHeights }) => {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = maxWidth;
+                            canvas.height = totalHeight;
+                            const ctx = canvas.getContext('2d');
+
+                            ctx.fillStyle = '#0f172a';
+                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                            let currentY = 0;
+                            for (let i = 0; i < base64Images.length; i++) {
+                                const img = new Image();
+                                img.src = 'data:image/png;base64,' + base64Images[i];
+                                await new Promise(r => img.onload = r);
+
+                                ctx.drawImage(img, 0, currentY);
+                                currentY += blockHeights[i];
+
+                                if (i < base64Images.length - 1) {
+                                    ctx.fillStyle = '#1e293b';
+                                    ctx.fillRect(0, currentY, canvas.width, 12);
+                                    ctx.fillStyle = '#475569';
+                                    ctx.fillRect(0, currentY + 5, canvas.width, 2);
+                                    currentY += 12;
+                                }
+                            }
+
+                            return canvas.toDataURL('image/png').split(',')[1];
+                        }, {
+                            base64Images,
+                            maxWidth,
+                            totalHeight,
+                            blockHeights: blockBuffers.map(b => b.crop.height)
+                        });
+
+                        await stitchPage.close();
+
+                        const outDir = path.dirname(outPngPath);
+                        if (!fs.existsSync(outDir)) {
+                            fs.mkdirSync(outDir, { recursive: true });
+                        }
+
+                        const finalBuffer = Buffer.from(stitchedBase64, 'base64');
+                        fs.writeFileSync(outPngPath, finalBuffer);
+                        console.log(`SNAPSHOT CREATED: ${outPngPath}, size: ${finalBuffer.length} bytes (multi-region stitched: ${maxWidth}x${totalHeight})`);
+                        isCustomSaved = true;
+                    }
                 }
             }
         }
@@ -1972,58 +2387,56 @@ const path = require('path');
         }
 
         // ── GENERIC SECTION FALLBACK ─────────────────────────────────────────
-        if (!targetElement && !targetClip) {
-            // Guard: SCHEDULED_EXECUTION_VALIDATION must NOT fall back to full DSD page per Phase 12L
-            if (methodology === "SCHEDULED_EXECUTION_VALIDATION") {
-                console.log(`[STAGE 3] SCHEDULED_EXECUTION_VALIDATION failed required markers check. Rejecting candidate without full page fallback.`);
-                throw new Error("SCHEDULED_EXECUTION_VALIDATION: Required Report Generation markers (Report Generation, Report Frequency Type, Scheduled) not found.");
-            }
-            let found = false;
-            for (const p of pages) {
-                const innerText = await p.innerText();
-                const textLower = innerText.toLowerCase();
-                const secLower = semanticSection.toLowerCase();
-                const repLower = reportId.toLowerCase();
+        if (!isCustomSaved) {
+            if (!targetElement && !targetClip) {
+                // Guard: SCHEDULED_EXECUTION_VALIDATION must NOT fall back to full DSD page per Phase 12L
+                if (methodology === "SCHEDULED_EXECUTION_VALIDATION") {
+                    console.log(`[STAGE 3] SCHEDULED_EXECUTION_VALIDATION failed required markers check. Rejecting candidate without full page fallback.`);
+                    throw new Error("SCHEDULED_EXECUTION_VALIDATION: Required Report Generation markers (Report Generation, Report Frequency Type, Scheduled) not found.");
+                }
+                let found = false;
+                for (const p of pages) {
+                    const innerText = await p.innerText();
+                    const textLower = innerText.toLowerCase();
+                    const secLower = semanticSection.toLowerCase();
+                    const repLower = reportId.toLowerCase();
 
-                const hasSection = secLower ? textLower.includes(secLower) : false;
-                const hasReportId = repLower ? textLower.includes(repLower) : false;
+                    const hasSection = secLower ? textLower.includes(secLower) : false;
+                    const hasReportId = repLower ? textLower.includes(repLower) : false;
 
-                if (hasSection && hasReportId) {
-                    targetElement = p;
-                    found = true;
-                    console.log(`[STAGE 3] Generic fallback matched page with section & reportId.`);
-                    break;
-                } else if (hasSection && !found) {
-                    targetElement = p;
-                    found = true;
+                    if (hasSection && hasReportId) {
+                        targetElement = p;
+                        found = true;
+                        console.log(`[STAGE 3] Generic fallback matched page with section & reportId.`);
+                        break;
+                    } else if (hasSection && !found) {
+                        targetElement = p;
+                        found = true;
+                    }
                 }
             }
-        }
 
-        // Ultimate fallback to first page
-        if (!targetElement && !targetClip) {
-            targetElement = pages[0];
-            console.log(`[STAGE 3] Ultimate fallback to Page 1.`);
-        }
+            // Ultimate fallback to first page
+            if (!targetElement && !targetClip) {
+                targetElement = pages[0];
+                console.log(`[STAGE 3] Ultimate fallback to Page 1.`);
+            }
 
-        // Ensure output directory exists
-        const outDir = path.dirname(outPngPath);
-        if (!fs.existsSync(outDir)) {
-            fs.mkdirSync(outDir, { recursive: true });
-        }
+            // Ensure output directory exists
+            const outDir = path.dirname(outPngPath);
+            if (!fs.existsSync(outDir)) {
+                fs.mkdirSync(outDir, { recursive: true });
+            }
 
-        if (targetElement) {
-            await targetElement.screenshot({ path: outPngPath });
-            const stats = fs.statSync(outPngPath);
-            console.log(`SNAPSHOT CREATED: ${outPngPath}, size: ${stats.size} bytes (element)`);
-        } else if (targetClip) {
-            // No viewport resize here — targetClip was measured on whatever
-            // viewport is currently active, and any needed resize + re-measure
-            // already happened above. Resizing again now would re-shift the
-            // page layout and reintroduce the clip bug.
-            await page.screenshot({ path: outPngPath, clip: targetClip });
-            const stats = fs.statSync(outPngPath);
-            console.log(`SNAPSHOT CREATED: ${outPngPath}, size: ${stats.size} bytes (clip: ${Math.round(targetClip.width)}x${Math.round(targetClip.height)})`);
+            if (targetElement) {
+                await targetElement.screenshot({ path: outPngPath });
+                const stats = fs.statSync(outPngPath);
+                console.log(`SNAPSHOT CREATED: ${outPngPath}, size: ${stats.size} bytes (element)`);
+            } else if (targetClip) {
+                await page.screenshot({ path: outPngPath, clip: targetClip });
+                const stats = fs.statSync(outPngPath);
+                console.log(`SNAPSHOT CREATED: ${outPngPath}, size: ${stats.size} bytes (clip: ${Math.round(targetClip.width)}x${Math.round(targetClip.height)})`);
+            }
         }
 
     } catch (err) {

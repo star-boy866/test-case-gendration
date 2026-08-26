@@ -4,8 +4,19 @@
     <meta charset="UTF-8">
     <title>DOCX Render Harness</title>
     <style>
-        body { margin: 0; padding: 0; background: #fff; }
+        body, html { margin: 0; padding: 0; background: #ffffff !important; width: 100%; height: 100%; }
         #container { width: 100%; height: 100%; }
+        .docx-wrapper {
+            background: #ffffff !important;
+            padding: 0 !important;
+            display: block !important;
+        }
+        .docx-wrapper > section.docx, section.docx, article {
+            margin: 0 0 30px 0 !important;
+            box-shadow: none !important;
+            background: #ffffff !important;
+            overflow: visible !important;
+        }
     </style>
 </head>
 <body>

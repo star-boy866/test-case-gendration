@@ -49,9 +49,50 @@ def _compute_sha256(path: Path) -> str:
     return sha256.hexdigest()
 
 
+from app.cognos.detection.dsd_format_detector import (
+    DSDFormatDetector,
+    DSDProfile,
+    DSDDetectionResult,
+)
+
+
+@router.post("/detect-dsd-format", response_model=DSDDetectionResult)
+async def detect_dsd_format(
+    file: UploadFile = File(...),
+    current_user: CurrentUser = Depends(require_role("tester")),
+):
+    """
+    Inspects an uploaded DOCX to detect the DSD format profile (NH, ND, AK).
+    """
+    ext = Path(file.filename or "").suffix.lower()
+    if ext != ".docx":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only .docx files are supported for format detection (got '{ext}')."
+        )
+
+    upload_dir = Path(settings.UPLOAD_DIR)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    contents = await file.read()
+    with tempfile.NamedTemporaryFile(dir=upload_dir, suffix=ext, delete=False) as tmp:
+        tmp.write(contents)
+        tmp_path = Path(tmp.name)
+
+    try:
+        result = DSDFormatDetector.detect_format(tmp_path, file.filename)
+        return result
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 @router.post("/upload-and-generate")
 async def upload_and_generate(
     file: UploadFile = File(...),
+    dsd_profile: str = Form("AUTO"),
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_role("tester")),
 ):
@@ -77,12 +118,35 @@ async def upload_and_generate(
         
     file_hash = _compute_sha256(tmp_path)
 
+    # Validate / Route DSD Profile
+    effective_profile = dsd_profile.upper() if dsd_profile else "AUTO"
+    if effective_profile == "AUTO":
+        detection = DSDFormatDetector.detect_format(tmp_path, file.filename)
+        effective_profile = detection.detected_format
+        if effective_profile == DSDProfile.UNKNOWN.value:
+            raise HTTPException(
+                status_code=400,
+                detail="Unable to determine DSD format. Please select NH / ND / AK manually."
+            )
+
+    if effective_profile == DSDProfile.AK.value or effective_profile == "AK":
+        raise HTTPException(
+            status_code=400,
+            detail="AK format detected. AK processing is not enabled yet."
+        )
+    elif effective_profile not in (DSDProfile.NH.value, DSDProfile.ND.value, "NH", "ND"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported DSD profile '{effective_profile}'."
+        )
+
     try:
-        # Run the full pipeline
+        # Run the full pipeline via profile dispatcher (supports NH & ND)
         pipeline_result = run_cognos_pipeline(
             tmp_path, 
             source_document_name=file.filename,
-            use_llm_assist=False  # Disabled until deterministic path is proven correct
+            use_llm_assist=False,  # Disabled until deterministic path is proven correct
+            dsd_profile=effective_profile,
         )
         
         # --- FAIL-ON-INVALID GUARDRAIL ---
@@ -370,12 +434,15 @@ def get_source_snapshot(
         safe_evidence_id = evidence_id or (f"snap_{test_case_id}_{methodology[:6]}" if (test_case_id or methodology) else "default")
         png_path = evidence_dir / f"source_snapshot_{safe_evidence_id}.png"
 
-    # Cache check: return cached PNG if file exists and has size > 0
-    if png_path.exists() and png_path.stat().st_size > 0:
-        logger.info(f"[SOURCE_SNAPSHOT CACHE HIT] {png_path} ({png_path.stat().st_size} bytes)")
-        return FileResponse(path=png_path, media_type="image/png")
-
     render_script = Path(__file__).parent.parent.parent / "render" / "render_snapshot.js"
+
+    # Cache check: return cached PNG if file exists, has size > 0, and is not older than render_snapshot.js
+    if png_path.exists() and png_path.stat().st_size > 0:
+        if render_script.exists() and png_path.stat().st_mtime >= render_script.stat().st_mtime:
+            logger.info(f"[SOURCE_SNAPSHOT CACHE HIT] {png_path} ({png_path.stat().st_size} bytes)")
+            return FileResponse(path=png_path, media_type="image/png")
+        else:
+            logger.info(f"[SOURCE_SNAPSHOT CACHE INVALIDATED] {png_path} is older than render_snapshot.js. Regenerating...")
     
     # Try to find node executable path (fallback if 'node' not in PATH)
     node_cmd = "node"

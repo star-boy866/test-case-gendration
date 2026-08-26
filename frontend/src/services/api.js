@@ -148,9 +148,20 @@ export const getJudgeEvaluation = (sessionId) =>
   api.get(`/generation/${sessionId}/judge-evaluation`);
 
 // Cognos Report Generation
-export const uploadCognosDocument = ({ file }) => {
+export const detectDsdFormat = (file) => {
   const formData = new FormData();
   formData.append("file", file);
+  return api.post("/cognos/detect-dsd-format", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
+
+export const uploadCognosDocument = ({ file, dsdProfile = "AUTO" }) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (dsdProfile) {
+    formData.append("dsd_profile", dsdProfile);
+  }
   return api.post("/cognos/upload-and-generate", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });

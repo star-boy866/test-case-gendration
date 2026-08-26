@@ -55,6 +55,8 @@ class EvidenceReference(BaseModel):
     source_document_id: str = ""
     source_document_url: str = ""
     page_number: Optional[int] = None
+    source_pages: list[int] = Field(default_factory=list)
+    page_display: str = ""
     section: str = ""
     source_text: str = ""
     snapshot_path: str = ""       # Absolute physical path

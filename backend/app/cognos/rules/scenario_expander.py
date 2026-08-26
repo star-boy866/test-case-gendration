@@ -1276,31 +1276,46 @@ class ScenarioExpander:
         layout = self.rd.layout
         meta = self.rd.metadata
         
-        dept = meta.division_department or getattr(meta, 'department', '') or "DHHS"
         report_id = self.rid if self.rid and self.rid != "NOT_DEFINED" else (meta.report_id or "REPORT_ID")
         report_title = self.rname if self.rname and self.rname != "NOT_DEFINED" else (meta.report_title or "REPORT_TITLE")
         
-        # Look for file name in layout or metadata
-        file_name = getattr(layout, 'file_name', '') or getattr(meta, 'file_name', '')
-        if not file_name:
-            if layout and layout.header_elements:
-                for elem in layout.header_elements:
-                    if "file" in elem.element_name.lower():
-                        file_name = elem.element_name
-                        break
-        if not file_name:
-            file_name = f"{report_id}.csv" if report_id else "DSD_FILE_NAME"
+        if layout and layout.header_elements:
+            header_items = []
+            for elem in layout.header_elements:
+                header_items.append(f"   - {elem.element_name}: {elem.element_value}")
+            header_fields_desc = "\n".join(header_items)
             
-        date_format = "MM/DD/CCYY"
-        
-        header_fields_desc = (
-            f"   - Report ID: {report_id}\n"
-            f"   - File Name: {file_name}\n"
-            f"   - Department: {dept}\n"
-            f"   - Report Title: {report_title}\n"
-            f"   - Report Date: {date_format}"
-        )
-        
+            has_file_name = any("file" in elem.element_name.lower() for elem in layout.header_elements)
+            if not has_file_name:
+                expected_result = (
+                    f"The {report_id} report header matches the ND DSD layout specification, "
+                    f"including Report ID, Line of Business, Department of Human Services, "
+                    f"Report Title, report date format, and applicable branding."
+                )
+            else:
+                expected_result = (
+                    f"All DSD-defined report header fields are displayed correctly in the Cognos output. "
+                    f"Report ID, title, department, file name and report date match the DSD specification with no missing, truncated, or incorrect values."
+                )
+        else:
+            dept = meta.division_department or getattr(meta, 'department', '') or "DHHS"
+            file_name = getattr(layout, 'file_name', '') or getattr(meta, 'file_name', '')
+            if not file_name:
+                file_name = f"{report_id}.csv" if report_id else "DSD_FILE_NAME"
+            date_format = "MM/DD/CCYY"
+            
+            header_fields_desc = (
+                f"   - Report ID: {report_id}\n"
+                f"   - File Name: {file_name}\n"
+                f"   - Department: {dept}\n"
+                f"   - Report Title: {report_title}\n"
+                f"   - Report Date: {date_format}"
+            )
+            expected_result = (
+                f"All DSD-defined report header fields are displayed correctly in the Cognos output. "
+                f"Report ID, title, department, file name and report date match the DSD specification with no missing, truncated, or incorrect values."
+            )
+            
         test_steps = (
             f"1. Generate report {report_id} with qualifying data.\n"
             f"2. Open the report output in Cognos viewer.\n"
@@ -1324,10 +1339,7 @@ class ScenarioExpander:
             preconditions=f"Report '{report_id}' has been executed and output is available for inspection.",
             test_data="N/A — standard report execution data with qualifying records.",
             test_steps=test_steps,
-            expected_result=(
-                f"All DSD-defined report header fields are displayed correctly in the Cognos output. "
-                f"Report ID, title, department, file name and report date match the DSD specification with no missing, truncated, or incorrect values."
-            ),
+            expected_result=expected_result,
             evidences=evidences,
             ev_refs=ev_refs,
             req_ids=req_ids,

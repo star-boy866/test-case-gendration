@@ -32,7 +32,10 @@ reference-quality detailed test cases with full source traceability.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from app.domain.cognos_models import ReportDefinition
 from app.domain.cognos_requirement import RequirementSet
@@ -88,6 +91,7 @@ def run_cognos_pipeline(
     source_document_name: str | None = None,
     target_report_id: str | None = None,
     use_llm_assist: bool = False,
+    dsd_profile: str | None = "AUTO",
 ) -> PipelineResult:
     """
     Run the complete Cognos UT test case generation pipeline.
@@ -95,9 +99,10 @@ def run_cognos_pipeline(
     Args:
         docx_path: Path to the Cognos Report Definition DOCX file.
         source_document_name: Name of the source document for traceability.
+        dsd_profile: Target DSD state profile ('AUTO', 'NH', 'ND', 'AK').
 
     Returns:
-        FinalReportContext containing the report definition, requirements,
+        PipelineResult containing the report definition, requirements,
         generated test suite, and optional traceability result.
     """
     path = Path(docx_path)
@@ -106,47 +111,22 @@ def run_cognos_pipeline(
 
     all_warnings: list[str] = []
 
-    # --- Stage 1: Parse DOCX via Canonical Document Model ---
-    canonical_doc = parse_cognos_docx(path)
-    
-    # --- Stage 2: Schema-driven DSD Interpreter ---
-    from app.cognos.extraction.nh_mmis_dsd_interpreter import NhMmisDsdInterpreter
-    from app.cognos.extraction.nh_mmis_requirement_builder import NhMmisRequirementBuilder
-    from app.cognos.extraction.nh_mmis_dsd_mapper import map_dsd_to_domain
+    # --- Stage 1 & 2: Schema-driven DSD Interpretation via Profile Dispatcher ---
+    from app.cognos.profiles.dsd_profile_dispatcher import dispatch_and_interpret_dsd
     import hashlib
-    
+
     # Generate a job_id based on filename and contents hash for isolated storage
     job_id = target_report_id or hashlib.md5(str(path.absolute()).encode()).hexdigest()[:8]
     job_dir = Path("jobs") / job_id
-    
-    interpreter = NhMmisDsdInterpreter(canonical_doc)
-    dsd = interpreter.interpret()
-    
-    builder = NhMmisRequirementBuilder(dsd, {})
-    req_set = builder.build()
-    
-    report_def = map_dsd_to_domain(dsd, source_document_name)
+
+    report_def, req_set, dsd = dispatch_and_interpret_dsd(
+        docx_path=path,
+        source_document_name=source_document_name,
+        dsd_profile=dsd_profile,
+    )
     all_warnings.extend(req_set.warnings)
     dedup_messages = detect_and_mark_duplicates(req_set)
     all_warnings.extend(dedup_messages)
-    
-    # ---------------------------------------------------------
-    # DEBUG: Print NhMmisDsd and RequirementSet before test gen
-    # ---------------------------------------------------------
-    print("\n" + "="*80)
-    print("DEBUG OUTPUT: NhMmisDsd")
-    print("="*80)
-    print(f"Total DSD Report Specification rows: {len(dsd.report_specification)}")
-    for i, rsr in enumerate(dsd.report_specification):
-        print(f"  [{i}] label='{rsr.business_label}' table='{rsr.source_table}' col='{rsr.source_column}'")
-        
-    print("\n" + "="*80)
-    print("DEBUG OUTPUT: RequirementSet")
-    print("="*80)
-    print(f"Total Requirements: {len(req_set.requirements)}")
-    for i, req in enumerate(req_set.requirements):
-        print(f"  [{i}] {req.category.value} | {req.field} | {req.requirement_text[:80]}")
-    print("="*80 + "\n")
 
     # --- Stage 4: Generate test cases via generic rule engine ---
     test_cases = generate_all_test_cases(report_def, req_set)
@@ -167,33 +147,42 @@ def run_cognos_pipeline(
     test_cases, validation_warnings = validate_test_cases(test_cases)
     all_warnings.extend(validation_warnings)
 
-    # --- Stage 6.1: Semantic Proof Generation ---
-    from app.services.dsd_semantic_proof_renderer import DSDSemanticProofRenderer, EvidenceTarget
-    proof_renderer = DSDSemanticProofRenderer(job_dir / "evidence")
-    for tc in test_cases:
-        labels = set()
-        req_ids = tc.requirement_ids or []
-        for rid in req_ids:
-            for r in req_set.requirements:
-                if r.requirement_id == rid and r.field:
-                    labels.add(r.field.strip().lower())
-                    
-        target = EvidenceTarget(
-            methodology=tc.methodology_pattern or "",
-            target_labels=labels,
-            source_column=tc.source_column.strip().lower() if tc.source_column else None,
-            test_case_id=tc.test_case_id
-        )
-        proof_ref = proof_renderer.render(dsd, report_def, req_set, target)
-        if proof_ref:
-            tc.evidence_references = [proof_ref]
+    # --- Stage 6.1: Semantic Proof Generation (Phase 13D.3: Profile-Aware) ---
+    from app.cognos.extraction.nd_mmis_dsd_models import NdMmisDsd
+    if isinstance(dsd, NdMmisDsd):
+        logger.info("[PIPELINE STAGE 6.1] Semantic DSD Proof skipped for profile ND MMIS (semantic_proof_status = NOT_APPLICABLE_FOR_PROFILE).")
+    else:
+        from app.services.dsd_semantic_proof_renderer import DSDSemanticProofRenderer, EvidenceTarget
+        proof_renderer = DSDSemanticProofRenderer(job_dir / "evidence")
+        for tc in test_cases:
+            labels = set()
+            req_ids = tc.requirement_ids or []
+            for rid in req_ids:
+                for r in req_set.requirements:
+                    if r.requirement_id == rid and r.field:
+                        labels.add(r.field.strip().lower())
+                        
+            target = EvidenceTarget(
+                methodology=tc.methodology_pattern or "",
+                target_labels=labels,
+                source_column=tc.source_column.strip().lower() if tc.source_column else None,
+                test_case_id=tc.test_case_id
+            )
+            proof_ref = proof_renderer.render(dsd, report_def, req_set, target)
+            if proof_ref:
+                tc.evidence_references = [proof_ref]
 
-    # --- Stage 6.2: Source DSD Snapshot (PHASE 11.3) ---
+    # --- Stage 6.2: Source DSD Snapshot (PHASE 11.3 / PHASE 13C) ---
     # Appends a second evidence reference of type SOURCE_DSD_SNAPSHOT to each
     # test case that already has a semantic proof.  Never replaces the proof.
     # Silently skips when no snapshot data is available.
-    from app.services.dsd_snapshot_resolver import DSDSnapshotResolver
-    snapshot_resolver = DSDSnapshotResolver(job_dir / "evidence")
+    from app.cognos.extraction.nd_mmis_dsd_models import NdMmisDsd
+    if isinstance(dsd, NdMmisDsd):
+        from app.cognos.extraction.nd_dsd_snapshot_resolver import NdDsdSnapshotResolver
+        snapshot_resolver = NdDsdSnapshotResolver(job_dir / "evidence")
+    else:
+        from app.services.dsd_snapshot_resolver import DSDSnapshotResolver
+        snapshot_resolver = DSDSnapshotResolver(job_dir / "evidence")
     for tc in test_cases:
         methodology = tc.methodology_pattern or ""
         if not methodology:

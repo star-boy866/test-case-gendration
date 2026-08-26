@@ -64,6 +64,11 @@ class DSDSemanticProofRenderer:
         try:
             if not target.methodology:
                 return None
+
+            # Phase 13D.3: Profile check — NhMmisDsd only
+            if not hasattr(dsd, "report_definition") or not hasattr(dsd, "report_specification"):
+                logger.info(f"DSDSemanticProofRenderer: DSD type {type(dsd).__name__} does not have NH MMIS semantic structure; semantic_proof_status = NOT_APPLICABLE_FOR_PROFILE.")
+                return None
                 
             img_name = f"proof_{target.test_case_id}.png" if target.test_case_id else f"proof_{hash(str(target))}.png"
             img_path = self.output_dir / img_name
