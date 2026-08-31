@@ -155,6 +155,9 @@ def run_cognos_pipeline(
         from app.services.dsd_semantic_proof_renderer import DSDSemanticProofRenderer, EvidenceTarget
         proof_renderer = DSDSemanticProofRenderer(job_dir / "evidence")
         for tc in test_cases:
+            if "EXEC" in tc.test_case_id or tc.methodology_pattern == "SCHEDULED_EXECUTION_VALIDATION":
+                # Phase 15.6: EXEC-01 uses ONLY Source DSD Snapshot for Report Generation, skip Semantic Proof
+                continue
             labels = set()
             req_ids = tc.requirement_ids or []
             for rid in req_ids:

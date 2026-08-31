@@ -21,8 +21,15 @@ from app.domain.cognos_test_case import CognosTestCase
 
 
 _CATEGORY_ID_MAP = {
-    # Phase 10.6, 12, and 12R Developer UT Methodologies (Authoritative)
+    # Phase 10.6, 12, 12R, and 15.4 Developer UT Methodologies (Authoritative)
+    "Report Execution and Scheduling Validation": "EXEC",
+    "Report Execution & Scheduling Validation": "EXEC",
+    "Scheduled Execution Validation": "EXEC",
+    "Report Execution Validation": "EXEC",
+    "EXEC": "EXEC",
+    "SCHE": "EXEC",
     "Report Name Description Validation": "REPO",
+    "Report Definition Validation": "REPO",
     "Report Header Validation": "RHDR",
     "Report Section Heading Validation": "SECT",
     "Selection Criteria Validation": "SELC",
@@ -31,11 +38,10 @@ _CATEGORY_ID_MAP = {
     "Lookup Validation": "LOOK",
     "Output Delivery Validation": "OUTP",
     "Script Output Validation": "SCRI",
-    "Scheduled Execution Validation": "SCHE",
     "Sort Validation": "SORT",
     "Special Processing Validation": "SPEC",
     "Date Format Validation": "DATE",
-    "DB Report Data Validation": "DBRE",
+    "DB Report Data Validation": "DBRV",
     "DB Count Validation": "DBCO",
     "Duplicate Validation": "DUPL",
     "Control Break Validation": "CB",
@@ -76,9 +82,11 @@ _CATEGORY_ID_MAP = {
     "OUTPUT_FORMAT": "SCRI",
     "DISTRIBUTION": "OUTP",
     "RETENTION": "SCRI",
+    "SCHEDULED_EXECUTION_VALIDATION": "EXEC",
 }
 
 _CATEGORY_BASE_ORDER = {
+    "EXEC": 5,
     "REPO": 10,
     "RHDR": 20,
     "SECT": 30,
@@ -88,10 +96,10 @@ _CATEGORY_BASE_ORDER = {
     "LOOK": 70,
     "OUTP": 80,
     "SCRI": 100,
-    "SCHE": 120,
     "SORT": 130,
     "SPEC": 150,
     "DATE": 160,
+    "DBRV": 180,
     "DBRE": 180,
     "DBCO": 240,
     "DUPL": 250,
@@ -101,8 +109,16 @@ _CATEGORY_BASE_ORDER = {
 }
 
 _CATEGORY_ORDER = [
+    # 00  PRV027-EXEC-01: Report Execution and Scheduling Validation
+    "Report Execution and Scheduling Validation",
+    "Report Execution & Scheduling Validation",
+    "Scheduled Execution Validation",
+    "SCHEDULED_EXECUTION_VALIDATION",
+    "REPORT_EXECUTION_VALIDATION",
+
     # 01  PRV027-REPO-01: Report Name Description Validation
     "Report Name Description Validation",
+    "Report Definition Validation",
     "Metadata",
     "REPORT_NAME_DESCRIPTION_VALIDATION",
 
@@ -297,8 +313,11 @@ def assign_test_case_ids(
         base_order = _CATEGORY_BASE_ORDER.get(abbrev, 900)
         tc.scenario_order = base_order + (seq - 1) * 10
 
-    # Return ordered test cases via the single authoritative ordering function
-    return order_cognos_test_cases(sorted_cases)
+    # Return ordered test cases with normalized sequence orders
+    ordered = order_cognos_test_cases(sorted_cases)
+    for idx, tc in enumerate(ordered):
+        tc.scenario_order = (idx + 1) * 10
+    return ordered
 
 
 def validate_test_cases(

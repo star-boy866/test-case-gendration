@@ -157,6 +157,11 @@ class CognosTestCase(BaseModel):
     sort_field: str = ""             # Phase 12K.3 Sort field name (e.g. Prov Lic Cert Num)
     sort_direction: str = ""         # Phase 12K.3 Sort direction (Ascending / Descending)
     scenario_order: int = 0          # Phase 12Q Authoritative execution scenario order (10, 20, ..., 240)
+    
+    # --- Added for Phase 15 (Consolidate DB Report Data Validation SQL) ---
+    shared_sql_group: str = ""        # Phase 15 Shared SQL Group Identifier (e.g. PRV027_FULL_REPORT_SQL)
+    report_validation_sql: str = ""   # Phase 15 Full Report-Level Validation SQL
+    sql_purpose: str = ""             # Phase 15 Purpose of the SQL query / validation focus
 
     @property
     def requirement_id(self) -> str:

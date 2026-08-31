@@ -43,9 +43,8 @@ def test_pipeline_scheduled_execution_evidence_reference():
     assert len(sched_cases) == 1
     tc_sched = sched_cases[0]
 
-    # Verify both semantic proof and source snapshot exist
+    # Verify SOURCE_DSD_SNAPSHOT exists (Phase 15.6: standalone source snapshot without semantic proof)
     types = [ev.evidence_type for ev in tc_sched.evidence_references]
-    assert "DSD_SEMANTIC_PROOF" in types
     assert "SOURCE_DSD_SNAPSHOT" in types
 
     # Inspect SOURCE_DSD_SNAPSHOT metadata

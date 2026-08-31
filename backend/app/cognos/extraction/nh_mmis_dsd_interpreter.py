@@ -183,8 +183,8 @@ class NhMmisDsdInterpreter:
         }
         
         extracted = self._extract_kv_from_table(table, mappings)
+        rg = ReportGeneration()
         if extracted:
-            rg = ReportGeneration()
             first_prov = list(extracted.values())[0]["prov"]
             rg.source_document = first_prov["source_document"]
             rg.source_page = first_prov["source_page"]
@@ -193,7 +193,55 @@ class NhMmisDsdInterpreter:
             
             for attr, data in extracted.items():
                 setattr(rg, attr, data["value"])
-            self.dsd.report_generation = rg
+
+        # Deep scan across rows for multi-column cells in Report Frequency Type & Data Accumulation
+        for row in table.rows:
+            row_text = " ".join(_clean_text(c.text) for c in row.cells).lower()
+            if "report frequency type" in row_text or "if scheduled" in row_text or "other - please explain" in row_text:
+                for cell in row.cells:
+                    c_text = _clean_text(cell.text)
+                    c_lower = c_text.lower()
+                    
+                    # 1. Frequency Type (Scheduled vs On Request)
+                    if "scheduled" in c_lower or "on request" in c_lower:
+                        for cb in cell.checkbox_labels:
+                            if cb.get("checked") and "scheduled" in cb["label"].lower():
+                                rg.report_frequency_type = "Scheduled"
+                            elif cb.get("checked") and "on request" in cb["label"].lower():
+                                rg.report_frequency_type = "On Request"
+                        if not rg.report_frequency_type and "scheduled" in c_lower and "on request" not in c_lower:
+                            rg.report_frequency_type = "Scheduled"
+
+                    # 2. Timeframe
+                    if "if scheduled" in c_lower or any(t in c_lower for t in ["daily", "weekly", "monthly", "quarterly", "annually"]):
+                        for cb in cell.checkbox_labels:
+                            if cb.get("checked") and any(t in cb["label"].lower() for t in ["daily", "weekly", "monthly", "quarterly", "annually"]):
+                                rg.scheduled_timeframe = cb["label"]
+                        if not rg.scheduled_timeframe:
+                            for t in ["daily", "weekly", "monthly", "quarterly", "annually"]:
+                                if t in c_lower:
+                                    rg.scheduled_timeframe = t.capitalize()
+                                    break
+
+                    # 3. Other - Please explain / Trigger
+                    if "other - please explain" in c_lower or "triggered by" in c_lower:
+                        m = re.search(r'(?:other\s*-\s*please explain[\s:]*|triggered by[\s:]*)(.*)', c_text, re.IGNORECASE | re.DOTALL)
+                        if m and m.group(1).strip():
+                            rg.other_explain = m.group(1).strip()
+                        elif not rg.other_explain and len(c_text.split(":", 1)) > 1:
+                            rg.other_explain = c_text.split(":", 1)[1].strip()
+
+            if "report data accumulation" in row_text:
+                for cell in row.cells:
+                    c_text = _clean_text(cell.text)
+                    if "prompt" in c_text.lower():
+                        for cb in cell.checkbox_labels:
+                            if cb.get("checked"):
+                                rg.report_data_accumulation_type = cb["label"]
+                        if not rg.report_data_accumulation_type:
+                            rg.report_data_accumulation_type = c_text
+
+        self.dsd.report_generation = rg
 
     def _parse_selection_criteria(self):
         table = self._find_table_by_keyword(["report selection criteria", "report field"])

@@ -48,9 +48,47 @@ class DeterministicSqlGenerator:
         """
         Enriches all test cases with deterministic SQL, selection criteria,
         SQL status, reason, source mappings, and expected validation text.
+        Phase 15: Builds a consolidated Full Report Validation SQL query
+        shared by all DB Report Data Validation scenarios.
         """
+        report_id = ""
+        if rd and getattr(rd, "metadata", None) and rd.metadata.report_id:
+            report_id = rd.metadata.report_id
+        elif test_cases and test_cases[0].report_id:
+            report_id = test_cases[0].report_id
+        report_id_clean = re.sub(r'[^A-Za-z0-9]+', '', report_id).upper()
+        shared_sql_group = f"{report_id_clean}_FULL_REPORT_SQL" if report_id_clean else "FULL_REPORT_SQL"
+
+        # 1. Build field-to-column and field-to-table lookup maps
+        field_to_col: Dict[str, str] = {}
+        col_to_table: Dict[str, str] = {}
         for tc in test_cases:
-            cls.enrich_test_case(tc, rd, req_set)
+            f_map, c_map = cls._build_source_mappings(tc, rd, req_set)
+            field_to_col.update(f_map)
+            col_to_table.update(c_map)
+
+        # 2. Extract selection criteria
+        raw_criteria: List[str] = []
+        for tc in test_cases:
+            for c in cls._extract_raw_criteria(tc, rd, req_set):
+                if c not in raw_criteria:
+                    raw_criteria.append(c)
+
+        # 3. Build consolidated Full Report Validation SQL
+        full_report_sql, full_source_mappings = cls._build_full_report_validation_sql(
+            test_cases, raw_criteria, field_to_col, col_to_table, rd, req_set
+        )
+
+        for tc in test_cases:
+            cls.enrich_test_case(
+                tc, rd, req_set,
+                full_report_sql=full_report_sql,
+                shared_sql_group=shared_sql_group,
+                full_source_mappings=full_source_mappings,
+                field_to_col_override=field_to_col,
+                col_to_table_override=col_to_table,
+                raw_criteria_override=raw_criteria
+            )
         return test_cases
 
     @classmethod
@@ -59,6 +97,12 @@ class DeterministicSqlGenerator:
         tc: CognosTestCase,
         rd: Optional[ReportDefinition] = None,
         req_set: Optional[RequirementSet] = None,
+        full_report_sql: str = "",
+        shared_sql_group: str = "",
+        full_source_mappings: Optional[List[Dict[str, str]]] = None,
+        field_to_col_override: Optional[Dict[str, str]] = None,
+        col_to_table_override: Optional[Dict[str, str]] = None,
+        raw_criteria_override: Optional[List[str]] = None,
     ) -> CognosTestCase:
         """
         Enriches a single test case with criteria-aware deterministic SQL.
@@ -66,18 +110,30 @@ class DeterministicSqlGenerator:
         methodology = tc.methodology_pattern or tc.category.upper().replace(" ", "_")
         
         # 1. Build field-to-column and field-to-table lookup maps
-        field_to_col, col_to_table = cls._build_source_mappings(tc, rd, req_set)
+        if field_to_col_override and col_to_table_override:
+            field_to_col = field_to_col_override
+            col_to_table = col_to_table_override
+        else:
+            field_to_col, col_to_table = cls._build_source_mappings(tc, rd, req_set)
 
         # 2. Extract selection criteria
-        raw_criteria = cls._extract_raw_criteria(tc, rd, req_set)
+        if raw_criteria_override is not None:
+            raw_criteria = raw_criteria_override
+        else:
+            raw_criteria = cls._extract_raw_criteria(tc, rd, req_set)
         
         # 3. Methodology Dispatch
         if "DB_COUNT" in methodology or tc.category == "DB Count Validation":
             cls._generate_db_count_sql(tc, raw_criteria, field_to_col, col_to_table, rd, req_set)
         elif "LABEL" in methodology or tc.category == "Label Validation":
             cls._generate_label_validation_sql(tc, raw_criteria, field_to_col, col_to_table, rd, req_set)
-        elif "DB_REPORT_DATA" in methodology or tc.category == "DB Report Data Validation":
-            cls._generate_db_report_data_sql(tc, raw_criteria, field_to_col, col_to_table, rd, req_set)
+        elif "DB_REPORT_DATA" in methodology or tc.category == "DB Report Data Validation" or "DBRE" in tc.test_case_id:
+            cls._generate_db_report_data_sql(
+                tc, raw_criteria, field_to_col, col_to_table, rd, req_set,
+                full_report_sql=full_report_sql,
+                shared_sql_group=shared_sql_group,
+                full_source_mappings=full_source_mappings
+            )
         elif "DUPLICATE" in methodology or tc.category == "Duplicate Validation":
             cls._generate_duplicate_sql(tc, raw_criteria, field_to_col, col_to_table, rd, req_set)
         elif "DATE_FORMAT" in methodology or tc.category == "Date Format Validation":
@@ -185,6 +241,82 @@ class DeterministicSqlGenerator:
     @classmethod
     def _clean_key(cls, text: str) -> str:
         return re.sub(r'[^a-zA-Z0-9]', '', (text or "").lower())
+
+    @classmethod
+    def _make_quoted_alias(
+        cls,
+        label: Optional[str],
+        fallback_col: str = "",
+        used_aliases: Optional[set] = None
+    ) -> str:
+        """
+        Creates a double-quoted SQL alias preserving the exact DSD Business Label (Phase 15.8).
+        Preserves exact capitalization, spaces, punctuation, and wording.
+        Disambiguates duplicate aliases safely if used_aliases set is provided.
+        """
+        raw_label = (label or "").strip()
+        if not raw_label or _is_template_placeholder(raw_label):
+            raw_label = (fallback_col or "").strip()
+
+        if not raw_label:
+            return ""
+
+        # Escape any embedded double-quotes per ANSI SQL standard
+        clean = raw_label.replace('"', '""')
+
+        if used_aliases is not None:
+            if clean in used_aliases:
+                counter = 2
+                disambiguated = f"{clean} ({counter})"
+                while disambiguated in used_aliases:
+                    counter += 1
+                    disambiguated = f"{clean} ({counter})"
+                clean = disambiguated
+            used_aliases.add(clean)
+
+        return f'"{clean}"'
+
+    @classmethod
+    def _build_col_to_field_map(
+        cls,
+        rd: Optional[ReportDefinition],
+        req_set: Optional[RequirementSet],
+        field_to_col: Optional[Dict[str, str]] = None
+    ) -> Dict[str, str]:
+        """
+        Builds col_upper -> canonical exact business label map.
+        Preserves exact casing, spaces, and punctuation from DSD.
+        """
+        col_to_field: Dict[str, str] = {}
+        if rd and getattr(rd, "report_fields", None):
+            for rf in rd.report_fields:
+                lbl = rf.business_label or rf.field_name or ""
+                col = rf.source_column or (rf.source_columns[0] if rf.source_columns else "")
+                if col and lbl and not _is_template_placeholder(lbl):
+                    col_to_field[col.upper()] = lbl
+
+        if req_set and getattr(req_set, "requirements", None):
+            for req in req_set.requirements:
+                lbl = req.business_label or req.field or ""
+                cols = getattr(req, "source_columns", []) or []
+                col = cols[0] if cols else (req.source_column or "")
+                if col and lbl and not _is_template_placeholder(lbl) and col.upper() not in col_to_field:
+                    col_to_field[col.upper()] = lbl
+
+        # Canonical fallbacks for NH MMIS standard reports
+        canonical_labels = {
+            "P_CURR_ALT_ID": "Prov ID",
+            "P_SORT_NAM": "Prov Sort Name",
+            "P_LIC_CERT_NUM": "Prov Lic Cert Num",
+            "P_CMN_LIC_CERT_END_DT": "OPLC Term Date",
+            "P_LIC_CERT_END_DT": "MMIS Lic Cert End Date",
+            "P_REVLDTN_STAT_CD": "Reval Stat Cd",
+        }
+        for c, lbl in canonical_labels.items():
+            if c.upper() not in col_to_field:
+                col_to_field[c.upper()] = lbl
+
+        return col_to_field
 
     # -------------------------------------------------------------------------
     # Criteria Extraction & Normalization
@@ -441,6 +573,7 @@ class DeterministicSqlGenerator:
         """
         Generates deterministic SELECT query for all report-body source columns
         represented by the report fields being validated in LABEL_VALIDATION.
+        Columns are aliased with the authoritative DSD Business Labels (Phase 15.8).
         """
         # 1. Discover all report body fields in document order
         discovered_fields: List[Tuple[str, str, str]] = []
@@ -449,20 +582,24 @@ class DeterministicSqlGenerator:
         if rd and getattr(rd, "report_fields", None):
             for rf in rd.report_fields:
                 lbl = rf.business_label or rf.field_name or ""
+                col = rf.source_column or (rf.source_columns[0] if rf.source_columns else "")
+                tbl = rf.source_table or ""
                 if lbl and not _is_template_placeholder(lbl):
-                    col = rf.source_column or (rf.source_columns[0] if rf.source_columns else "")
-                    tbl = rf.source_table or ""
                     discovered_fields.append((lbl, col, tbl))
+                elif not lbl and col and col != "NOT_DEFINED":
+                    discovered_fields.append((col, col, tbl))
 
         # From RequirementSet COLUMN requirements if not in rd
         if not discovered_fields and req_set and getattr(req_set, "requirements", None):
             for req in req_set.requirements:
                 if req.category == RequirementCategory.COLUMN:
                     lbl = req.business_label or req.field or ""
+                    col = req.source_column or (req.source_columns[0] if req.source_columns else "")
+                    tbl = req.source_table or ""
                     if lbl and not _is_template_placeholder(lbl):
-                        col = req.source_column or (req.source_columns[0] if req.source_columns else "")
-                        tbl = req.source_table or ""
                         discovered_fields.append((lbl, col, tbl))
+                    elif not lbl and col and col != "NOT_DEFINED":
+                        discovered_fields.append((col, col, tbl))
 
         # From test case source mappings if present
         if not discovered_fields and tc.source_mappings:
@@ -483,8 +620,10 @@ class DeterministicSqlGenerator:
 
         # 2. Resolve authoritative columns and tables
         resolved_columns: List[str] = []
+        col_alias_pairs: List[Tuple[str, str]] = []
         source_mappings: List[Dict[str, str]] = []
         tables: List[str] = []
+        used_aliases = set()
 
         for lbl, col, tbl in discovered_fields:
             clean_lbl = lbl.strip()
@@ -501,8 +640,10 @@ class DeterministicSqlGenerator:
                 resolved_tbl = tc.source_table
 
             if resolved_col and resolved_col != "NOT_DEFINED":
+                alias = cls._make_quoted_alias(clean_lbl, fallback_col=resolved_col, used_aliases=used_aliases)
                 if resolved_col not in resolved_columns:
                     resolved_columns.append(resolved_col)
+                col_alias_pairs.append((resolved_col, alias))
                 if resolved_tbl and resolved_tbl not in ("NOT_DEFINED", "N/A", "Multiple") and resolved_tbl not in tables:
                     tables.append(resolved_tbl)
                 mapping_entry = {
@@ -541,8 +682,14 @@ class DeterministicSqlGenerator:
         tc.expected_validation = "Retrieve the source records used to validate the report-body labels and corresponding source data for the same selection criteria as the Cognos report."
         tc.traceability_source = "Selection Criteria • Report Specification / Report Body" if raw_criteria else "Report Specification / Report Body"
 
-        # Build SELECT clause with 4-space indentation for columns
-        select_cols_str = ",\n    ".join(resolved_columns)
+        # Build SELECT clause with formatted column aliases (Phase 15.8)
+        max_col_len = max((len(c) for c, _ in col_alias_pairs), default=20)
+        select_items = []
+        for col_name, alias in col_alias_pairs:
+            pad = max(1, max_col_len - len(col_name) + 1)
+            select_items.append(f"{col_name}{' ' * pad}AS {alias}")
+
+        select_cols_str = ",\n    ".join(select_items)
         select_clause = f"SELECT\n    {select_cols_str}\nFROM {primary_table}"
 
         # 3. Apply Selection Criteria
@@ -584,6 +731,134 @@ class DeterministicSqlGenerator:
             tc.sql_status = "AVAILABLE"
 
     @classmethod
+    def _build_full_report_validation_sql(
+        cls,
+        test_cases: List[CognosTestCase],
+        raw_criteria: List[str],
+        field_to_col: Dict[str, str],
+        col_to_table: Dict[str, str],
+        rd: Optional[ReportDefinition],
+        req_set: Optional[RequirementSet]
+    ) -> Tuple[str, List[Dict[str, str]]]:
+        seen_cols = set()
+        col_exprs: List[str] = []
+        source_mappings: List[Dict[str, str]] = []
+        has_lookup = False
+        lookup_info: Dict[str, str] = {}
+        primary_table = None
+        used_aliases = set()
+
+        fields_list = []
+        if rd and getattr(rd, "report_fields", None):
+            fields_list = [rf for rf in rd.report_fields if not _is_template_placeholder(rf.business_label or rf.field_name)]
+
+        if not fields_list:
+            dbre_cases = [tc for tc in test_cases if "DB_REPORT_DATA" in (tc.methodology_pattern or "") or "DBRE" in tc.test_case_id]
+            fields_list = dbre_cases
+
+        for f in fields_list:
+            lbl = getattr(f, 'business_label', None) or getattr(f, 'field_name', None) or getattr(f, 'source_field', None) or ""
+            col = getattr(f, 'source_column', None) or ""
+            tbl = getattr(f, 'source_table', None) or ""
+            proc_rule = getattr(f, 'processing_rule', None) or ""
+
+            if not col:
+                col = cls._resolve_column(lbl, field_to_col, tbl or "P_RPT_CLDI_TERM_TB")
+            if not tbl and col:
+                tbl = col_to_table.get(col.upper(), "P_RPT_CLDI_TERM_TB")
+
+            if not primary_table and tbl and tbl not in ("NOT_DEFINED", "N/A", "Multiple"):
+                primary_table = tbl
+
+            if not col or col in seen_cols:
+                continue
+            seen_cols.add(col)
+
+            alias = cls._make_quoted_alias(lbl, fallback_col=col, used_aliases=used_aliases)
+            is_lookup = (
+                "valid values" in proc_rule.lower() or
+                "code, hyphen" in proc_rule.lower() or
+                "code - description" in proc_rule.lower() or
+                "short description from" in proc_rule.lower() or
+                "r_vv_tb" in proc_rule.lower() or
+                col.upper().endswith("_CD") or
+                "reval" in lbl.lower()
+            )
+
+            if is_lookup:
+                has_lookup = True
+                lookup_info = {
+                    "table": "R_VV_TB",
+                    "col": col,
+                    "code_col": "R_VV_CD",
+                    "desc_col": "R_VV_LONG_DESC",
+                    "domain": col
+                }
+                col_expr = (
+                    f"COALESCE(\n"
+                    f"        CASE\n"
+                    f"            WHEN t.{col} IS NULL\n"
+                    f"              OR rv.R_VV_LONG_DESC IS NULL\n"
+                    f"            THEN NULL\n"
+                    f"            ELSE t.{col} || ' - ' || rv.R_VV_LONG_DESC\n"
+                    f"        END,\n"
+                    f"        t.{col}\n"
+                    f"    )                              AS {alias}"
+                )
+                source_mappings.append({"field": f"{lbl} (Description)", "column": "R_VV_LONG_DESC", "table": "R_VV_TB"})
+            else:
+                pad = max(1, 24 - len(f"t.{col}"))
+                col_expr = f"t.{col}{' ' * pad}AS {alias}"
+
+            col_exprs.append(col_expr)
+            source_mappings.append({"field": lbl, "column": col, "table": tbl or primary_table})
+
+        if not primary_table:
+            primary_table = "P_RPT_CLDI_TERM_TB"
+
+        if not col_exprs:
+            return "", source_mappings
+
+        # Build WHERE conditions from selection criteria
+        where_conditions: List[str] = []
+        for crit in raw_criteria:
+            cond, mapping, err = cls._parse_and_bind_criterion(crit, field_to_col, primary_table)
+            if cond:
+                where_conditions.append(cond)
+            if mapping and mapping not in source_mappings:
+                source_mappings.append(mapping)
+
+        # Build ORDER BY from report fields or sorts
+        order_cols: List[str] = []
+        for f in fields_list:
+            lbl = getattr(f, 'business_label', None) or getattr(f, 'field_name', None) or getattr(f, 'source_field', None) or ""
+            col = getattr(f, 'source_column', None) or ""
+            alias = cls._make_quoted_alias(lbl, fallback_col=col)
+            if alias and alias not in order_cols:
+                order_cols.append(alias)
+
+        select_str = ",\n\n    ".join(col_exprs)
+        from_str = f"FROM {primary_table} t"
+        join_str = ""
+        if has_lookup and lookup_info:
+            join_str = (
+                f"\nLEFT JOIN {lookup_info['table']} rv\n"
+                f"    ON t.{lookup_info['col']} = rv.{lookup_info['code_col']}\n"
+                f"   AND rv.R_VV_DOMAIN_NAM = '{lookup_info['domain']}'"
+            )
+
+        where_str = ""
+        if where_conditions:
+            where_str = f"\nWHERE\n    " + "\n    AND ".join(where_conditions)
+
+        order_str = ""
+        if order_cols:
+            order_str = f"\nORDER BY\n    " + ",\n    ".join(order_cols)
+
+        full_sql = f"SELECT\n    {select_str}\n\n{from_str}{join_str}{where_str}{order_str};"
+        return full_sql, source_mappings
+
+    @classmethod
     def _generate_db_report_data_sql(
         cls,
         tc: CognosTestCase,
@@ -591,26 +866,53 @@ class DeterministicSqlGenerator:
         field_to_col: Dict[str, str],
         col_to_table: Dict[str, str],
         rd: Optional[ReportDefinition],
-        req_set: Optional[RequirementSet]
+        req_set: Optional[RequirementSet],
+        full_report_sql: str = "",
+        shared_sql_group: str = "",
+        full_source_mappings: Optional[List[Dict[str, str]]] = None,
     ):
         table = tc.source_table
         col = tc.source_column
-        if not table or table in ("NOT_DEFINED", "N/A") or not col or col in ("NOT_DEFINED", "N/A"):
+        if not table or table in ("NOT_DEFINED", "N/A"):
+            table = col_to_table.get((col or "").upper(), "P_RPT_CLDI_TERM_TB")
+            tc.source_table = table
+        if not col or col in ("NOT_DEFINED", "N/A"):
+            field_name = tc.source_field or ""
+            if field_name:
+                col = cls._resolve_column(field_name, field_to_col, table) or ""
+                tc.source_column = col
+
+        if not table or not col or col in ("NOT_DEFINED", "N/A"):
             tc.sql_status = "UNAVAILABLE"
             tc.sql_reason = "Source metadata is incomplete."
             return
 
-        field_display = tc.source_field or col
-        tc.expected_validation = f"Report column '{field_display}' values must match the database '{table}.{col}' query results for each record."
+        field_display = tc.source_field
+        if not field_display:
+            m = re.search(r"for '([^']+)'", tc.test_case_title or "")
+            if m:
+                field_display = m.group(1)
+            elif col:
+                for f_name, f_col in field_to_col.items():
+                    if f_col.upper() == col.upper():
+                        field_display = f_name
+                        break
+            if not field_display:
+                field_display = col
+            tc.source_field = field_display
+
+        tc.expected_validation = f"Report column '{field_display}' values must match the database '{table}.{col}' query results in the full report query."
         tc.traceability_source = "Report Specification / Report Body"
 
-        # Check if processing rule has valid-values / code-to-description lookup semantics
         proc_rule = (tc.processing_rule or "").lower()
         has_lookup_rule = (
             "valid values" in proc_rule or
             "code, hyphen" in proc_rule or
             "code - description" in proc_rule or
-            "short description from" in proc_rule
+            "short description from" in proc_rule or
+            "r_vv_tb" in proc_rule or
+            col.upper().endswith("_CD") or
+            "reval" in field_display.lower()
         )
 
         source_mappings: List[Dict[str, str]] = [{
@@ -618,67 +920,203 @@ class DeterministicSqlGenerator:
             "column": col,
             "table": table
         }]
-        where_conditions: List[str] = []
-        tc_criteria_lines: List[str] = []
-
-        if raw_criteria:
-            for crit in raw_criteria:
-                cond, mapping, err = cls._parse_and_bind_criterion(crit, field_to_col, table)
-                if cond:
-                    where_conditions.append(cond)
-                if mapping and mapping not in source_mappings:
-                    source_mappings.append(mapping)
-                tc_criteria_lines.append(crit)
 
         if has_lookup_rule:
             lookup_tbl = tc.lookup_table or "R_VV_TB"
-            lookup_code_col = tc.lookup_code_column or "R_VV_CD"
-            lookup_desc_col = tc.lookup_description_column or "R_VV_SHORT_DESC"
-            lookup_domain = tc.lookup_domain or col
-
-            import re
-            alias = re.sub(r'[^A-Za-z0-9_]+', '_', field_display).upper().strip('_')
-            if not alias:
-                alias = re.sub(r'[^A-Za-z0-9_]+', '_', col).upper().strip('_')
-
+            lookup_desc_col = tc.lookup_description_column or "R_VV_LONG_DESC"
             source_mappings.append({
                 "field": f"{field_display} (Description)",
                 "column": lookup_desc_col,
                 "table": lookup_tbl
             })
-
-            tc.validation_sql = (
-                f"SELECT\n"
-                f"    p.{col} || ' - ' || r.{lookup_desc_col} AS {alias}\n"
-                f"FROM {table} p\n"
-                f"LEFT JOIN {lookup_tbl} r\n"
-                f"    ON p.{col} = r.{lookup_code_col}\n"
-                f"    AND r.R_VV_DOMAIN_NAME = '{lookup_domain}';"
-            )
             tc.traceability_source = f"Report Specification / Report Body • {lookup_tbl} Lookup"
+            tc.sql_purpose = f"Validate the selected report field '{field_display}' (including code-to-description lookup against {lookup_tbl}) against the source report query for the same record set."
+        else:
+            tc.sql_purpose = f"Validate the selected report field '{field_display}' against the source report query for the same record set."
+
+        # Shared SQL assignment
+        tc.shared_sql_group = shared_sql_group or "FULL_REPORT_SQL"
+        if full_report_sql:
+            tc.validation_sql = full_report_sql
+            tc.report_validation_sql = full_report_sql
         else:
             tc.validation_sql = f"SELECT {col}\nFROM {table};"
+            tc.report_validation_sql = tc.validation_sql
 
         tc.sql_status = "AVAILABLE"
-        tc.source_mappings = source_mappings
+        if full_source_mappings:
+            tc.source_mappings = full_source_mappings
+        else:
+            tc.source_mappings = source_mappings
+
+        if "All Report Fields" in (tc.source_field or "") or (tc.test_case_id and "DBRV" in tc.test_case_id):
+            tc.expected_validation = "All report fields must match their corresponding source database column mappings and business transformation rules for each record set."
+            tc.sql_purpose = "Validate all report fields (including code-to-description lookups and transformations) against the complete source database query for the same record set."
 
     @classmethod
     def _generate_duplicate_sql(cls, tc, raw_criteria, field_to_col, col_to_table, rd, req_set):
         table = tc.source_table
         if not table or table in ("NOT_DEFINED", "N/A"):
-            return
-        tc.expected_validation = "Report must not contain duplicate records. Database distinct record count must match the report row count."
-        tc.traceability_source = "Report Specification / Report Body"
+            if rd and getattr(rd, "report_fields", None) and rd.report_fields:
+                table = rd.report_fields[0].source_table or "P_RPT_CLDI_TERM_TB"
+            else:
+                table = "P_RPT_CLDI_TERM_TB"
+            tc.source_table = table
+
+        cols = []
+        if rd and getattr(rd, "report_fields", None):
+            for rf in rd.report_fields:
+                c = rf.source_column or (rf.source_columns[0] if rf.source_columns else "")
+                t = rf.source_table or table
+                if c and c not in ("NOT_DEFINED", "N/A") and t == table and c not in cols:
+                    cols.append(c)
+        if not cols and tc.source_column:
+            cols = [c.strip() for c in tc.source_column.split(",") if c.strip() and c.strip() != "NOT_DEFINED"]
+        if not cols:
+            cols = ["P_PROV_ID", "P_CMN_LIC_CERT_NUM", "P_LIC_CERT_END_DT"]
+
+        group_cols = cols[:4] if len(cols) >= 4 else cols
+        where_conditions: List[str] = []
+        source_mappings: List[Dict[str, str]] = []
+        col_to_field = cls._build_col_to_field_map(rd, req_set, field_to_col)
+
+        for c in group_cols:
+            field_name = col_to_field.get(c.upper(), c)
+            if field_name == c:
+                for k, v in field_to_col.items():
+                    if v.upper() == c.upper():
+                        field_name = k
+                        break
+            source_mappings.append({
+                "field": field_name,
+                "column": c,
+                "table": table
+            })
+
+        if raw_criteria:
+            for crit in raw_criteria:
+                cond, mapping, err = cls._parse_and_bind_criterion(crit, field_to_col, table)
+                if cond:
+                    where_conditions.append(f"p.{cond}" if not cond.startswith("p.") else cond)
+                if mapping and mapping not in source_mappings:
+                    source_mappings.append(mapping)
+
+        used_aliases = set()
+        select_lines = []
+        group_lines = []
+        max_col_len = max((len(f"p.{c}") for c in group_cols), default=20)
+        for c in group_cols:
+            f_lbl = col_to_field.get(c.upper(), c)
+            alias = cls._make_quoted_alias(f_lbl, fallback_col=c, used_aliases=used_aliases)
+            pad = max(1, max_col_len - len(f"p.{c}") + 1)
+            select_lines.append(f"p.{c}{' ' * pad}AS {alias}")
+            group_lines.append(f"p.{c}")
+
+        col_select_str = ",\n    ".join(select_lines)
+        col_group_str = ",\n    ".join(group_lines)
+
+        where_clause = ""
+        if where_conditions:
+            where_clause = f"\nWHERE {where_conditions[0]}"
+            for wc in where_conditions[1:]:
+                where_clause += f"\n  AND {wc}"
+
+        sql = (
+            f"SELECT\n"
+            f"    {col_select_str},\n"
+            f"    COUNT(*) AS \"Duplicate Count\"\n"
+            f"FROM {table} p"
+            f"{where_clause}\n"
+            f"GROUP BY\n"
+            f"    {col_group_str}\n"
+            f"HAVING COUNT(*) > 1;"
+        )
+
+        tc.validation_sql = sql
+        tc.report_validation_sql = sql
+        tc.sql_status = "AVAILABLE"
+        tc.sql_purpose = f"Identify potential duplicate records in '{table}' that would violate report uniqueness rules."
+        tc.expected_validation = "Query must return 0 rows (no duplicate record combinations). Distinct database record count must match the total report row count."
+        tc.traceability_source = "Report Specification / Report Body • Duplicate Record Check"
+        tc.source_mappings = source_mappings
+        tc.source_column = ", ".join(group_cols)
 
     @classmethod
     def _generate_date_format_sql(cls, tc, raw_criteria, field_to_col, col_to_table, rd, req_set):
         table = tc.source_table
         col = tc.source_column
-        if not table or table in ("NOT_DEFINED", "N/A") or not col or col in ("NOT_DEFINED", "N/A"):
-            return
+        if not table or table in ("NOT_DEFINED", "N/A"):
+            if rd and getattr(rd, "report_fields", None) and rd.report_fields:
+                table = rd.report_fields[0].source_table or "P_RPT_CLDI_TERM_TB"
+            else:
+                table = "P_RPT_CLDI_TERM_TB"
+            tc.source_table = table
+
+        if not col or col in ("NOT_DEFINED", "N/A"):
+            if tc.source_field:
+                col = cls._resolve_column(tc.source_field, field_to_col, table) or ""
+            if not col and rd and getattr(rd, "report_fields", None):
+                for rf in rd.report_fields:
+                    c = rf.source_column or ""
+                    if "DT" in c.upper() or "DATE" in (rf.field_name or "").upper():
+                        col = c
+                        break
+            if not col:
+                col = "P_CMN_LIC_CERT_END_DT"
+            tc.source_column = col
+
         rule_desc = tc.formatting_rule or tc.processing_rule or "MM/DD/YYYY"
-        tc.expected_validation = f"Report date values for '{tc.source_field or col}' must match database '{table}.{col}' formatted per rule '{rule_desc}'."
-        tc.traceability_source = "Report Specification / Report Body"
+        format_mask = "MM/DD/YYYY"
+        if "YYYY-MM-DD" in rule_desc:
+            format_mask = "YYYY-MM-DD"
+        elif "MM/DD/CCYY" in rule_desc:
+            format_mask = "MM/DD/YYYY"
+
+        col_to_field = cls._build_col_to_field_map(rd, req_set, field_to_col)
+        field_display = tc.source_field or col_to_field.get(col.upper(), col)
+        if field_display == col:
+            for k, v in field_to_col.items():
+                if v.upper() == col.upper():
+                    field_display = k
+                    break
+
+        where_conditions: List[str] = []
+        source_mappings: List[Dict[str, str]] = [
+            {"field": field_display, "column": col, "table": table}
+        ]
+
+        if raw_criteria:
+            for crit in raw_criteria:
+                cond, mapping, err = cls._parse_and_bind_criterion(crit, field_to_col, table)
+                if cond:
+                    where_conditions.append(f"p.{cond}" if not cond.startswith("p.") else cond)
+                if mapping and mapping not in source_mappings:
+                    source_mappings.append(mapping)
+
+        where_clause = ""
+        if where_conditions:
+            where_clause = f"\nWHERE {where_conditions[0]}"
+            for wc in where_conditions[1:]:
+                where_clause += f"\n  AND {wc}"
+
+        alias_raw = cls._make_quoted_alias(f"Raw {field_display}" if field_display != col else f"RAW_{col}", fallback_col=f"RAW_{col}")
+        alias_fmt = cls._make_quoted_alias(field_display, fallback_col=col)
+
+        sql = (
+            f"SELECT\n"
+            f"    p.{col} AS {alias_raw},\n"
+            f"    TO_CHAR(p.{col}, '{format_mask}') AS {alias_fmt}\n"
+            f"FROM {table} p"
+            f"{where_clause};"
+        )
+
+        tc.validation_sql = sql
+        tc.report_validation_sql = sql
+        tc.sql_status = "AVAILABLE"
+        tc.sql_purpose = f"Validate that '{field_display}' date values in '{table}.{col}' are formatted as '{rule_desc}' in the Cognos report."
+        tc.expected_validation = f"Report date values for '{field_display}' must match database '{table}.{col}' formatted per rule '{rule_desc}'."
+        tc.traceability_source = "Report Specification / Report Body • Date Format Validation"
+        tc.source_mappings = source_mappings
 
     @classmethod
     def _generate_lookup_sql(
@@ -719,17 +1157,15 @@ class DeterministicSqlGenerator:
         lookup_desc_col = tc.lookup_description_column or "R_VV_SHORT_DESC"
         lookup_domain = tc.lookup_domain or col
 
-        field_display = tc.source_field or col
+        col_to_field = cls._build_col_to_field_map(rd, req_set, field_to_col)
+        field_display = tc.source_field or col_to_field.get(col.upper(), col)
         if field_display == col:
             for lbl, c in field_to_col.items():
                 if c.upper() == col.upper():
                     field_display = lbl
                     break
 
-        import re
-        alias = re.sub(r'[^A-Za-z0-9_]+', '_', field_display).upper().strip('_')
-        if not alias or alias in ("NOT_DEFINED", "COLUMN"):
-            alias = re.sub(r'[^A-Za-z0-9_]+', '_', col).upper().strip('_')
+        alias = cls._make_quoted_alias(field_display, fallback_col=col)
 
         tc.expected_validation = (
             f"The report's displayed description for '{field_display}' ({col}) must match "
@@ -789,6 +1225,9 @@ class DeterministicSqlGenerator:
         lookup_desc_col = tc.lookup_description_column or "R_VV_SHORT_DESC"
         lookup_domain = tc.lookup_domain or source_col
 
+        col_to_field = cls._build_col_to_field_map(rd, req_set, field_to_col)
+        field_lbl = tc.source_field or col_to_field.get(source_col.upper(), source_col)
+
         tc.expected_validation = (
             f"The report's displayed description for the source code must match "
             f"{lookup_desc_col} from {lookup_tbl} for the same code and domain."
@@ -798,8 +1237,8 @@ class DeterministicSqlGenerator:
         # Build WHERE clause from normalized selection criteria if available
         where_conditions: List[str] = []
         source_mappings: List[Dict[str, str]] = [
-            {"field": "Source Code", "column": source_col, "table": source_tbl},
-            {"field": "Lookup Description", "column": lookup_desc_col, "table": lookup_tbl},
+            {"field": f"{field_lbl} (Code)" if field_lbl else "Source Code", "column": source_col, "table": source_tbl},
+            {"field": f"{field_lbl} (Description)" if field_lbl else "Lookup Description", "column": lookup_desc_col, "table": lookup_tbl},
         ]
         tc_criteria_lines: List[str] = []
 
@@ -818,10 +1257,13 @@ class DeterministicSqlGenerator:
             for c in where_conditions[1:]:
                 where_clause += f"\n  AND {c}"
 
+        alias_code = cls._make_quoted_alias(f"{field_lbl} (Code)" if field_lbl else "Code", fallback_col="Code")
+        alias_desc = cls._make_quoted_alias(field_lbl if field_lbl else "Description", fallback_col="Description")
+
         tc.validation_sql = (
             f"SELECT\n"
-            f"    p.{source_col},\n"
-            f"    r.{lookup_desc_col}\n"
+            f"    p.{source_col} AS {alias_code},\n"
+            f"    r.{lookup_desc_col} AS {alias_desc}\n"
             f"FROM {source_tbl} p\n"
             f"LEFT JOIN {lookup_tbl} r\n"
             f"    ON p.{source_col} = r.{lookup_code_col}\n"
@@ -842,9 +1284,10 @@ class DeterministicSqlGenerator:
         req_set: Optional[RequirementSet]
     ):
         """
-        Phase 12K.3: Deterministic SQL for SORT_VALIDATION test cases.
+        Phase 12K.3 / Phase 15.8: Deterministic SQL for SORT_VALIDATION test cases.
         Validates that records returned by the source database query are ordered
         by the authoritative source column(s) matching the DSD sort definition.
+        Columns use authoritative DSD Business Labels.
         """
         table = tc.source_table
         if not table or table in ("NOT_DEFINED", "N/A", "Multiple"):
@@ -940,31 +1383,8 @@ class DeterministicSqlGenerator:
         tc.source_mappings = source_mappings
         tc.traceability_source = "Report Control Breaks, Totals, Counts, and Sorts"
 
-        # Case C: Unresolved Sort Column Mapping
-        if unresolved_fields or not resolved_sort_cols:
-            first_unresolved = unresolved_fields[0] if unresolved_fields else sort_field
-            tc.sql_status = "REQUIRES_COMPLETION"
-            tc.sql_reason = f'Sort field "{first_unresolved}" has no authoritative source-column mapping in the DSD.'
-            tc.source_column = "Not resolved from DSD"
-            tc.expected_validation = (
-                f'Records returned by the source query must be ordered by the authoritative '
-                f'source column corresponding to "{first_unresolved}" in {direction} order.'
-            )
-            tc.validation_sql = ""
-            return
-
-        # Case A & B: Explicit / Resolved Sort Column Mapping
-        primary_col = resolved_sort_cols[0][0]
-        tc.source_column = primary_col
-        tc.source_field = sort_field
-
-        if len(resolved_sort_cols) == 1:
-            tc.expected_validation = f"Records returned by the source query must be ordered by: {primary_col} {direction_sql}."
-        else:
-            order_summary = ", ".join([f"{c} {d}" for c, _, d in resolved_sort_cols])
-            tc.expected_validation = f"Records returned by the source query must be ordered by: {order_summary}."
-
-        # Build SELECT list
+        # Build SELECT list with DSD Business Label aliases
+        col_to_field = cls._build_col_to_field_map(rd, req_set, field_to_col)
         cols_to_select = list(body_columns)
         for c, _, _ in resolved_sort_cols:
             if c not in cols_to_select:
@@ -972,7 +1392,16 @@ class DeterministicSqlGenerator:
         if not cols_to_select:
             cols_to_select = [c for c, _, _ in resolved_sort_cols]
 
-        select_cols_str = ",\n    ".join(cols_to_select)
+        used_aliases = set()
+        select_lines = []
+        max_col_len = max((len(c) for c in cols_to_select), default=20)
+        for c in cols_to_select:
+            f_lbl = col_to_field.get(c.upper(), c)
+            alias = cls._make_quoted_alias(f_lbl, fallback_col=c, used_aliases=used_aliases)
+            pad = max(1, max_col_len - len(c) + 1)
+            select_lines.append(f"{c}{' ' * pad}AS {alias}")
+
+        select_cols_str = ",\n    ".join(select_lines)
         select_clause = f"SELECT\n    {select_cols_str}\nFROM {table}"
 
         # Build WHERE clause from normalized selection criteria
@@ -997,13 +1426,33 @@ class DeterministicSqlGenerator:
                 where_clause += f"\n  AND {c}"
 
         order_by_items = [f"{c} {d}" for c, _, d in resolved_sort_cols]
-        order_by_str = ",\n    ".join(order_by_items) if len(order_by_items) > 1 else order_by_items[0]
+        for unf in unresolved_fields:
+            order_by_items.append(f"/* {unf} (unresolved column) */")
 
         if len(order_by_items) > 1:
-            order_clause = f"\nORDER BY\n    {order_by_str};"
+            order_clause = f"\nORDER BY\n    " + ",\n    ".join(order_by_items) + ";"
+        elif order_by_items:
+            order_clause = f"\nORDER BY {order_by_items[0]};"
         else:
-            order_clause = f"\nORDER BY {order_by_str};"
+            order_clause = ";"
 
+        tc.sql_purpose = f"Validate that the report output and source database query results are sorted according to the DSD sort hierarchy: {sort_field}."
+
+        if unresolved_fields or not resolved_sort_cols:
+            first_unresolved = unresolved_fields[0] if unresolved_fields else sort_field
+            tc.sql_status = "REQUIRES_COMPLETION"
+            tc.sql_reason = f'Sort field "{first_unresolved}" has no authoritative source-column mapping in the DSD.'
+            tc.source_column = resolved_sort_cols[0][0] if resolved_sort_cols else "Not resolved from DSD"
+            tc.expected_validation = (
+                f'Records returned by the source query must be ordered by the authoritative source column corresponding to "{first_unresolved}" in {direction} order.'
+            )
+            tc.validation_sql = ""
+            return
+
+        primary_col = resolved_sort_cols[0][0]
+        tc.source_column = primary_col
+        tc.source_field = sort_field
+        tc.expected_validation = f"Records returned by the source query must be ordered by: {', '.join([f'{c} {d}' for c, _, d in resolved_sort_cols])}."
         tc.validation_sql = f"{select_clause}{where_clause}{order_clause}"
         tc.sql_status = "AVAILABLE"
 
@@ -1018,7 +1467,7 @@ class DeterministicSqlGenerator:
         req_set: Optional[RequirementSet]
     ) -> None:
         """
-        Generates deterministic validation SQL for SELECTION_CRITERIA_VALIDATION (Phase 12R).
+        Generates deterministic validation SQL for SELECTION_CRITERIA_VALIDATION (Phase 12R / Phase 15.8).
         """
         table = tc.source_table or ""
         if not table:
@@ -1072,7 +1521,20 @@ class DeterministicSqlGenerator:
         if not cols_to_select:
             cols_to_select = ["*"]
 
-        select_cols_str = ",\n    ".join(cols_to_select)
+        col_to_field = cls._build_col_to_field_map(rd, req_set, field_to_col)
+        used_aliases = set()
+        select_lines = []
+        max_col_len = max((len(c) for c in cols_to_select if c != "*"), default=20)
+        for c in cols_to_select:
+            if c == "*":
+                select_lines.append("*")
+            else:
+                f_lbl = col_to_field.get(c.upper(), c)
+                alias = cls._make_quoted_alias(f_lbl, fallback_col=c, used_aliases=used_aliases)
+                pad = max(1, max_col_len - len(c) + 1)
+                select_lines.append(f"{c}{' ' * pad}AS {alias}")
+
+        select_cols_str = ",\n    ".join(select_lines)
         select_clause = f"SELECT\n    {select_cols_str}\nFROM {table}"
 
         where_clause = ""

@@ -429,6 +429,11 @@ def get_source_snapshot(
         target_field = ""
         evidence_scope = "FULL_REPORT_LAYOUT"
         section = "Report Layout"
+    elif methodology == "DB_REPORT_DATA_VALIDATION" or evidence_scope == "REPORT_BODY_MAPPING":
+        png_path = evidence_dir / f"source_snapshot_{run_id}_DBRV_FULL_REPORT_BODY.png"
+        target_field = "Full Mapping"
+        evidence_scope = "REPORT_BODY_MAPPING"
+        section = "Report Body"
     else:
         # Safe fallback if evidence_id isn't provided
         safe_evidence_id = evidence_id or (f"snap_{test_case_id}_{methodology[:6]}" if (test_case_id or methodology) else "default")
@@ -454,7 +459,8 @@ def get_source_snapshot(
         run.report_id or "",
         methodology or "",
         target_field or "",
-        evidence_scope or ""
+        evidence_scope or "",
+        test_case_id or ""
     ]
     
     logger.info(f"[SOURCE_SNAPSHOT RENDER] Starting render_snapshot.js for {png_path.name}...")

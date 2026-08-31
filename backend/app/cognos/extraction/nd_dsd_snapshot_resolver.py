@@ -171,7 +171,15 @@ class NdDsdSnapshotResolver:
                 evidence_scope = "REPORT_FREQUENCY_SCHEDULING"
                 target_field_val = target_field_val or (dsd.definition.frequency_type or "Event Driven")
 
-            elif m in ("LOOKUP_VALIDATION", "DB_REPORT_DATA_VALIDATION", "DATE_FORMAT_VALIDATION", "DUPLICATE_VALIDATION"):
+            elif m == "DB_REPORT_DATA_VALIDATION":
+                section_name = "Report Body"
+                source_page = 8
+                source_pages = [8]
+                page_display = "8"
+                evidence_scope = "REPORT_BODY_MAPPING"
+                target_field_val = "Full Mapping"
+
+            elif m in ("LOOKUP_VALIDATION", "DATE_FORMAT_VALIDATION", "DUPLICATE_VALIDATION"):
                 if m == "LOOKUP_VALIDATION" and target_field_val and "business" in target_field_val.lower():
                     section_name = "Report Section Heading"
                     source_page = 8
@@ -194,7 +202,7 @@ class NdDsdSnapshotResolver:
 
             page_label = f"Page {page_display}" if page_display else f"Page {source_page}"
             description = f"Source DSD snapshot — {page_label} • {section_name} • {evidence_scope}"
-            ev_id = "REPORT_LAYOUT_FULL" if m == "LAYOUT_VALIDATION" else f"{test_case_id}_{m[:6]}"
+            ev_id = "REPORT_LAYOUT_FULL" if m == "LAYOUT_VALIDATION" else (f"{test_case_id}_DB_FULL" if m == "DB_REPORT_DATA_VALIDATION" else f"{test_case_id}_{m[:6]}")
 
             return EvidenceReference(
                 evidence_id=f"snapshot_{ev_id}",

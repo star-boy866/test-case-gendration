@@ -204,12 +204,12 @@ def test_pipeline_integration_prv027_labe_01():
     
     expected_sql = (
         "SELECT\n"
-        "    P_CURR_ALT_ID,\n"
-        "    P_SORT_NAM,\n"
-        "    P_LIC_CERT_NUM,\n"
-        "    P_CMN_LIC_CERT_END_DT,\n"
-        "    P_LIC_CERT_END_DT,\n"
-        "    P_REVLDTN_STAT_CD\n"
+        "    P_CURR_ALT_ID         AS \"Prov ID\",\n"
+        "    P_SORT_NAM            AS \"Prov Sort Name\",\n"
+        "    P_LIC_CERT_NUM        AS \"Prov Lic Cert Num\",\n"
+        "    P_CMN_LIC_CERT_END_DT AS \"OPLC Term Date\",\n"
+        "    P_LIC_CERT_END_DT     AS \"MMIS Lic Cert End Date\",\n"
+        "    P_REVLDTN_STAT_CD     AS \"Reval Stat Cd\"\n"
         "FROM P_RPT_CLDI_TERM_TB\n"
         "WHERE P_CMN_LIC_CERT_END_DT >= CURRENT_DATE\n"
         "  AND P_LIC_CERT_END_DT <= DATE('9999-12-31');"
@@ -244,8 +244,8 @@ def test_label_validation_without_criteria():
     assert tc.sql_status == "AVAILABLE"
     expected_sql = (
         "SELECT\n"
-        "    COL_ONE,\n"
-        "    COL_TWO\n"
+        "    COL_ONE AS \"Column 1\",\n"
+        "    COL_TWO AS \"Column 2\"\n"
         "FROM OTHER_TABLE;"
     )
     assert tc.validation_sql.strip() == expected_sql

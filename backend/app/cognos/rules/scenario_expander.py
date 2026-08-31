@@ -135,6 +135,28 @@ class ScenarioExpander:
             return max(tables, key=lambda k: tables[k])
         return "NOT_DEFINED"
 
+    @property
+    def is_scheduled(self) -> bool:
+        freq_type = getattr(self.rd.metadata, 'frequency_type', '') or ""
+        return "on request" not in freq_type.lower() and "on-request" not in freq_type.lower()
+
+    def _open_report_step(self) -> str:
+        if self.is_scheduled:
+            return f"1. Open the generated {self.rid} report output from SDR."
+        return f"1. Open the generated/downloaded {self.rid} report output."
+
+    def _output_precondition(self, source_table: str = "") -> str:
+        tbl_str = f" Test records in source table '{source_table}' satisfy the selection criteria." if source_table and source_table not in ("NOT_DEFINED", "N/A", "") else ""
+        if self.is_scheduled:
+            return (
+                f"Report '{self.rid}' has been executed via the scheduler and the output is available in SDR (Search Document Repository).{tbl_str} "
+                f"Tester has read access to SDR."
+            )
+        return (
+            f"Report '{self.rid}' output has been generated/downloaded in the required format.{tbl_str} "
+            f"Tester has access to the generated report output."
+        )
+
     def _base_precondition(self, source_table: str = "") -> str:
         tbl = source_table or self.primary_table
         return _make_precondition(self.rd, tbl)
@@ -355,24 +377,26 @@ class ScenarioExpander:
         ]
         ev_refs = self._gather_ev_refs(pattern.requirements, "DSD_REPORT_LAYOUT")
 
+        open_step = self._open_report_step()
         test_steps = (
-            f"1. Generate report {self.rid} and open in Cognos viewer.\n"
-            f"2. Verify the report uses '{presentation}' presentation type (as specified in DSD).\n"
-            f"3. Verify the report header contains the correct elements: {header_elements or 'per DSD layout specification'}.\n"
-            f"4. Verify the report footer (if applicable) contains run date, page number, and run time.\n"
-            f"5. Verify report title line matches the DSD layout exactly.\n"
-            f"6. Capture full-page screenshot as evidence."
+            f"{open_step}\n"
+            f"2. Inspect the overall report layout structure and presentation.\n"
+            f"3. Verify the report uses '{presentation}' presentation type (as specified in DSD).\n"
+            f"4. Verify the report header contains the correct elements: {header_elements or 'per DSD layout specification'}.\n"
+            f"5. Verify the report footer (if applicable) contains run date, page number, and run time.\n"
+            f"6. Verify report title line matches the DSD layout exactly.\n"
+            f"7. Capture full-page screenshot as evidence."
         )
         return [self._make_tc(
             pattern=pattern,
             category="Layout Validation",
             title=f"Verify report layout and presentation for {self.rid}",
             objective=f"Verify the report '{self.rid}' layout, header structure, and presentation type match the DSD layout specification.",
-            preconditions=self._base_precondition(),
+            preconditions=self._output_precondition(),
             test_data="N/A — layout verification is structural, no specific data required.",
             test_steps=test_steps,
             expected_result=(
-                f"Report layout matches the DSD specification. "
+                f"Report layout in the generated output matches the DSD specification. "
                 f"Presentation type is '{presentation}'. "
                 f"Header and footer elements are correctly positioned. "
                 f"No truncation or misalignment."
@@ -400,12 +424,13 @@ class ScenarioExpander:
             self._ev("DSD", "DSD Report Body specification"),
             self._ev("REPORT", "Report screenshot showing all column headers"),
         ]
+        open_step = self._open_report_step()
         test_steps = (
-            f"1. Generate report {self.rid} with qualifying data.\n"
-            f"2. Open the report output and inspect all column header labels.\n"
+            f"{open_step}\n"
+            f"2. Inspect all column header labels in the report body.\n"
             f"3. For each column, compare the report label against the DSD Business Label:\n"
             f"{label_list}\n"
-            f"4. Verify exact label text (case-sensitive, no extra spaces).\n"
+            f"4. Verify exact label text (case-sensitive, no extra spaces or truncated characters).\n"
             f"5. Capture a screenshot showing all column headers as evidence."
         )
         return [self._make_tc(
@@ -413,8 +438,8 @@ class ScenarioExpander:
             category="Label Validation",
             title=f"Verify all report body column labels for {self.rid}",
             objective=f"Verify every report body column header label in '{self.rid}' matches the DSD Business Label specification exactly.",
-            preconditions=self._base_precondition(self.primary_table),
-            test_data=f"Report with qualifying records to display all {len(labels)} columns.",
+            preconditions=self._output_precondition(self.primary_table),
+            test_data=f"Report output with qualifying records displaying all {len(labels)} columns.",
             test_steps=test_steps,
             expected_result=(
                 f"All {len(labels)} column header labels match the DSD Business Labels exactly. "
@@ -428,14 +453,11 @@ class ScenarioExpander:
         )]
 
     # -----------------------------------------------------------------------
-    # C. SORT VALIDATION — One test per explicit Sort By entry
+    # C. SORT VALIDATION — Consolidated test covering complete sort hierarchy
     # -----------------------------------------------------------------------
     def _expand_sorts(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
-        cases = []
         sort_reqs = [r for r in self.req_set.requirements if r.category == RequirementCategory.SORT]
-
         if not sort_reqs:
-            # Fallback: use pattern requirements
             sort_reqs = [r for r in pattern.requirements if r.category == RequirementCategory.SORT]
 
         # Deduplicate by field
@@ -447,66 +469,74 @@ class ScenarioExpander:
                 seen_fields.add(key)
                 unique_sort_reqs.append(r)
 
+        if not unique_sort_reqs and getattr(self.rd, "sorts", None):
+            for s in self.rd.sorts:
+                key = (s.field or s.sort_by or "").lower().strip()
+                if key and key not in seen_fields:
+                    seen_fields.add(key)
+                    unique_sort_reqs.append(CognosRequirement(
+                        requirement_id=f"REQ-SORT-{len(unique_sort_reqs)+1}",
+                        report_id=self.rid,
+                        category=RequirementCategory.SORT,
+                        field=s.field or s.sort_by,
+                        business_label=s.field or s.sort_by,
+                        processing_rule=s.direction or "Ascending",
+                        source_section="Report Control Breaks, Totals, Counts, and Sorts"
+                    ))
+
+        all_req_ids = list(set(r.requirement_id for r in unique_sort_reqs if r.requirement_id))
+        src_table = unique_sort_reqs[0].source_table if unique_sort_reqs and unique_sort_reqs[0].source_table else self.primary_table
+        if not src_table or src_table in ("NOT_DEFINED", "N/A"):
+            src_table = "P_RPT_CLDI_TERM_TB"
+
+        sort_keys_summary = "\n".join(f"  - Key {i+1}: '{r.field or r.business_label}' ({r.processing_rule or 'Ascending'})" for i, r in enumerate(unique_sort_reqs)) if unique_sort_reqs else "  - Per DSD sort specification"
+        primary_sort_str = f"'{unique_sort_reqs[0].field or unique_sort_reqs[0].business_label}' ({unique_sort_reqs[0].processing_rule or 'Ascending'})" if unique_sort_reqs else "primary sort key"
+        secondary_sort_str = f"'{unique_sort_reqs[1].field or unique_sort_reqs[1].business_label}' ({unique_sort_reqs[1].processing_rule or 'Ascending'})" if len(unique_sort_reqs) > 1 else "defined secondary sort keys (if applicable)"
+
         evidences = [
-            self._ev("REPORT", "Report output showing record ordering"),
+            self._ev("REPORT", "Report output showing complete record ordering"),
         ]
 
-        for req in unique_sort_reqs:
-            field_name = req.field or req.business_label or "NOT_DEFINED"
-            direction = req.processing_rule or "Ascending"
-            src_table = req.source_table or self.primary_table
+        open_step = self._open_report_step()
+        test_steps = (
+            f"{open_step}\n"
+            f"2. Inspect the complete report record ordering:\n"
+            f"{sort_keys_summary}\n"
+            f"3. Verify primary sort order ({primary_sort_str}).\n"
+            f"4. Verify secondary sort order ({secondary_sort_str}).\n"
+            f"5. Verify records remain correctly and deterministically ordered across the entire result set.\n"
+            f"6. Capture evidence of the sorted report output."
+        )
 
-            test_steps = (
-                f"1. Load test records into '{src_table}' with multiple distinct values for '{field_name}'.\n"
-                f"2. Execute report {self.rid} in Cognos.\n"
-                f"3. Inspect the ordering of all records in the output.\n"
-                f"4. Verify that records are sorted by '{field_name}' in {direction} order.\n"
-                f"5. Verify that when '{field_name}' values are equal, the secondary sort (if defined) applies.\n"
-                f"6. Capture a screenshot of the ordered output as evidence."
-            )
-            cases.append(self._make_tc(
-                pattern=pattern,
-                category="Sort Validation",
-                title=f"Verify sort order by '{field_name}' ({direction}) for {self.rid}",
-                objective=f"Verify report '{self.rid}' records are sorted by '{field_name}' in {direction} order as specified in the DSD.",
-                preconditions=self._base_precondition(src_table),
-                test_data=f"Records in '{src_table}' with multiple distinct '{field_name}' values to verify ordering.",
-                test_steps=test_steps,
-                expected_result=f"All records in report {self.rid} are sorted by '{field_name}' in {direction} order. Identical '{field_name}' values are handled per the secondary sort rule.",
-                evidences=evidences,
-                req_ids=[req.requirement_id] if req.requirement_id else [],
-                source_table=src_table,
-                source_field=field_name,
-                source_column=field_name,
-                sort_field=field_name,
-                sort_direction=direction,
-                source_section="Report Control Breaks, Totals, Counts, and Sorts",
-                dsd_reference=f"DSD § Sort By: {field_name} ({direction})",
-                ev_refs=self._gather_ev_refs([req], "DSD_EVIDENCE"),
-            ))
+        sort_fields_list = [r.field or r.business_label for r in unique_sort_reqs if (r.field or r.business_label)]
+        sort_hierarchy_str = ", ".join(f"{r.field or r.business_label} ({r.processing_rule or 'Ascending'})" for r in unique_sort_reqs) if unique_sort_reqs else "per DSD"
 
-        if not cases:
-            # Generic fallback when no sort requirements mapped
-            evidences_fb = [self._ev("REPORT", "Report output showing record ordering")]
-            cases.append(self._make_tc(
-                pattern=pattern,
-                category="Sort Validation",
-                title=f"Verify report data sort order for {self.rid}",
-                objective=f"Verify report '{self.rid}' records are sorted as specified in the DSD.",
-                preconditions=self._base_precondition(),
-                test_data="Records with varied sort key values.",
-                test_steps=(
-                    f"1. Execute report {self.rid}.\n"
-                    f"2. Inspect the ordering of all records.\n"
-                    f"3. Verify sort order matches all DSD-specified sort keys.\n"
-                    f"4. Capture screenshot as evidence."
-                ),
-                expected_result="Records are sorted correctly according to the DSD.",
-                evidences=evidences_fb,
-                req_ids=[],
-                source_section="Report Control Breaks, Totals, Counts, and Sorts",
-            ))
-        return cases
+        ev_refs = self._gather_ev_refs(unique_sort_reqs, "DSD_EVIDENCE", methodology="SORT_VALIDATION")
+
+        tc = self._make_tc(
+            pattern=pattern,
+            category="Sort Validation",
+            title=f"Verify report sort order for {self.rid}",
+            objective=f"Verify report '{self.rid}' records are sorted strictly according to the complete sort hierarchy and directions defined in the DSD.",
+            preconditions=self._output_precondition(src_table),
+            test_data=f"Report output records verifying the complete sort hierarchy across defined sort fields.",
+            test_steps=test_steps,
+            expected_result=(
+                f"All records in report {self.rid} are sorted strictly in accordance with the defined sort hierarchy ({sort_hierarchy_str}). "
+                f"Multi-level sort ordering is preserved across all output pages."
+            ),
+            evidences=evidences,
+            req_ids=all_req_ids,
+            source_table=src_table,
+            source_field=", ".join(sort_fields_list),
+            source_column=", ".join(sort_fields_list),
+            sort_field=", ".join(sort_fields_list),
+            sort_direction=unique_sort_reqs[0].processing_rule if unique_sort_reqs else "Ascending",
+            source_section="Report Control Breaks, Totals, Counts, and Sorts",
+            dsd_reference=f"DSD § Sort By: {sort_hierarchy_str}",
+            ev_refs=ev_refs,
+        )
+        return [tc]
 
     # -----------------------------------------------------------------------
     # D. SCRIPT / OUTPUT FORMAT VALIDATION — Split by format + retention
@@ -522,21 +552,21 @@ class ScenarioExpander:
         format_str = output.formats[0] if output and output.formats else "PDF (preferred)"
         out_req_ids = [r.requirement_id for r in out_reqs if r.requirement_id]
         evidences_out = [self._ev("SCRIPT", "Report output file or Cognos download evidence")]
+        open_step = self._open_report_step()
         cases.append(self._make_tc(
             pattern=pattern,
             category="Script Output Validation",
             title=f"Verify report output format for {self.rid}",
             objective=f"Verify report '{self.rid}' generates output in the DSD-specified format ({format_str}).",
-            preconditions=self._base_precondition(),
+            preconditions=self._output_precondition(),
             test_data=f"Expected output format: {format_str}",
             test_steps=(
-                f"1. Execute report {self.rid} in Cognos.\n"
-                f"2. Locate the generated output file.\n"
-                f"3. Verify the file format is '{format_str}'.\n"
-                f"4. Open the output and confirm it renders correctly without corruption.\n"
-                f"5. Capture screenshot of successful download/output as evidence."
+                f"{open_step}\n"
+                f"2. Verify the output file format matches the DSD specification ('{format_str}').\n"
+                f"3. Confirm the file opens successfully without corruption or rendering errors.\n"
+                f"4. Capture screenshot/file property evidence."
             ),
-            expected_result=f"Report {self.rid} generates a valid '{format_str}' output file without errors.",
+            expected_result=f"Report {self.rid} generated output matches '{format_str}' format without errors or corruption.",
             evidences=evidences_out,
             req_ids=out_req_ids,
             source_section="Report Output",
@@ -555,14 +585,13 @@ class ScenarioExpander:
                 category="Script Output Validation",
                 title=f"Verify report retention configuration for {self.rid}",
                 objective=f"Verify report '{self.rid}' is retained in the correct location ({ret_type}) per the DSD specification.",
-                preconditions=self._base_precondition(),
+                preconditions=f"Report '{self.rid}' has been executed. Retention storage / repository ({ret_type}) is accessible.",
                 test_data=f"Expected retention type: {ret_type}",
                 test_steps=(
-                    f"1. Execute report {self.rid}.\n"
-                    f"2. Navigate to the report run history or EDMS/Cognos storage.\n"
-                    f"3. Verify the report instance is stored under '{ret_type}'.\n"
-                    f"4. Verify retention duration matches the DSD specification.\n"
-                    f"5. Capture evidence of the stored report instance."
+                    f"1. Navigate to the retention repository / storage location ({ret_type}).\n"
+                    f"2. Verify the report instance is retained under '{ret_type}' per the DSD specification.\n"
+                    f"3. Verify retention duration (e.g. occurrences / retention period) matches the DSD rules.\n"
+                    f"4. Capture evidence of the stored report instance."
                 ),
                 expected_result=f"Report {self.rid} is retained in '{ret_type}' per the DSD. Retention duration is correctly configured.",
                 evidences=evidences_ret,
@@ -588,26 +617,26 @@ class ScenarioExpander:
             self._ev("DSD", "DSD Report Definition section"),
             self._ev("REPORT", "Cognos portal report properties screenshot"),
         ]
+        open_step = self._open_report_step()
         test_steps = (
-            f"1. Log into the Cognos portal.\n"
-            f"2. Navigate to the folder containing report '{report_id}'.\n"
-            f"3. Open report properties / report header.\n"
-            f"4. Verify Report ID is: '{report_id}'.\n"
-            f"5. Verify Report Title is: '{title}'.\n"
-            f"6. Verify Report Description matches: '{desc[:80]}...' (see DSD).\n"
-            f"7. Verify Generated By: '{generated_by}'.\n"
-            f"8. Capture screenshot of report properties as evidence."
+            f"{open_step}\n"
+            f"2. Inspect the report metadata and header area.\n"
+            f"3. Verify Report ID is: '{report_id}'.\n"
+            f"4. Verify Report Title is: '{title}'.\n"
+            f"5. Verify Report Description matches: '{desc[:80]}...' (per DSD).\n"
+            f"6. Verify Generated By: '{generated_by}'.\n"
+            f"7. Capture evidence of the verified report metadata."
         )
         return [self._make_tc(
             pattern=pattern,
             category="Report Name Description Validation",
             title=f"Verify report ID, title, and description for {report_id}",
             objective=f"Verify report metadata (ID, Title, Description, Generated By) for '{report_id}' matches the DSD specification exactly.",
-            preconditions=self._base_precondition(),
+            preconditions=self._output_precondition(),
             test_data=f"Expected Report ID: {report_id}\nExpected Title: {title}\nExpected Description: {desc[:120]}",
             test_steps=test_steps,
             expected_result=(
-                f"Cognos portal shows Report ID '{report_id}', "
+                f"Report output displays Report ID '{report_id}', "
                 f"Title '{title}', "
                 f"and Description matching the DSD. No typos or truncation."
             ),
@@ -688,6 +717,7 @@ class ScenarioExpander:
             self._ev("DB", "Source database date value for comparison"),
         ]
 
+        open_step = self._open_report_step()
         for req in date_reqs:
             field_name = req.business_label or req.field or "NOT_DEFINED"
             proc_rule = req.processing_rule or req.formatting_rule or ""
@@ -696,22 +726,20 @@ class ScenarioExpander:
             src_col = req.source_column or "NOT_DEFINED"
 
             test_steps = (
-                f"1. Query source table '{src_table}' for test records with known '{src_col}' date values.\n"
-                f"2. Note the raw date values from the database (source format).\n"
-                f"3. Execute report {self.rid} in Cognos.\n"
-                f"4. Locate column '{field_name}' in the report output.\n"
-                f"5. Verify each date value is displayed in '{date_fmt}' format.\n"
-                f"6. Cross-check: report date matches the corresponding '{src_col}' database value.\n"
-                f"7. Test boundary dates (first/last of month, leap year if applicable).\n"
-                f"8. Capture screenshot of the formatted date column as evidence."
+                f"{open_step}\n"
+                f"2. Locate column '{field_name}' in the report body.\n"
+                f"3. Verify each displayed date value is formatted in '{date_fmt}' format.\n"
+                f"4. Cross-check against raw '{src_col}' date values from source table '{src_table}'.\n"
+                f"5. Test boundary date displays (first/last of month, leap year if applicable).\n"
+                f"6. Capture screenshot of the formatted date column as evidence."
             )
             cases.append(self._make_tc(
                 pattern=pattern,
                 category="Date Format Validation",
                 title=f"Verify date format '{date_fmt}' for '{field_name}' in {self.rid}",
                 objective=f"Verify column '{field_name}' in report '{self.rid}' displays dates in '{date_fmt}' format as specified in the DSD processing rules.",
-                preconditions=self._base_precondition(src_table),
-                test_data=f"Records in '{src_table}' with known '{src_col}' date values including boundary dates.",
+                preconditions=self._output_precondition(src_table),
+                test_data=f"Report output containing records with representative '{src_col}' dates in '{src_table}'.",
                 test_steps=test_steps,
                 expected_result=(
                     f"Column '{field_name}' displays all dates in '{date_fmt}' format. "
@@ -735,11 +763,11 @@ class ScenarioExpander:
                 category="Date Format Validation",
                 title=f"Verify date formatting for {self.rid}",
                 objective=f"Verify date fields in report '{self.rid}' display in the DSD-specified format.",
-                preconditions=self._base_precondition(self.primary_table),
+                preconditions=self._output_precondition(self.primary_table),
                 test_data="Records with known date values.",
                 test_steps=(
-                    f"1. Execute report {self.rid}.\n"
-                    f"2. Inspect all date columns.\n"
+                    f"{open_step}\n"
+                    f"2. Inspect all date columns in the report body.\n"
                     f"3. Verify formatting matches DSD specification (typically MM/DD/YYYY).\n"
                     f"4. Capture screenshot as evidence."
                 ),
@@ -772,13 +800,14 @@ class ScenarioExpander:
                         or "section" in (r.requirement_text or "").lower()]
         other_reqs = [r for r in cb_reqs if r not in page_reqs and r not in section_reqs]
 
+        open_step = self._open_report_step()
         def build_cb_test(req, break_type_label):
             field_name = req.field or req.business_label or "NOT_DEFINED"
             src_table = req.source_table or self.primary_table
 
             test_steps = (
-                f"1. Load test records into '{src_table}' with multiple distinct '{field_name}' values.\n"
-                f"2. Execute report {self.rid} in Cognos.\n"
+                f"{open_step}\n"
+                f"2. Locate '{field_name}' in the report body.\n"
                 f"3. Verify a {break_type_label} break occurs at each change in '{field_name}'.\n"
                 f"4. Verify any sub-totals or counts display correctly at each break boundary.\n"
                 f"5. Verify the control break format matches the DSD layout (pagination, section header, etc.).\n"
@@ -789,8 +818,8 @@ class ScenarioExpander:
                 category="Control Break Validation",
                 title=f"Verify {break_type_label} control break on '{field_name}' for {self.rid}",
                 objective=f"Verify report '{self.rid}' produces a {break_type_label} break when '{field_name}' changes value.",
-                preconditions=self._base_precondition(src_table),
-                test_data=f"Records in '{src_table}' with at least 3 distinct '{field_name}' values spanning multiple {break_type_label.lower()} breaks.",
+                preconditions=self._output_precondition(src_table),
+                test_data=f"Report output records spanning multiple {break_type_label.lower()} breaks on '{field_name}'.",
                 test_steps=test_steps,
                 expected_result=(
                     f"Report {self.rid} produces a {break_type_label} break at each change in '{field_name}'. "
@@ -824,11 +853,11 @@ class ScenarioExpander:
                 category="Control Break Validation",
                 title=f"Verify control break behavior for {self.rid}",
                 objective=f"Verify report '{self.rid}' applies correct control break logic.",
-                preconditions=self._base_precondition(),
+                preconditions=self._output_precondition(),
                 test_data="Records spanning multiple control break values.",
                 test_steps=(
-                    f"1. Execute report {self.rid}.\n"
-                    f"2. Review the boundaries between groups.\n"
+                    f"{open_step}\n"
+                    f"2. Review the boundaries between groups in the report output.\n"
                     f"3. Verify control break logic applies correctly.\n"
                     f"4. Capture screenshot as evidence."
                 ),
@@ -855,6 +884,7 @@ class ScenarioExpander:
             self._ev("REPORT", "Report output showing total/count"),
         ]
 
+        open_step = self._open_report_step()
         for req in count_reqs:
             field_name = req.field or req.business_label or "NOT_DEFINED"
             count_type = "Count" if req.category == RequirementCategory.COUNT else "Total"
@@ -869,20 +899,19 @@ class ScenarioExpander:
                     sql_hint = f"\n   SQL: SELECT COUNT(*) FROM {src_table} WHERE <selection_criteria>;"
 
             test_steps = (
-                f"1. Execute the following SQL against the source database to get expected {count_type.lower()}:{sql_hint}\n"
-                f"2. Note the database {count_type.lower()} result for '{field_name}'.\n"
-                f"3. Execute report {self.rid} in Cognos with the same selection criteria.\n"
-                f"4. Locate the '{field_name}' {count_type.lower()} in the report output.\n"
-                f"5. Compare: report {count_type.lower()} must equal the database {count_type.lower()}.\n"
-                f"6. Capture screenshots of both the DB query and the report output as evidence."
+                f"1. Execute aggregate SQL against source database '{src_table}' to obtain expected {count_type.lower()}:{sql_hint}\n"
+                f"{open_step.replace('1.', '2.')}\n"
+                f"3. Locate '{field_name}' {count_type.lower()} (or Total section) in the report output.\n"
+                f"4. Compare: report {count_type.lower()} must equal the database count/total exactly.\n"
+                f"5. Capture screenshots of DB query result and report output total as evidence."
             )
             cases.append(self._make_tc(
                 pattern=pattern,
                 category="DB Count Validation",
                 title=f"Verify '{field_name}' {count_type} in {self.rid} matches database",
                 objective=f"Verify the '{field_name}' {count_type.lower()} in report '{self.rid}' matches the database {count_type.lower()} for the same record set.",
-                preconditions=self._base_precondition(src_table),
-                test_data=f"Known set of records in '{src_table}' with a predictable {count_type.lower()} for '{field_name}'.",
+                preconditions=self._output_precondition(src_table),
+                test_data=f"Report output containing qualifying records for '{field_name}' aggregation.",
                 test_steps=test_steps,
                 expected_result=(
                     f"Report '{self.rid}' shows '{field_name}' {count_type.lower()} = database {count_type.lower()}. "
@@ -907,11 +936,11 @@ class ScenarioExpander:
                 category="DB Count Validation",
                 title=f"Verify DB counts match report totals for {self.rid}",
                 objective=f"Compare database record counts against report totals for '{self.rid}'.",
-                preconditions=self._base_precondition(self.primary_table),
+                preconditions=self._output_precondition(self.primary_table),
                 test_data="Known set of records with predictable count.",
                 test_steps=(
                     f"1. Run an aggregate SQL query on the source database.\n"
-                    f"2. Execute report {self.rid}.\n"
+                    f"{open_step.replace('1.', '2.')}\n"
                     f"3. Compare database count against report total.\n"
                     f"4. Capture both as evidence."
                 ),
@@ -939,24 +968,23 @@ class ScenarioExpander:
         pk_candidates = [(r.source_columns[0] if r.source_columns else "") for r in col_reqs[:2] if r.source_table == src_table]
         pk_str = ", ".join(c for c in pk_candidates if c) or "primary_key_columns"
 
+        open_step = self._open_report_step()
         test_steps = (
-            f"1. Identify records in '{src_table}' that could produce duplicates "
-            f"(e.g., multiple rows with the same {pk_str}).\n"
-            f"2. Execute the following SQL to check for potential duplicate combinations:\n"
+            f"{open_step}\n"
+            f"2. Execute duplicate-check SQL against '{src_table}' to check potential duplicate combinations:\n"
             f"   SELECT {pk_str}, COUNT(*) cnt FROM {src_table} "
             f"WHERE <selection_criteria> GROUP BY {pk_str} HAVING cnt > 1;\n"
-            f"3. Generate report {self.rid} in Cognos.\n"
-            f"4. Verify the report does NOT display duplicate rows for the same record.\n"
-            f"5. Cross-reference report row count against expected DISTINCT record count in database.\n"
-            f"6. Capture evidence of both the DB query and the report output."
+            f"3. Inspect all rows in the report output to verify no duplicate records appear for the same {pk_str}.\n"
+            f"4. Cross-reference report row count against expected DISTINCT record count in database.\n"
+            f"5. Capture evidence of both the DB query and the report output."
         )
         return [self._make_tc(
             pattern=pattern,
             category="Duplicate Validation",
             title=f"Verify no duplicate records in {self.rid}",
             objective=f"Verify report '{self.rid}' suppresses duplicate records and displays only distinct records.",
-            preconditions=self._base_precondition(src_table),
-            test_data=f"Database setup with potential duplicate rows in '{src_table}' to verify deduplication logic.",
+            preconditions=self._output_precondition(src_table),
+            test_data=f"Report output containing records from '{src_table}' to verify deduplication.",
             test_steps=test_steps,
             expected_result=(
                 f"Report {self.rid} displays only distinct records. "
@@ -992,6 +1020,7 @@ class ScenarioExpander:
             self._ev("REPORT", "Report output showing resolved description"),
         ]
 
+        open_step = self._open_report_step()
         for req in lookup_reqs:
             field_name = req.business_label or req.field or "NOT_DEFINED"
             src_table = req.source_table or self.primary_table
@@ -1004,22 +1033,20 @@ class ScenarioExpander:
             lookup_table = lookup_table_match.group(0) if lookup_table_match else "R_VV_TB"
 
             test_steps = (
-                f"1. Query source table '{src_table}' for test records with '{src_col}' code values.\n"
-                f"2. Note the code values (e.g., '01', 'A', etc.) from the database.\n"
-                f"3. Query the lookup table '{lookup_table}' for the expected descriptions for each code.\n"
-                f"4. Execute report {self.rid} in Cognos.\n"
-                f"5. Locate column '{field_name}' in the report output.\n"
-                f"6. Verify that each code has been resolved to its correct description.\n"
-                f"7. Verify unknown/null codes display appropriately (per business rules).\n"
-                f"8. Capture screenshots of DB codes, lookup table, and report output."
+                f"{open_step}\n"
+                f"2. Query the lookup table '{lookup_table}' for expected descriptions matching '{src_col}' codes in '{src_table}'.\n"
+                f"3. Locate column '{field_name}' in the report body.\n"
+                f"4. Verify that each '{src_col}' code has been resolved to its correct business description.\n"
+                f"5. Verify unknown/null codes display appropriately per business rules (no raw codes).\n"
+                f"6. Capture screenshots of DB codes, lookup query, and report output as evidence."
             )
             cases.append(self._make_tc(
                 pattern=pattern,
                 category="Lookup Validation",
                 title=f"Verify lookup/code resolution for '{field_name}' in {self.rid}",
                 objective=f"Verify column '{field_name}' in report '{self.rid}' correctly resolves code values to descriptions via '{lookup_table}'.",
-                preconditions=self._base_precondition(src_table),
-                test_data=f"Records in '{src_table}' with known '{src_col}' code values that have corresponding descriptions in '{lookup_table}'.",
+                preconditions=self._output_precondition(src_table),
+                test_data=f"Report output containing '{src_col}' codes resolved via '{lookup_table}'.",
                 test_steps=test_steps,
                 expected_result=(
                     f"Column '{field_name}' displays the correct description for each '{src_col}' code value. "
@@ -1051,14 +1078,13 @@ class ScenarioExpander:
                 category="Lookup Validation",
                 title=f"Verify lookup/code resolution for {self.rid}",
                 objective=f"Verify code-to-description lookups in report '{self.rid}' are correct.",
-                preconditions=self._base_precondition(self.primary_table),
+                preconditions=self._output_precondition(self.primary_table),
                 test_data="Records with code values that require lookup resolution.",
                 test_steps=(
-                    f"1. Query source table for records with code values.\n"
-                    f"2. Query lookup table for expected descriptions.\n"
-                    f"3. Execute report {self.rid}.\n"
-                    f"4. Verify codes are resolved correctly.\n"
-                    f"5. Capture evidence."
+                    f"{open_step}\n"
+                    f"2. Query source and lookup tables for expected descriptions.\n"
+                    f"3. Verify codes in report output are resolved correctly.\n"
+                    f"4. Capture evidence."
                 ),
                 expected_result="All code values are resolved to correct descriptions.",
                 evidences=evidences_fb,
@@ -1069,57 +1095,143 @@ class ScenarioExpander:
         return cases
 
     # -----------------------------------------------------------------------
-    # L. SCHEDULED EXECUTION VALIDATION
+    # L. SCHEDULED / EXECUTION VALIDATION (Phase 15.6 Simple Operational Scenario)
     # -----------------------------------------------------------------------
     def _expand_scheduled(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
         req_ids = [r.requirement_id for r in pattern.requirements if r.requirement_id]
 
-        # Determine scheduling tool from evidence
-        reason = pattern.applicable_reason.lower()
-        req_texts = " ".join(r.requirement_text.lower() for r in pattern.requirements)
-        combined = reason + " " + req_texts
+        # 1. State / Profile-aware scheduler tool resolution
+        state_str = (
+            getattr(self.rd.metadata, 'source_state_code', '') or 
+            getattr(self.rd.metadata, 'client', '') or 
+            getattr(self.rd, 'source_document', '') or 
+            getattr(self.rd.metadata.source, 'document_name', '') or 
+            self.rid
+        ).upper()
 
-        if "box" in combined:
-            tool = "Box"
-        elif "scheduler" in combined:
-            tool = "Cognos Scheduler"
+        if "NH" in state_str or "NEW HAMPSHIRE" in state_str or "PRV-" in self.rid:
+            scheduler_tool = "IWA"
+        elif "ND" in state_str or "NORTH DAKOTA" in state_str or "OPR-" in self.rid or "TPL" in state_str:
+            scheduler_tool = "UC4"
+        elif "AK" in state_str or "ALASKA" in state_str:
+            scheduler_tool = "Scheduler"
         else:
-            tool = "Scheduler"
+            gen_by = (getattr(self.rd.metadata, 'generated_by', '') or "").strip()
+            if gen_by and gen_by not in ("UNKNOWN", "NOT_DEFINED", "EQR", "EFADS", "EMAR", "ESUR"):
+                scheduler_tool = gen_by
+            else:
+                scheduler_tool = "IWA" if "PRV" in self.rid else "UC4"
 
-        # Extract frequency from requirements
-        freq_reqs = [r for r in self.req_set.requirements if r.category == RequirementCategory.REPORT_FREQUENCY]
-        freq_text = freq_reqs[0].requirement_text if freq_reqs else "per DSD frequency specification"
+        # 2. Report IDs
+        raw_id = getattr(self.rd.metadata, 'client_report_id', '') or getattr(self.rd.metadata, 'report_id', '') or self.rid
+        sched_report_id = f"RPT-{raw_id}" if raw_id and not raw_id.startswith("RPT-") else (raw_id or f"RPT-{self.rid}")
+        cognos_report_id = raw_id[4:] if raw_id.startswith("RPT-") else raw_id
 
+        # 3. Frequency & Trigger Condition
+        freq_type = getattr(self.rd.metadata, 'frequency_type', '') or "Scheduled"
+        trigger = getattr(self.rd.metadata, 'trigger', '') or ""
+        
+        if not trigger:
+            freq_reqs = [r for r in self.req_set.requirements if r.category == RequirementCategory.REPORT_FREQUENCY]
+            for r in freq_reqs:
+                text = r.requirement_text or ""
+                if "trigger" in text.lower():
+                    trigger = text
+                    break
+        
+        trigger_clean = trigger.rstrip('.').strip()
+        is_on_request = "on request" in freq_type.lower() or "on-request" in freq_type.lower()
+
+        # 4. Output Formats from DSD
+        output_formats = []
+        if getattr(self.rd, 'output', None) and getattr(self.rd.output, 'formats', None):
+            output_formats = [f for f in self.rd.output.formats if f and f.strip()]
+        if not output_formats:
+            out_reqs = [r for r in self.req_set.requirements if r.category == RequirementCategory.OUTPUT_FORMAT]
+            for r in out_reqs:
+                if r.field and r.field not in ("N/A", ""):
+                    output_formats.append(r.field)
+        output_format_str = ", ".join(output_formats) if output_formats else "PDF (preferred)"
+
+        # 5. Evidences
         evidences = [
-            self._ev("EXECUTION", f"{tool} execution log or job history"),
-            self._ev("REPORT", "Generated report instance evidence"),
+            self._ev("EXECUTION", f"{scheduler_tool} execution log or job history" if not is_on_request else "Cognos portal execution log"),
+            self._ev("REPORT", f"Report output in {output_format_str} format" + (" (delivered to SDR)" if not is_on_request else "")),
         ]
-        test_steps = (
-            f"1. Log into the {tool} job scheduler.\n"
-            f"2. Navigate to the scheduled job for report '{self.rid}'.\n"
-            f"3. Verify the job is configured per the DSD frequency: {freq_text}.\n"
-            f"4. Trigger or wait for the scheduled execution.\n"
-            f"5. Verify the job completes successfully (exit code 0 / SUCCESS status).\n"
-            f"6. Verify the output report instance was generated and stored correctly.\n"
-            f"7. Capture the {tool} execution log and report output as evidence."
-        )
+
+        # 6. Test Steps & Expected Result
+        if not is_on_request:
+            test_steps = (
+                f"1. Login to {scheduler_tool}.\n"
+                f"2. Search for the scheduler report ID: {sched_report_id}\n"
+                f"   (Note: In {scheduler_tool}, report IDs use the RPT prefix.)\n"
+                f"3. Run: {sched_report_id}\n"
+                f"4. Verify the report output moves to SDR (Search Document Repository) in the application UI.\n"
+                f"   (Note: Allow approximately 20 minutes for the output to appear in SDR.)"
+            )
+            expected_result = (
+                f"The report is successfully executed through {scheduler_tool} using the RPT-prefixed report ID ({sched_report_id}), "
+                f"and the output becomes available in SDR (Search Document Repository) in the expected format ({output_format_str})."
+            )
+            if trigger_clean:
+                preconditions = (
+                    f"Report '{sched_report_id}' is configured for execution in {scheduler_tool}. "
+                    f"Tester has operational access to {scheduler_tool} and SDR. "
+                    f"Trigger condition: {trigger_clean}."
+                )
+            else:
+                preconditions = (
+                    f"Report '{sched_report_id}' is configured for scheduled execution in {scheduler_tool}. "
+                    f"Tester has operational access to {scheduler_tool} and SDR."
+                )
+            test_data = (
+                f"Report Execution ID: {sched_report_id}\n"
+                f"Execution Type: {freq_type}\n"
+                f"Scheduler Tool: {scheduler_tool}\n"
+                f"Trigger: {trigger_clean or 'Scheduled timeframe'}\n"
+                f"Expected Destination: SDR (Search Document Repository)\n"
+                f"Expected Output Format: {output_format_str}"
+            )
+            objective = f"Verify report '{sched_report_id}' executes via {scheduler_tool} and delivers output to SDR per the DSD specification."
+        else:
+            test_steps = (
+                f"1. Login to the Cognos portal (or application UI).\n"
+                f"2. Search for report ID: {cognos_report_id} (or navigate to Info Analysis).\n"
+                f"3. Run the report in the required DSD-defined output format ({output_format_str}).\n"
+                f"4. Verify the report output is generated and downloaded successfully."
+            )
+            expected_result = (
+                f"The report is successfully located through Cognos or the applicable application UI, "
+                f"executed in the required format ({output_format_str}), and the output is successfully generated and downloaded."
+            )
+            preconditions = (
+                f"Report '{cognos_report_id}' is deployed and accessible in the Cognos portal / application UI. "
+                f"Tester has report execution permissions."
+            )
+            test_data = (
+                f"Report ID: {cognos_report_id}\n"
+                f"Execution Type: On Request\n"
+                f"Execution Path: Cognos Portal / Info Analysis\n"
+                f"Expected Output Format: {output_format_str}"
+            )
+            objective = f"Verify report '{cognos_report_id}' executes on request via Cognos / application UI and generates {output_format_str} output."
+
+        title = "Report Execution and Scheduling Validation"
+        dsd_ref = f"DSD § Report Generation • {freq_type}" + (f" • {trigger_clean}" if trigger_clean else "")
+
         return [self._make_tc(
             pattern=pattern,
             category="Scheduled Execution Validation",
-            title=f"Verify scheduled execution of {self.rid} via {tool}",
-            objective=f"Verify report '{self.rid}' executes successfully on schedule via {tool}.",
-            preconditions=f"Report '{self.rid}' is configured in {tool}. Scheduled job is active and accessible.",
-            test_data=f"Expected frequency: {freq_text}",
+            title=title,
+            objective=objective,
+            preconditions=preconditions,
+            test_data=test_data,
             test_steps=test_steps,
-            expected_result=(
-                f"Report {self.rid} executes successfully via {tool}. "
-                f"Job completes without error. "
-                f"Report instance is generated and available for download."
-            ),
+            expected_result=expected_result,
             evidences=evidences,
             req_ids=req_ids,
             source_section="Report Generation",
-            dsd_reference=f"DSD § Report Generation: {freq_text}",
+            dsd_reference=dsd_ref,
         )]
 
     # -----------------------------------------------------------------------
@@ -1149,10 +1261,10 @@ class ScenarioExpander:
                 self._ev("REPORT", "Report output evidence"),
             ]
             test_steps = (
-                f"1. Execute report {self.rid} in Cognos.\n"
-                f"2. Navigate to '{dest}' and search for the report output.\n"
+                f"1. Open '{dest}' (or SDR delivery repository).\n"
+                f"2. Locate the generated '{self.rid}' report output.\n"
                 f"3. Verify the report was delivered successfully to '{dest}'.\n"
-                f"4. Verify the delivered report is the correct version and report ID.\n"
+                f"4. Verify the delivered report matches the correct report ID, version, and output format.\n"
                 f"5. Verify the delivered file is not corrupted and opens correctly.\n"
                 f"6. Capture evidence of the successful delivery in '{dest}'."
             )
@@ -1177,96 +1289,74 @@ class ScenarioExpander:
         return cases
 
     # -----------------------------------------------------------------------
-    # N. DB REPORT DATA VALIDATION — Per-field mapping test
+    # N. DB REPORT DATA VALIDATION — Consolidated report data mapping test
     # -----------------------------------------------------------------------
     def _expand_db_report_data(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
-        cases = []
         col_reqs = self._col_reqs()
-        # Only include fields with actual source mappings
         mapped_reqs = [r for r in col_reqs if r.source_table and (r.source_columns or r.source_table)]
-
         if not mapped_reqs:
             mapped_reqs = _clean_col_requirements(pattern.requirements)
 
+        if not mapped_reqs:
+            return []
+
+        all_req_ids = list(set(r.requirement_id for r in mapped_reqs if r.requirement_id))
+        primary_table = self.primary_table
+        if primary_table in ("NOT_DEFINED", "N/A", "") and mapped_reqs:
+            primary_table = mapped_reqs[0].source_table or "P_RPT_CLDI_TERM_TB"
+
+        all_cols = []
+        mapping_lines = []
+        for r in mapped_reqs:
+            f_name = r.business_label or r.field or "NOT_DEFINED"
+            col_str = ", ".join(r.source_columns) if r.source_columns else (r.source_column or "")
+            if col_str and col_str not in all_cols:
+                all_cols.append(col_str)
+            mapping_lines.append(f"  - '{f_name}' → '{r.source_table or primary_table}'.'{col_str}'")
+
+        mapping_list_str = "\n".join(mapping_lines)
+
         evidences = [
-            self._ev("DB", "Database query result for the field"),
-            self._ev("REPORT", "Report output showing the field value"),
+            self._ev("DB", "Database query result for all report fields"),
+            self._ev("REPORT", "Report output showing all mapped data columns"),
         ]
 
-        for req in mapped_reqs:
-            field_name = req.business_label or req.field or "NOT_DEFINED"
-            src_table = req.source_table or self.primary_table
-            src_cols = req.source_columns if req.source_columns else []
-            src_col_str = ", ".join(src_cols) if src_cols else "NOT_DEFINED"
-            proc_rule = req.processing_rule or ""
-            field_desc = req.description or ""
+        open_step = self._open_report_step()
+        test_steps = (
+            f"{open_step}\n"
+            f"2. Query the source database using the complete report-level validation SQL query.\n"
+            f"3. Retrieve source records corresponding to the report selection criteria.\n"
+            f"4. Compare each report data field in the output against its corresponding source database mapping:\n"
+            f"{mapping_list_str}\n"
+            f"5. Verify transformations, processing rules, and lookup resolutions (including R_VV_TB code-to-description lookup).\n"
+            f"6. Verify null handling, formatting rules, and date representations across all mapped columns.\n"
+            f"7. Capture screenshots and query output as evidence."
+        )
 
-            sql_hint = f"SELECT {src_col_str} FROM {src_table} WHERE <selection_criteria>;"
-            step5_proc = f"\n5. Verify processing rule: {proc_rule}." if proc_rule else ""
-            step6 = 6 if proc_rule else 5
+        ev_refs = self._gather_ev_refs(mapped_reqs, "DSD_EVIDENCE", methodology="DB_REPORT_DATA_VALIDATION")
 
-            test_steps = (
-                f"1. Query the source database:\n   {sql_hint}\n"
-                f"2. Note the '{src_col_str}' values for a representative set of test records.\n"
-                f"3. Execute report {self.rid} in Cognos.\n"
-                f"4. Locate column '{field_name}' in the report output."
-                f"{step5_proc}\n"
-                f"{step6}. Compare each report value against the corresponding '{src_col_str}' database value.\n"
-                f"{step6+1}. Verify null handling: null database values display per business rules (blank or N/A).\n"
-                f"{step6+2}. Capture screenshots of both the DB query and report column as evidence."
-            )
-            cases.append(self._make_tc(
-                pattern=pattern,
-                category="DB Report Data Validation",
-                title=f"Verify DB mapping for '{field_name}' ({src_col_str}) in {self.rid}",
-                objective=(
-                    f"Verify report '{self.rid}' column '{field_name}' correctly maps to "
-                    f"'{src_table}'.'{src_col_str}'. "
-                    f"{('Field: ' + field_desc) if field_desc else ''}"
-                ).strip(),
-                preconditions=self._base_precondition(src_table),
-                test_data=f"Records in '{src_table}' with known '{src_col_str}' values.",
-                test_steps=test_steps,
-                expected_result=(
-                    f"Report '{self.rid}' column '{field_name}' displays values that exactly match "
-                    f"'{src_table}'.'{src_col_str}' for each record. "
-                    f"No transformation errors, no missing values, no data truncation."
-                ),
-                evidences=evidences,
-                req_ids=[req.requirement_id] if req.requirement_id else [],
-                source_table=src_table,
-                source_column=src_col_str,
-                processing_rule=proc_rule,
-                source_section="Report Body",
-                dsd_reference=f"DSD § Report Body: {field_name} → {src_table}.{src_col_str}",
-                ev_refs=self._gather_ev_refs([req], "DSD_EVIDENCE"),
-            ))
-
-        if not cases:
-            evidences_fb = [
-                self._ev("DB", "Database query result"),
-                self._ev("REPORT", "Report output"),
-            ]
-            cases.append(self._make_tc(
-                pattern=pattern,
-                category="DB Report Data Validation",
-                title=f"Verify DB-to-report data mapping for {self.rid}",
-                objective=f"Verify all report fields in '{self.rid}' correctly map to their source database columns.",
-                preconditions=self._base_precondition(self.primary_table),
-                test_data=f"Records in '{self.primary_table}' with known values.",
-                test_steps=(
-                    f"1. Query source database for test records.\n"
-                    f"2. Execute report {self.rid}.\n"
-                    f"3. Compare all column values against DB values.\n"
-                    f"4. Capture evidence."
-                ),
-                expected_result="All report column values match the source database values exactly.",
-                evidences=evidences_fb,
-                req_ids=[],
-                source_section="Report Body",
-            ))
-
-        return cases
+        tc = self._make_tc(
+            pattern=pattern,
+            category="DB Report Data Validation",
+            title=f"Verify all report data mappings for {self.rid} against the source database",
+            objective=f"Verify all report fields in '{self.rid}' correctly map to their source database columns and business transformation rules per the DSD specification.",
+            preconditions=self._output_precondition(primary_table),
+            test_data=f"Records in '{primary_table}' with valid, representative data across all {len(mapped_reqs)} mapped report columns.",
+            test_steps=test_steps,
+            expected_result=(
+                f"All report fields in '{self.rid}' match their corresponding source database column mappings and business transformation rules for each record set. "
+                f"No data truncation, missing values, or mapping discrepancies."
+            ),
+            evidences=evidences,
+            req_ids=all_req_ids,
+            source_table=primary_table,
+            source_column=", ".join(all_cols),
+            source_field="All Report Fields",
+            source_section="Report Body",
+            dsd_reference=f"DSD § Report Body — Source mapping for {len(mapped_reqs)} fields",
+            ev_refs=ev_refs,
+        )
+        return [tc]
 
     # -----------------------------------------------------------------------
     # O. REPORT HEADER VALIDATION (Phase 12M)
@@ -1316,14 +1406,14 @@ class ScenarioExpander:
                 f"Report ID, title, department, file name and report date match the DSD specification with no missing, truncated, or incorrect values."
             )
             
+        open_step = self._open_report_step()
         test_steps = (
-            f"1. Generate report {report_id} with qualifying data.\n"
-            f"2. Open the report output in Cognos viewer.\n"
-            f"3. Inspect the report header area.\n"
-            f"4. Verify each DSD-defined header field:\n"
+            f"{open_step}\n"
+            f"2. Inspect the report header area.\n"
+            f"3. Verify each DSD-defined header field:\n"
             f"{header_fields_desc}\n"
-            f"5. Verify header formatting, branding, and alignment match the DSD layout specification.\n"
-            f"6. Capture report output header as evidence."
+            f"4. Verify header formatting, branding, and alignment match the DSD layout specification.\n"
+            f"5. Capture report output header as evidence."
         )
         
         evidences = [
@@ -1336,7 +1426,7 @@ class ScenarioExpander:
             category="Report Header Validation",
             title=f"Verify report header fields and presentation for report {report_id}",
             objective=f"Verify the rendered report header in report '{report_id}' matches the DSD-defined report header fields and values exactly.",
-            preconditions=f"Report '{report_id}' has been executed and output is available for inspection.",
+            preconditions=self._output_precondition(),
             test_data="N/A — standard report execution data with qualifying records.",
             test_steps=test_steps,
             expected_result=expected_result,
@@ -1370,14 +1460,14 @@ class ScenarioExpander:
             
         sh_text = "\n".join(sh_lines)
         
+        open_step = self._open_report_step()
         test_steps = (
-            f"1. Generate report {self.rid} with qualifying data.\n"
-            f"2. Open the report output in Cognos viewer.\n"
-            f"3. Locate each report section heading.\n"
-            f"4. Verify section labels, descriptions, and processing rules:\n"
+            f"{open_step}\n"
+            f"2. Locate each report section heading in the output.\n"
+            f"3. Verify section labels, descriptions, and processing rules:\n"
             f"{sh_text}\n"
-            f"5. Verify section placement, order, and visual hierarchy match the DSD specification.\n"
-            f"6. Capture report output evidence showing section headings."
+            f"4. Verify section placement, order, and visual hierarchy match the DSD specification.\n"
+            f"5. Capture report output evidence showing section headings."
         )
         
         evidences = [
@@ -1390,7 +1480,7 @@ class ScenarioExpander:
             category="Report Section Heading Validation",
             title=f"Verify report section headings and descriptions for report {self.rid}",
             objective=f"Verify that report section headings, labels, descriptions, and processing rules in report '{self.rid}' match the DSD specification.",
-            preconditions=f"Report '{self.rid}' has been executed with qualifying data.",
+            preconditions=self._output_precondition(),
             test_data="Qualifying test dataset that exercises all defined report sections.",
             test_steps=test_steps,
             expected_result=(
@@ -1452,15 +1542,15 @@ class ScenarioExpander:
                 field_label = rf.business_label
                 break
 
+        open_step = self._open_report_step()
         test_steps = (
-            f"1. Prepare test records containing representative {source_col} values in {source_tbl}.\n"
-            f"2. Query the source data and corresponding lookup descriptions from {lookup_tbl}.\n"
-            f"3. Execute report {self.rid}.\n"
-            f"4. Locate the report field corresponding to '{field_label}' (revalidation / code description).\n"
-            f"5. Compare the displayed description with {lookup_tbl}.{lookup_desc_col}.\n"
-            f"6. Verify the lookup is restricted by: {lookup_tbl}.R_VV_DOMAIN_NAME = '{lookup_domain}'.\n"
-            f"7. Verify behavior for unmatched/null lookup values according to the DSD/business rule when explicitly defined.\n"
-            f"8. Capture DB and Cognos output evidence."
+            f"{open_step}\n"
+            f"2. Query the source data '{source_tbl}' and corresponding lookup descriptions from '{lookup_tbl}'.\n"
+            f"3. Locate the report field corresponding to '{field_label}' (revalidation / code description) in the output.\n"
+            f"4. Compare the displayed description with {lookup_tbl}.{lookup_desc_col}.\n"
+            f"5. Verify the lookup is restricted by: {lookup_tbl}.R_VV_DOMAIN_NAME = '{lookup_domain}'.\n"
+            f"6. Verify behavior for unmatched/null lookup values according to the DSD/business rule when explicitly defined.\n"
+            f"7. Capture DB and report output evidence."
         )
 
         evidences = [
@@ -1474,7 +1564,7 @@ class ScenarioExpander:
             category="Special Processing Validation",
             title=f"Verify code-to-description lookup for {source_col} in report {self.rid}",
             objective=f"Verify that code values from {source_col} are translated to the correct descriptions using {lookup_tbl} according to the DSD special processing rule.",
-            preconditions=f"Report '{self.rid}' has been executed and source table '{source_tbl}' contains qualifying records with active codes.",
+            preconditions=self._output_precondition(source_tbl),
             test_data=f"Test records in '{source_tbl}' with representative '{source_col}' code values and corresponding '{lookup_tbl}' descriptions.",
             test_steps=test_steps,
             expected_result=(
@@ -1521,13 +1611,14 @@ class ScenarioExpander:
         criteria_bullet_steps = "\n".join(f"   - {c}" for c in criteria_list)
         criteria_bullet_expected = "\n".join(criteria_list)
         
+        open_step = self._open_report_step()
         test_steps = (
-            f"1. Open the Cognos report.\n"
-            f"2. Review the report selection/filter criteria.\n"
-            f"3. Verify the following DSD criteria are implemented:\n"
+            f"{open_step}\n"
+            f"2. Review the qualifying records and applied selection filters in the report output.\n"
+            f"3. Verify the following DSD selection criteria are applied:\n"
             f"{criteria_bullet_steps}\n"
             f"4. Verify prompt/parameter behavior according to the DSD.\n"
-            f"5. Verify the report applies the criteria to the correct source data.\n"
+            f"5. Cross-reference qualifying records against the source database query.\n"
             f"6. Capture evidence."
         )
 
@@ -1548,7 +1639,7 @@ class ScenarioExpander:
             category="Selection Criteria Validation",
             title=f"Verify report selection criteria for {self.rid}",
             objective=f"Verify the report selection criteria configured in Cognos match the DSD-defined selection criteria exactly.",
-            preconditions=f"Report '{self.rid}' is opened in Cognos and underlying data sources are accessible.",
+            preconditions=self._output_precondition(),
             test_data="Test dataset with records spanning boundary dates to test selection criteria filtering.",
             test_steps=test_steps,
             expected_result=expected_result,

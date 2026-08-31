@@ -45,6 +45,8 @@ class DSDDetectionResult(BaseModel):
     matched_markers: List[str]
     status: str
     message: Optional[str] = None
+    report_id: Optional[str] = None
+    report_title: Optional[str] = None
 
 
 # Marker dictionaries for each profile
@@ -123,6 +125,8 @@ class DSDFormatDetector:
         Inspect document structure and identifying markers.
         """
         extracted_text_blocks: List[str] = []
+        detected_report_id: Optional[str] = None
+        detected_report_title: Optional[str] = None
 
         if doc_name:
             extracted_text_blocks.append(doc_name.lower())
@@ -132,18 +136,42 @@ class DSDFormatDetector:
                 import docx
                 doc = docx.Document(str(doc_path))
 
-                # Extract first 50 paragraphs
+                # Extract first 50 paragraphs & search for report metadata
                 for p in doc.paragraphs[:50]:
-                    txt = p.text.strip().lower()
-                    if txt:
-                        extracted_text_blocks.append(txt)
+                    t_raw = p.text.strip()
+                    if t_raw:
+                        extracted_text_blocks.append(t_raw.lower())
+                        if not detected_report_id:
+                            m_id = re.search(r'(?:Client\s+)?Report\s+ID\s*[:\-]?\s*([A-Z0-9_\-]+)', t_raw, re.IGNORECASE)
+                            if m_id:
+                                val = m_id.group(1).strip()
+                                if val.upper() not in ("REPORT", "ID", "CLIENT", "NOT_DEFINED", "UNKNOWN"):
+                                    detected_report_id = val
+                        if not detected_report_title:
+                            m_title = re.search(r'(?:Client\s+)?Report\s+Title\s*[:\-]?\s*([^\n\r]+)', t_raw, re.IGNORECASE)
+                            if m_title:
+                                val = m_title.group(1).strip()
+                                if val.upper() not in ("REPORT", "TITLE", "NOT_DEFINED", "UNKNOWN"):
+                                    detected_report_title = val
 
                 # Extract table headers & first rows from first 10 tables
                 for t in doc.tables[:10]:
                     for r in t.rows[:5]:
-                        row_txt = " ".join(c.text.strip().lower() for c in r.cells if c.text.strip())
+                        cells = [c.text.strip() for c in r.cells if c.text.strip()]
+                        row_txt = " ".join(c.lower() for c in cells)
                         if row_txt:
                             extracted_text_blocks.append(row_txt)
+
+                        # Check cells for metadata key-values
+                        for i, c in enumerate(cells):
+                            if re.search(r'^(?:Client\s+)?Report\s+ID\s*[:]?$', c, re.IGNORECASE) and i + 1 < len(cells):
+                                val = cells[i+1].strip()
+                                if val and not detected_report_id and val.upper() not in ("REPORT", "ID", "CLIENT", "NOT_DEFINED", "UNKNOWN"):
+                                    detected_report_id = val
+                            if re.search(r'^(?:Client\s+)?Report\s+Title\s*[:]?$', c, re.IGNORECASE) and i + 1 < len(cells):
+                                val = cells[i+1].strip()
+                                if val and not detected_report_title and val.upper() not in ("REPORT", "TITLE", "NOT_DEFINED", "UNKNOWN"):
+                                    detected_report_title = val
 
                 # Extract document headers/footers if present
                 for section in doc.sections[:3]:
@@ -185,6 +213,8 @@ class DSDFormatDetector:
                 matched_markers=best_markers,
                 status=DetectionState.DETECTED.value,
                 message=None,
+                report_id=detected_report_id,
+                report_title=detected_report_title,
             )
         elif best_score >= 1:
             # Low confidence
@@ -197,6 +227,8 @@ class DSDFormatDetector:
                 matched_markers=best_markers,
                 status=DetectionState.LOW_CONFIDENCE.value,
                 message=f"Possible match: {profile_info['display_name']} (Low Confidence). Please confirm or select manually.",
+                report_id=detected_report_id,
+                report_title=detected_report_title,
             )
         else:
             return DSDDetectionResult(
@@ -207,4 +239,6 @@ class DSDFormatDetector:
                 matched_markers=[],
                 status=DetectionState.UNKNOWN.value,
                 message="Unable to determine DSD format. Please select NH / ND / AK manually.",
+                report_id=detected_report_id,
+                report_title=detected_report_title,
             )

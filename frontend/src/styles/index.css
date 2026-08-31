@@ -65,6 +65,40 @@
   }
 }
 
+/* ── Drifting Particles Animations (8s–13s durations) ── */
+@keyframes driftParticle1 {
+  0% { transform: translate(0, 0); }
+  50% { transform: translate(15px, -12px); }
+  100% { transform: translate(-8px, 8px); }
+}
+
+@keyframes driftParticle2 {
+  0% { transform: translate(0, 0); }
+  50% { transform: translate(-14px, 16px); }
+  100% { transform: translate(10px, -6px); }
+}
+
+@keyframes driftParticle3 {
+  0% { transform: translate(0, 0); }
+  50% { transform: translate(12px, 14px); }
+  100% { transform: translate(-10px, -10px); }
+}
+
+@keyframes driftParticle4 {
+  0% { transform: translate(0, 0); }
+  50% { transform: translate(-16px, -10px); }
+  100% { transform: translate(12px, 12px); }
+}
+
+.particle-drift-1 { animation: driftParticle1 9s ease-in-out infinite alternate; }
+.particle-drift-2 { animation: driftParticle2 11s ease-in-out infinite alternate; }
+.particle-drift-3 { animation: driftParticle3 13s ease-in-out infinite alternate; }
+.particle-drift-4 { animation: driftParticle4 10s ease-in-out infinite alternate; }
+.particle-drift-5 { animation: driftParticle1 12s ease-in-out infinite alternate; }
+.particle-drift-6 { animation: driftParticle2 8.5s ease-in-out infinite alternate; }
+.particle-drift-7 { animation: driftParticle3 11.5s ease-in-out infinite alternate; }
+.particle-drift-8 { animation: driftParticle4 12.5s ease-in-out infinite alternate; }
+
 .animate-pulse-slow {
   animation: pulseSlow 7s ease-in-out infinite;
 }
@@ -92,7 +126,15 @@
   .animate-pulse-slow,
   .animate-float-slow,
   .animate-float-slow-reverse,
-  .animate-beam {
+  .animate-beam,
+  .particle-drift-1,
+  .particle-drift-2,
+  .particle-drift-3,
+  .particle-drift-4,
+  .particle-drift-5,
+  .particle-drift-6,
+  .particle-drift-7,
+  .particle-drift-8 {
     animation: none !important;
   }
 }

@@ -164,10 +164,13 @@ class DSDSnapshotResolver:
 
             # Determine human-friendly evidence_scope
             if methodology == "LABEL_VALIDATION":
-                evidence_scope = "Column Labels"
+                evidence_scope = "COLUMN_LABELS"
             elif methodology == "LAYOUT_VALIDATION":
                 evidence_scope = "FULL_REPORT_LAYOUT"
-            elif methodology in ("DB_REPORT_DATA_VALIDATION", "LOOKUP_VALIDATION", "DUPLICATE_VALIDATION"):
+            elif methodology == "DB_REPORT_DATA_VALIDATION":
+                evidence_scope = "REPORT_BODY_MAPPING"
+                target_field_val = "Full Mapping"
+            elif methodology in ("LOOKUP_VALIDATION", "DUPLICATE_VALIDATION"):
                 evidence_scope = target_field_val or "Field Specification"
             elif methodology == "DATE_FORMAT_VALIDATION":
                 evidence_scope = f"{target_field_val} Date Format" if target_field_val else "Date Format"
@@ -195,6 +198,10 @@ class DSDSnapshotResolver:
             page_label = f"Page {section.source_page}" if section.source_page else "DSD"
             if methodology == "LAYOUT_VALIDATION":
                 description = f"Source DSD snapshot — {page_label} • Report Layout • Full Page"
+            elif methodology == "LABEL_VALIDATION":
+                description = f"Source DSD snapshot — {page_label} • Report Body • Column Labels"
+            elif methodology == "DB_REPORT_DATA_VALIDATION":
+                description = f"Source DSD snapshot — {page_label} • Report Body • Full Mapping"
             elif methodology == "SCHEDULED_EXECUTION_VALIDATION":
                 description = f"Source DSD snapshot — {page_label} • Report Generation • Frequency & Scheduling"
             elif methodology == "REPORT_HEADER_VALIDATION":
@@ -212,11 +219,11 @@ class DSDSnapshotResolver:
             doc_name = dsd.report_definition.source_document if dsd.report_definition and dsd.report_definition.source_document else "DSD"
             doc_url = f"/api/documents/{doc_name}" if doc_name != "DSD" else ""
 
-            ev_id = "REPORT_LAYOUT_FULL" if methodology == "LAYOUT_VALIDATION" else f"{test_case_id}_{methodology[:6]}"
+            ev_id = "REPORT_LAYOUT_FULL" if methodology == "LAYOUT_VALIDATION" else (f"{test_case_id}_DB_FULL" if methodology == "DB_REPORT_DATA_VALIDATION" else f"{test_case_id}_{methodology[:6]}")
             return EvidenceReference(
                 evidence_id=f"snapshot_{ev_id}",
                 evidence_type="SOURCE_DSD_SNAPSHOT",
-                section=section.section_name,
+                section="Report Body" if methodology in ("LABEL_VALIDATION", "DB_REPORT_DATA_VALIDATION") else section.section_name,
                 page_number=section.source_page,
                 description=description,
                 document_name=doc_name,
@@ -224,9 +231,9 @@ class DSDSnapshotResolver:
                 source_document_url=doc_url,
                 snapshot_path="",
                 snapshot_url="",
-                source_text=f"{section.section_name} • Full Page" if methodology == "LAYOUT_VALIDATION" else f"{section.section_name} • {evidence_scope}",
+                source_text="Report Body • Column Labels" if methodology == "LABEL_VALIDATION" else ("Report Body • Full Mapping" if methodology == "DB_REPORT_DATA_VALIDATION" else (f"{section.section_name} • Full Page" if methodology == "LAYOUT_VALIDATION" else f"{section.section_name} • {evidence_scope}")),
                 evidence_scope=evidence_scope,
-                target_field="" if methodology == "LAYOUT_VALIDATION" else target_field_val,
+                target_field="Column Labels" if methodology == "LABEL_VALIDATION" else ("Full Mapping" if methodology == "DB_REPORT_DATA_VALIDATION" else ("" if methodology == "LAYOUT_VALIDATION" else target_field_val)),
                 methodology=methodology,
             )
 
@@ -313,7 +320,7 @@ class DSDSnapshotResolver:
             if not rows:
                 return None
             return _SectionData(
-                section_name="Report Layout",
+                section_name="Report Body",
                 source_page=page,
                 headers=["Business Label", "Source Table", "Source Column", "Processing Rules"],
                 rows=rows,

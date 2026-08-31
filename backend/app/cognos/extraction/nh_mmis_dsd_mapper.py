@@ -48,7 +48,7 @@ def map_dsd_to_domain(dsd: NhMmisDsd, source_document_name: str) -> DomainReport
         domain_rd.metadata.calendar_type = dsd.report_generation.report_calendar_type
         domain_rd.metadata.frequency_type = dsd.report_generation.report_frequency_type
         domain_rd.metadata.frequency = dsd.report_generation.scheduled_timeframe
-        domain_rd.metadata.trigger = dsd.report_generation.triggered_by
+        domain_rd.metadata.trigger = dsd.report_generation.triggered_by or dsd.report_generation.other_explain
         domain_rd.metadata.data_accumulation_type = dsd.report_generation.report_data_accumulation_type
 
     # Selection Criteria & Parameters
