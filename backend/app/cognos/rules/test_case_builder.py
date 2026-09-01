@@ -86,115 +86,117 @@ _CATEGORY_ID_MAP = {
 }
 
 _CATEGORY_BASE_ORDER = {
-    "EXEC": 5,
-    "REPO": 10,
-    "RHDR": 20,
-    "SECT": 30,
-    "SELC": 40,
-    "LABE": 50,
-    "LAYO": 60,
-    "LOOK": 70,
-    "OUTP": 80,
-    "SCRI": 100,
-    "SORT": 130,
-    "SPEC": 150,
-    "DATE": 160,
-    "DBRV": 180,
-    "DBRE": 180,
-    "DBCO": 240,
-    "DUPL": 250,
-    "CB": 260,
-    "NODATA": 270,
-    "NEG": 280,
+    "EXEC": 10,
+    "REPO": 20,
+    "RHDR": 30,
+    "SECT": 40,
+    "SELC": 50,
+    "LABE": 60,
+    "LAYO": 70,
+    "CB": 80,
+    "LOOK": 90,
+    "OUTP": 100,
+    "SCRI": 110,
+    "SORT": 120,
+    "SPEC": 130,
+    "DATE": 140,
+    "DBRV": 150,
+    "DBRE": 150,
+    "DBCO": 160,
+    "DUPL": 170,
+    "NODATA": 180,
+    "NEG": 190,
 }
 
 _CATEGORY_ORDER = [
-    # 00  PRV027-EXEC-01: Report Execution and Scheduling Validation
+    # 00  EXEC: Scheduled Execution Validation
     "Report Execution and Scheduling Validation",
     "Report Execution & Scheduling Validation",
     "Scheduled Execution Validation",
     "SCHEDULED_EXECUTION_VALIDATION",
     "REPORT_EXECUTION_VALIDATION",
 
-    # 01  PRV027-REPO-01: Report Name Description Validation
+    # 01  REPO: Report Name Description Validation
     "Report Name Description Validation",
     "Report Definition Validation",
     "Metadata",
     "REPORT_NAME_DESCRIPTION_VALIDATION",
 
-    # 02  PRV027-RHDR-01: Report Header Validation
+    # 02  RHDR: Report Header Validation
     "Report Header Validation",
     "Report Header",
     "Header",
     "Footer",
     "REPORT_HEADER_VALIDATION",
 
-    # 03  PRV027-SECT-01: Report Section Heading Validation
+    # 03  SECT: Report Section Heading Validation
     "Report Section Heading Validation",
     "Section Heading",
     "Section Header",
     "REPORT_SECTION_HEADING_VALIDATION",
 
-    # 04  PRV027-SELC-01: Selection Criteria Validation
+    # 04  SELC: Selection Criteria Validation
     "Selection Criteria Validation",
     "Report Selection Criteria",
     "Selection Criteria",
     "SELECTION_CRITERIA_VALIDATION",
     "SELECTION_CRITERIA",
 
-    # 05  PRV027-LABE-01: Label Validation
+    # 05  LABE: Label Validation
     "Label Validation",
     "Report Label",
     "LABEL_VALIDATION",
 
-    # 06  PRV027-LAYO-01: Layout Validation
+    # 06  LAYO: Layout Validation
     "Layout Validation",
     "Report Layout",
     "LAYOUT_VALIDATION",
 
-    # 07  PRV027-LOOK-01: Lookup Validation
+    # 07  CB: Control Break Validation
+    "Control Break Validation",
+    "Control Break",
+    "CONTROL_BREAK_VALIDATION",
+    "CB",
+
+    # 08  LOOK: Lookup Validation
     "Lookup Validation",
     "LOOKUP_VALIDATION",
 
-    # 08-09  PRV027-OUTP-01/02: Output Delivery Validation
+    # 09  OUTP: Output Delivery Validation
     "Output Delivery Validation",
     "OUTPUT_DELIVERY_VALIDATION",
     "DISTRIBUTION",
 
-    # 10-11  PRV027-SCRI-01/02: Script Output Validation
+    # 10  SCRI: Script Output Validation
     "Script Output Validation",
     "SCRIPT_OUTPUT_VALIDATION",
     "Output",
     "OUTPUT_FORMAT",
     "RETENTION",
 
-    # 12  PRV027-SCHE-01: Scheduled Execution Validation
-    "Scheduled Execution Validation",
-    "SCHEDULED_EXECUTION_VALIDATION",
-
-    # 13-14  PRV027-SORT-01/02: Sort Validation
+    # 11  SORT: Sort Validation
     "Sort Validation",
     "Sorting",
     "SORT_VALIDATION",
     "SORT",
 
-    # 15  PRV027-SPEC-01: Special Processing Validation
+    # 12  SPEC: Special Processing Validation
     "Special Processing Validation",
     "Special Processing",
     "SPECIAL_PROCESSING_VALIDATION",
 
-    # 16-17  PRV027-DATE-01/02: Date Format Validation
+    # 13  DATE: Date Format Validation
     "Date Format Validation",
     "Date Format",
     "DATE_FORMAT_VALIDATION",
 
-    # 18-23  PRV027-DBRE-01..06: DB Report Data Validation
+    # 14  DBRV/DBRE: DB Report Data Validation
     "DB Report Data Validation",
     "Column Logic",
     "DB_REPORT_DATA_VALIDATION",
     "COLUMN",
 
-    # 24  PRV027-DBCO-01: DB Count Validation
+    # 15  DBCO: DB Count Validation
     "DB Count Validation",
     "Totals/Counts",
     "DB_COUNT_VALIDATION",
@@ -202,19 +204,17 @@ _CATEGORY_ORDER = [
     "COUNT",
     "TOTAL",
 
-    # 25  PRV027-DUPL-01: Duplicate Validation
+    # 16  DUPL: Duplicate Validation
     "Duplicate Validation",
     "Duplicate Data",
     "DUPLICATE_VALIDATION",
 
-    # Additional / Fallbacks
-    "Control Break Validation",
-    "Control Break",
-    "CONTROL_BREAK_VALIDATION",
-    "CB",
+    # 17  NODATA: No Data Validation
     "No Data Validation",
     "No Data",
     "NO_DATA_VALIDATION",
+
+    # Fallbacks
     "Null Handling",
     "Trim Handling",
     "Database Validation",
@@ -253,9 +253,8 @@ def order_cognos_test_cases(test_cases: list[CognosTestCase]) -> list[CognosTest
     """
     Single Authoritative Ordering function for Cognos Test Cases (Phase 12Q).
     
-    Orders test cases by their business-defined scenario_order.
-    All consumers (persistence, API, UI, Excel export, previous/next navigation)
-    must rely on this ordering function as the single source of truth.
+    Orders test cases strictly by their business-defined scenario_order,
+    or falls back to category rank so categories are always contiguous and never interleaved.
     """
     def order_key(tc: CognosTestCase) -> tuple:
         if tc.scenario_order and tc.scenario_order > 0:
@@ -286,11 +285,14 @@ def assign_test_case_ids(
     """
     prefix = _derive_prefix(report_id)
 
-    # Sort test cases in category / business order first to group and sequence each category
-    def sort_key(tc: CognosTestCase) -> tuple:
-        cat = tc.category
-        order = _CATEGORY_ORDER.index(cat) if cat in _CATEGORY_ORDER else 999
-        return (order, tc.source_field or "", tc.test_case_title or "")
+    # Sort test cases strictly by category rank to guarantee contiguous grouping while preserving internal order
+    def sort_key(tc: CognosTestCase) -> int:
+        cat = tc.category or ""
+        abbrev = _CATEGORY_ID_MAP.get(cat, "")
+        if not abbrev:
+            clean_cat = re.sub(r"[^A-Z]", "", cat.upper())
+            abbrev = clean_cat[:4] if clean_cat else "TC"
+        return _CATEGORY_BASE_ORDER.get(abbrev, 999)
 
     sorted_cases = sorted(test_cases, key=sort_key)
 
@@ -299,7 +301,7 @@ def assign_test_case_ids(
     for tc in sorted_cases:
         abbrev = _CATEGORY_ID_MAP.get(tc.category)
         if not abbrev:
-            clean_cat = re.sub(r"[^A-Z]", "", tc.category.upper())
+            clean_cat = re.sub(r"[^A-Z]", "", (tc.category or "").upper())
             abbrev = clean_cat[:4] if clean_cat else "TC"
 
         category_counters[abbrev] = category_counters.get(abbrev, 0) + 1
@@ -309,15 +311,11 @@ def assign_test_case_ids(
         if not tc.report_id:
             tc.report_id = report_id
 
-        # Assign authoritative scenario_order
-        base_order = _CATEGORY_BASE_ORDER.get(abbrev, 900)
-        tc.scenario_order = base_order + (seq - 1) * 10
+    # Assign contiguous sequential scenario_order: 10, 20, 30, ...
+    for idx, tc in enumerate(sorted_cases, start=1):
+        tc.scenario_order = idx * 10
 
-    # Return ordered test cases with normalized sequence orders
-    ordered = order_cognos_test_cases(sorted_cases)
-    for idx, tc in enumerate(ordered):
-        tc.scenario_order = (idx + 1) * 10
-    return ordered
+    return sorted_cases
 
 
 def validate_test_cases(

@@ -135,8 +135,21 @@ def run_cognos_pipeline(
     test_cases = assign_test_case_ids(test_cases, report_def.metadata.report_id)
 
     # --- Stage 5.5: Back-populate mapped test case IDs onto requirements ---
+    dup_map = {r.requirement_id: r.is_duplicate_of for r in req_set.requirements if r.is_duplicate_of}
     req_map = {r.requirement_id: r for r in req_set.requirements}
+
     for tc in test_cases:
+        if tc.requirement_ids:
+            remapped = []
+            for rid in tc.requirement_ids:
+                canonical_id = dup_map.get(rid, rid)
+                if canonical_id not in remapped:
+                    remapped.append(canonical_id)
+            tc.requirement_ids = remapped
+
+        if tc.requirement_id and tc.requirement_id in dup_map:
+            tc.requirement_id = dup_map[tc.requirement_id]
+
         req_list = tc.requirement_ids if tc.requirement_ids else ([tc.requirement_id] if tc.requirement_id else [])
         for req_id in req_list:
             if req_id in req_map:

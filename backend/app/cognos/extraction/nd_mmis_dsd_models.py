@@ -54,6 +54,8 @@ class NdReportBodyRow(BaseModel):
     field_description: Optional[str] = None
     source_table: Optional[str] = None
     source_column: Optional[str] = None
+    source_tables: List[str] = Field(default_factory=list)
+    source_columns: List[str] = Field(default_factory=list)
     source_column_processing_rules: Optional[str] = None
 
 
@@ -63,10 +65,35 @@ class NdFootnoteRow(BaseModel):
     processing_rules: Optional[str] = None
 
 
+class NdControlBreakRow(BaseModel):
+    break_type: str = "Section"  # "Page" | "Section"
+    field_names: List[str] = Field(default_factory=list)
+
+
+class NdTotalCountRow(BaseModel):
+    total_type: str = "Total"  # "Total" | "Count"
+    scope: str = "Section"     # "Grand" | "Section" | "Running"
+    field_names: List[str] = Field(default_factory=list)
+    description: Optional[str] = None
+    processing_rules: Optional[str] = None
+
+
+class NdSpecialProcessingRow(BaseModel):
+    label: str
+    description: Optional[str] = None
+    source_table: Optional[str] = None
+    source_column: Optional[str] = None
+    processing_rules: Optional[str] = None
+    sql_example: Optional[str] = None
+
+
 class NdMmisDsd(BaseModel):
     definition: NdMmisReportDefinitionSection = Field(default_factory=NdMmisReportDefinitionSection)
     selection_criteria: List[NdSelectionCriterionRow] = Field(default_factory=list)
     sorts: List[NdSortRow] = Field(default_factory=list)
+    control_breaks: List[NdControlBreakRow] = Field(default_factory=list)
+    totals_and_counts: List[NdTotalCountRow] = Field(default_factory=list)
+    special_processing: List[NdSpecialProcessingRow] = Field(default_factory=list)
     output: NdReportOutputSection = Field(default_factory=NdReportOutputSection)
     presentation_type: Optional[str] = "List Object"
     section_headings: List[NdSectionHeadingRow] = Field(default_factory=list)

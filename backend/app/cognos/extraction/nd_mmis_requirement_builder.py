@@ -180,6 +180,26 @@ class NdMmisRequirementBuilder:
                 source_logic_type=SourceLogicType.LOOKUP if is_lookup else SourceLogicType.DIRECT_SOURCE,
             ))
 
+        # 5B. Selection Criteria
+        for sc in self.dsd.selection_criteria:
+            if sc.field_name and sc.field_name.upper() not in ("N/A", "NONE", "REPORT FIELD"):
+                crit_text = f"Report selection criteria for '{sc.field_name}'"
+                if sc.parameters:
+                    crit_text += f": {sc.parameters}"
+                if sc.default_value:
+                    crit_text += f" (Default: {sc.default_value})"
+                if sc.prompt:
+                    crit_text += f" (Prompt: {sc.prompt})"
+
+                reqs.append(self._create_req(
+                    category=RequirementCategory.SELECTION_CRITERIA,
+                    field=sc.field_name,
+                    text=crit_text,
+                    section="Report Selection Criteria",
+                    business_label=sc.field_name,
+                    processing_rule=sc.parameters or "",
+                ))
+
         # 6. Sorts
         for s in self.dsd.sorts:
             reqs.append(self._create_req(
@@ -190,6 +210,54 @@ class NdMmisRequirementBuilder:
                 business_label=s.field_name,
                 source_column=s.field_name,
             ))
+
+        # 6B. Control Breaks
+        for cb in self.dsd.control_breaks:
+            for fname in cb.field_names:
+                if fname and fname.upper() not in ("N/A", "NONE", ""):
+                    reqs.append(self._create_req(
+                        category=RequirementCategory.CONTROL_BREAK,
+                        field=fname,
+                        text=f"Report control break on '{fname}' ({cb.break_type} level)",
+                        section="Report Control Breaks, Totals, Counts, and Sorts",
+                        business_label=fname,
+                    ))
+
+        # 6C. Totals & Counts
+        for tc in self.dsd.totals_and_counts:
+            cat = RequirementCategory.COUNT if tc.total_type == "Count" else RequirementCategory.TOTAL
+            for fname in tc.field_names:
+                if fname and fname.upper() not in ("N/A", "NONE", ""):
+                    t_text = f"{tc.total_type} for '{fname}' ({tc.scope} level)"
+                    if tc.processing_rules:
+                        t_text += f": {tc.processing_rules}"
+                    reqs.append(self._create_req(
+                        category=cat,
+                        field=fname,
+                        text=t_text,
+                        section="Report Control Breaks, Totals, Counts, and Sorts",
+                        business_label=fname,
+                        processing_rule=tc.processing_rules or "",
+                    ))
+
+        # 6D. Special Processing & Calculations
+        for sp in self.dsd.special_processing:
+            if sp.label and sp.label.upper() not in ("N/A", "NONE", ""):
+                sp_text = f"Special processing rule for '{sp.label}'"
+                if sp.description:
+                    sp_text += f": {sp.description}"
+                if sp.processing_rules:
+                    sp_text += f" (Processing: {sp.processing_rules})"
+                reqs.append(self._create_req(
+                    category=RequirementCategory.SPECIAL_PROCESSING,
+                    field=sp.label,
+                    text=sp_text,
+                    section="Report Special Processing",
+                    business_label=sp.label,
+                    source_table=sp.source_table or "",
+                    source_column=sp.source_column or "",
+                    processing_rule=sp.processing_rules or "",
+                ))
 
         # 7. Report Body Fields
         for rf in self.dsd.report_body:

@@ -1040,15 +1040,23 @@ export default function TestScenarioExplorer({ result, projectContext }) {
       return id.includes("-SORT-") || cat.includes("sort");
     });
 
+    const outpScenarios = rawList.filter(tc => {
+      const id = (tc.test_case_id || "").toUpperCase();
+      const cat = (tc.category || "").toLowerCase();
+      return id.includes("-OUTP-") || cat.includes("output delivery") || cat.includes("delivery");
+    });
+
     const consolidated = [];
     let dbHandled = false;
     let sortHandled = false;
+    let outpHandled = false;
 
     for (const tc of rawList) {
       const id = (tc.test_case_id || "").toUpperCase();
       const cat = (tc.category || "").toLowerCase();
       const isDb = id.includes("-DBRV-") || id.includes("-DBRE-") || cat.includes("db report") || cat.includes("database") || cat.includes("db mapping");
       const isSort = id.includes("-SORT-") || cat.includes("sort");
+      const isOutp = id.includes("-OUTP-") || cat.includes("output delivery") || cat.includes("delivery");
 
       if (isDb) {
         if (!dbHandled) {
@@ -1112,12 +1120,69 @@ export default function TestScenarioExplorer({ result, projectContext }) {
             consolidated.push(tc);
           }
         }
+      } else if (isOutp) {
+        if (!outpHandled) {
+          outpHandled = true;
+          const primary = outpScenarios[0] || tc;
+          const repId = primary.report_id || result?.report_id || "PRV-INT-027";
+          consolidated.push({
+            ...primary,
+            test_case_id: primary.test_case_id.replace(/-OUTP-\d+/, "-OUTP-01"),
+            test_case_title: `Verify report delivery to SDR page for ${repId}`,
+            category: "Output Delivery Validation",
+            objective: `Verify report '${repId}' is successfully delivered to 'SDR page' after execution.`,
+            preconditions: `Report '${repId}' has been executed. 'SDR page' is accessible to tester.`,
+            test_data: "Expected delivery destination: SDR page",
+            test_steps: (
+              `1. Open 'SDR page'.\n` +
+              `2. Locate the generated '${repId}' report output.\n` +
+              `3. Verify the report was delivered successfully to 'SDR page'.\n` +
+              `4. Verify the delivered report matches the correct report ID, version, and output format.\n` +
+              `5. Verify the delivered file is not corrupted and opens correctly.\n` +
+              `6. Capture evidence of the successful delivery in 'SDR page'.`
+            ),
+            expected_result: (
+              `Report ${repId} is successfully delivered to 'SDR page'. ` +
+              `The delivered report is accessible, not corrupted, and matches the expected report ID.`
+            )
+          });
+        }
       } else {
         consolidated.push(tc);
       }
     }
 
-    return consolidated;
+    return consolidated.map((tc) => {
+      if (!tc) return tc;
+      const sanitizeEdmsText = (text) => {
+        if (typeof text !== "string" || !text) return text;
+        return text
+          .replace(/'EDMS'\s*\(or SDR delivery repository\)/gi, "'SDR page'")
+          .replace(/\bEDMS\b/g, "SDR page")
+          .replace(/\bedms\b/g, "SDR page");
+      };
+
+      return {
+        ...tc,
+        test_case_title: sanitizeEdmsText(tc.test_case_title),
+        objective: sanitizeEdmsText(tc.objective),
+        test_steps: sanitizeEdmsText(tc.test_steps),
+        expected_result: sanitizeEdmsText(tc.expected_result),
+        preconditions: sanitizeEdmsText(tc.preconditions),
+        test_data: sanitizeEdmsText(tc.test_data),
+        test_case_description: sanitizeEdmsText(tc.test_case_description),
+        dsd_reference: sanitizeEdmsText(tc.dsd_reference),
+        category: sanitizeEdmsText(tc.category),
+        evidences: Array.isArray(tc.evidences)
+          ? tc.evidences.map((ev) => ({
+              ...ev,
+              description: sanitizeEdmsText(ev?.description),
+              placeholder: sanitizeEdmsText(ev?.placeholder),
+              target_field: sanitizeEdmsText(ev?.target_field),
+            }))
+          : tc.evidences,
+      };
+    });
   }, [result]);
 
   // State

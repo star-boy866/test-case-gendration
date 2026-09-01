@@ -546,8 +546,10 @@ class ReportFeatures(BaseModel):
 
             # Date formatting
             if not f.has_date_formatting:
+                is_date_field = any(k in field_name_lower for k in ("date", "_dt", " dos")) or any(k in (r.source_column or "").lower() for k in ("_dt", "_date", "dos"))
+                is_date_format_rule = any(k in fmt for k in ("date", "mm/dd", "yyyy", "ccyy", "dt")) or any(k in proc for k in ("date", "mm/dd", "yyyy", "ccyy", "dos_dt", "first_dos", "last_dos"))
                 if (cat == RequirementCategory.COLUMN_FORMAT and ("date" in fmt or "date" in text)) or \
-                   (cat == RequirementCategory.COLUMN and (fmt or "date" in proc or "format" in proc)):
+                   (cat == RequirementCategory.COLUMN and is_date_field and (fmt or is_date_format_rule)):
                     date_ev.append(r.requirement_text)
 
             # Source columns

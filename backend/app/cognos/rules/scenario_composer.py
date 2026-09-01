@@ -594,8 +594,7 @@ class ScenarioComposer:
         req_texts = " ".join(r.requirement_text.lower() for r in pattern.requirements)
         combined_reason = reason + " " + req_texts
         
-        if "sdr" in combined_reason: tool_name = "SDR"
-        elif "edms" in combined_reason: tool_name = "EDMS"
+        if "sdr" in combined_reason or "edms" in combined_reason: tool_name = "SDR page"
         elif "web portal" in combined_reason or "reporting portal" in combined_reason: tool_name = "Web Portal"
         
         evidences = [

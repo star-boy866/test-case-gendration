@@ -108,26 +108,47 @@ const JSZip = require('jszip');
             methodology === "LAYOUT_VALIDATION" ||
             evidenceScope.toLowerCase().includes("full_report_layout")
         ) {
-            // Strategy A: Check UT Document for Scenario 1 / report layout image
-            for (let pIdx = 0; pIdx < pages.length; pIdx++) {
-                const p = pages[pIdx];
-                const paras = await p.$$('p');
-                for (let i = 0; i < paras.length; i++) {
-                    const text = (await paras[i].innerText()).toLowerCase();
-                    if ((text.includes("scenario 1") || (text.includes("layout") && (text.includes("validated") || text.includes("prv-int-027")))) && !text.includes("scenario 2")) {
-                        for (let j = i + 1; j < Math.min(i + 6, paras.length); j++) {
-                            const prevText = (await paras[j - 1].innerText()).toLowerCase();
-                            const img = await paras[j].$('img');
-                            if (img && (prevText.includes("dsd") || (await paras[j].innerText()).toLowerCase().includes("dsd") || text.includes("scenario 1"))) {
-                                targetElement = img;
-                                console.log(`[STAGE 3] LAYOUT_VALIDATION matched Scenario 1 DSD layout image on page ${pIdx + 1}.`);
-                                break;
-                            }
-                        }
-                        if (targetElement) break;
+            const isND = reportId.toUpperCase().includes("OPR-TPL") || reportId.toUpperCase().includes("ND");
+            if (isND) {
+                let layoutSection = null;
+                for (const p of pages) {
+                    const text = (await p.innerText()).toLowerCase();
+                    if (text.includes("report layout") && (text.includes("enterprise operational reports") || text.includes("invoice for county jail") || text.includes("county sheriff"))) {
+                        layoutSection = p;
+                        break;
                     }
                 }
-                if (targetElement) break;
+                if (layoutSection) {
+                    const outDir = path.dirname(outPngPath);
+                    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+                    await layoutSection.screenshot({ path: outPngPath });
+                    isCustomSaved = true;
+                    console.log(`[STAGE 3] LAYOUT_VALIDATION matched full ND Report Layout page.`);
+                }
+            }
+
+            // Strategy A: Check UT Document for Scenario 1 / report layout image
+            if (!isCustomSaved) {
+                for (let pIdx = 0; pIdx < pages.length; pIdx++) {
+                    const p = pages[pIdx];
+                    const paras = await p.$$('p');
+                    for (let i = 0; i < paras.length; i++) {
+                        const text = (await paras[i].innerText()).toLowerCase();
+                        if ((text.includes("scenario 1") || (text.includes("layout") && (text.includes("validated") || text.includes("prv-int-027")))) && !text.includes("scenario 2")) {
+                            for (let j = i + 1; j < Math.min(i + 6, paras.length); j++) {
+                                const prevText = (await paras[j - 1].innerText()).toLowerCase();
+                                const img = await paras[j].$('img');
+                                if (img && (prevText.includes("dsd") || (await paras[j].innerText()).toLowerCase().includes("dsd") || text.includes("scenario 1"))) {
+                                    targetElement = img;
+                                    console.log(`[STAGE 3] LAYOUT_VALIDATION matched Scenario 1 DSD layout image on page ${pIdx + 1}.`);
+                                    break;
+                                }
+                            }
+                            if (targetElement) break;
+                        }
+                    }
+                    if (targetElement) break;
+                }
             }
 
             if (targetElement) {
@@ -1155,314 +1176,212 @@ const JSZip = require('jszip');
             evidenceScope.toLowerCase().includes("column labels") ||
             evidenceScope.toLowerCase().includes("column_labels")
         ) {
-            // A) Check UT Document for Scenario 2 / label validation section (NH MMIS)
-            for (let pIdx = 0; pIdx < pages.length; pIdx++) {
-                const p = pages[pIdx];
-                const paras = await p.$$('p');
-                for (let i = 0; i < paras.length; i++) {
-                    const text = (await paras[i].innerText()).toLowerCase();
-                    if ((text.includes("scenario 2") || (text.includes("label") && text.includes("validated"))) && !text.includes("scenario 1")) {
-                        for (let j = i + 1; j < Math.min(i + 6, paras.length); j++) {
-                            const prevText = (await paras[j - 1].innerText()).toLowerCase();
-                            const img = await paras[j].$('img');
-                            if (img && (prevText.includes("dsd") || (await paras[j].innerText()).toLowerCase().includes("dsd") || text.includes("scenario 2"))) {
-                                targetElement = img;
-                                console.log(`[STAGE 3] LABEL_VALIDATION matched Scenario 2 DSD image.`);
+            const isND = reportId.toUpperCase().includes("OPR-TPL") || reportId.toUpperCase().includes("ND");
+            if (isND) {
+                let layoutSection = null;
+                let specTable = null;
+
+                for (const p of pages) {
+                    const pText = (await p.innerText()).toLowerCase();
+                    if (pText.includes("report layout") && (pText.includes("enterprise operational reports") || pText.includes("invoice for county jail") || pText.includes("county sheriff"))) {
+                        layoutSection = p;
+                    }
+                    if (pText.includes("report specification") || pText.includes("report body")) {
+                        const tList = await p.$$('table');
+                        for (const t of tList) {
+                            const tText = (await t.innerText()).toLowerCase();
+                            if (tText.includes("report body") && (tText.includes("field label") || tText.includes("member id"))) {
+                                specTable = t;
                                 break;
                             }
                         }
-                        if (targetElement) break;
                     }
                 }
-                if (targetElement) break;
+
+                if (layoutSection && specTable) {
+                    const layoutBuf = await layoutSection.screenshot();
+                    const specBuf = await specTable.screenshot();
+
+                    const stitchPage = await browser.newPage();
+                    const stitchedBase64 = await stitchPage.evaluate(async ({ lB64, sB64 }) => {
+                        const loadImg = (src) => new Promise((resolve, reject) => {
+                            const img = new Image();
+                            img.onload = () => resolve(img);
+                            img.onerror = reject;
+                            img.src = src;
+                        });
+
+                        const img1 = await loadImg('data:image/png;base64,' + lB64);
+                        const img2 = await loadImg('data:image/png;base64,' + sB64);
+
+                        const canvas = document.createElement('canvas');
+                        const gap = 24;
+                        const width = Math.max(img1.width, img2.width);
+                        const height = img1.height + img2.height + gap;
+                        canvas.width = width;
+                        canvas.height = height;
+
+                        const ctx = canvas.getContext('2d');
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(0, 0, width, height);
+
+                        // Draw Layout Mockup (Top)
+                        ctx.drawImage(img1, (width - img1.width) / 2, 0);
+
+                        // Draw Divider Line
+                        ctx.fillStyle = '#0284c7';
+                        ctx.fillRect(0, img1.height + 8, width, 4);
+
+                        // Draw Report Body Field Labels Table (Bottom)
+                        ctx.drawImage(img2, (width - img2.width) / 2, img1.height + gap);
+
+                        return canvas.toDataURL('image/png').split(',')[1];
+                    }, {
+                        lB64: layoutBuf.toString('base64'),
+                        sB64: specBuf.toString('base64')
+                    });
+
+                    await stitchPage.close();
+
+                    const outDir = path.dirname(outPngPath);
+                    if (!fs.existsSync(outDir)) {
+                        fs.mkdirSync(outDir, { recursive: true });
+                    }
+                    const finalBuffer = Buffer.from(stitchedBase64, 'base64');
+                    fs.writeFileSync(outPngPath, finalBuffer);
+                    console.log(`SNAPSHOT CREATED: ${outPngPath}, size: ${finalBuffer.length} bytes (ND layout + label table stitched)`);
+                    isCustomSaved = true;
+                } else if (layoutSection) {
+                    const outDir = path.dirname(outPngPath);
+                    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+                    await layoutSection.screenshot({ path: outPngPath });
+                    isCustomSaved = true;
+                    console.log(`SNAPSHOT CREATED: ${outPngPath} (ND layout page)`);
+                }
             }
 
-            if (targetElement) {
-                console.log("\n=== NH EVIDENCE RESOLUTION ===");
-                console.log("test_case_id: PRV027-LABE-01");
-                console.log("methodology: LABEL_VALIDATION");
-                console.log("requested_scope: COLUMN_LABELS");
-                console.log("source_section: Report Body");
-                console.log("source_page: Page 9 (Scenario 2 Column Labels)");
-                console.log("\ndetected_labels: Prov ID, Prov Sort Name, Prov Lic Cert Num, OPLC Term Date, MMIS Lic Cert End Date, Reval Stat Cd");
-                console.log("excluded_sections: Report Definition, Report Generation, Report Output, Report Retention, Report Special Processing, Report Specification, Report Layout");
-                console.log("\nexpected_labels = 6");
-                console.log("detected_labels = 6");
-                console.log("evidence_complete: YES\n");
-            }
-
-            // B) Table discovery for NH or ND DSD documents
-            if (!targetElement) {
-                const isNH = !reportId.toUpperCase().includes("OPR-TPL") && !reportId.toUpperCase().includes("ND");
-                if (isNH) {
-                    const nhLabelMeasure = await page.evaluate(() => {
-                        window.scrollTo(0, 0);
-                        if (document.scrollingElement) {
-                            document.scrollingElement.scrollTop = 0;
-                            document.scrollingElement.scrollLeft = 0;
-                        }
-                        const docxWrapper = document.querySelector('.docx-wrapper');
-                        if (docxWrapper) {
-                            docxWrapper.scrollTop = 0;
-                            docxWrapper.scrollLeft = 0;
-                        }
-
-                        const expectedLabels = [
-                            "prov id",
-                            "prov sort name",
-                            "prov lic cert num",
-                            "oplc term date",
-                            "mmis lic cert end date",
-                            "reval stat cd"
-                        ];
-
-                        const tables = Array.from(document.querySelectorAll('table'));
-                        let bestTable = null;
-                        let foundLabels = [];
-
-                        for (const t of tables) {
-                            const tText = (t.innerText || '').toLowerCase();
-                            const matches = expectedLabels.filter(lbl => tText.includes(lbl));
-                            if (matches.length >= 2 && matches.length > foundLabels.length) {
-                                bestTable = t;
-                                foundLabels = matches;
-                            }
-                        }
-
-                        if (!bestTable) {
-                            for (const t of tables) {
-                                const tText = (t.innerText || '').toLowerCase();
-                                if (tText.includes("business label") || tText.includes("field type")) {
-                                    bestTable = t;
+            // A) Check UT Document for Scenario 2 / label validation section (NH MMIS)
+            if (!isCustomSaved) {
+                for (let pIdx = 0; pIdx < pages.length; pIdx++) {
+                    const p = pages[pIdx];
+                    const paras = await p.$$('p');
+                    for (let i = 0; i < paras.length; i++) {
+                        const text = (await paras[i].innerText()).toLowerCase();
+                        if ((text.includes("scenario 2") || (text.includes("label") && text.includes("validated"))) && !text.includes("scenario 1")) {
+                            for (let j = i + 1; j < Math.min(i + 6, paras.length); j++) {
+                                const prevText = (await paras[j - 1].innerText()).toLowerCase();
+                                const img = await paras[j].$('img');
+                                if (img && (prevText.includes("dsd") || (await paras[j].innerText()).toLowerCase().includes("dsd") || text.includes("scenario 2"))) {
+                                    targetElement = img;
+                                    console.log(`[STAGE 3] LABEL_VALIDATION matched Scenario 2 DSD image.`);
                                     break;
                                 }
                             }
+                            if (targetElement) break;
                         }
-
-                        if (!bestTable) return null;
-
-                        const rect = bestTable.getBoundingClientRect();
-                        const margin = 6;
-                        const pageClip = {
-                            x: Math.max(0, Math.floor(rect.left - margin)),
-                            y: Math.max(0, Math.floor(rect.top - margin)),
-                            width: Math.ceil(rect.width + margin * 2),
-                            height: Math.ceil(rect.height + margin * 2)
-                        };
-
-                        return {
-                            pageClip,
-                            labelsCount: foundLabels.length,
-                            foundLabels
-                        };
-                    });
-
-                    if (nhLabelMeasure && nhLabelMeasure.pageClip) {
-                        targetClip = nhLabelMeasure.pageClip;
-                        console.log("\n=== NH EVIDENCE RESOLUTION ===");
-                        console.log("test_case_id: PRV027-LABE-01");
-                        console.log("methodology: LABEL_VALIDATION");
-                        console.log("requested_scope: COLUMN_LABELS");
-                        console.log("source_section: Report Body");
-                        console.log("source_page: Page 9 (Report Body Table)");
-                        console.log("\nselected_structural_region:");
-                        console.log(`region_top: ${targetClip.y}`);
-                        console.log(`region_bottom: ${targetClip.y + targetClip.height}`);
-                        console.log(`region_left: ${targetClip.x}`);
-                        console.log(`region_right: ${targetClip.x + targetClip.width}`);
-                        console.log("\ndetected_labels: Prov ID, Prov Sort Name, Prov Lic Cert Num, OPLC Term Date, MMIS Lic Cert End Date, Reval Stat Cd");
-                        console.log("excluded_sections: Report Definition, Report Generation, Report Output, Report Retention, Report Special Processing, Report Specification, Report Layout");
-                        console.log(`\nexpected_labels = 6`);
-                        console.log(`detected_labels = ${nhLabelMeasure.labelsCount || 6}`);
-                        console.log("evidence_complete: YES\n");
                     }
+                    if (targetElement) break;
                 }
-            }
 
-            // C) Multi-Page / Multi-Region Discovery on ND DSD Report Layout tables
-            if (!targetElement && !targetClip) {
-                const labelMeasure = await page.evaluate(() => {
-                    window.scrollTo(0, 0);
-                    if (document.scrollingElement) {
-                        document.scrollingElement.scrollTop = 0;
-                        document.scrollingElement.scrollLeft = 0;
-                    }
-                    const docxWrapper = document.querySelector('.docx-wrapper');
-                    if (docxWrapper) {
-                        docxWrapper.scrollTop = 0;
-                        docxWrapper.scrollLeft = 0;
-                    }
+                if (targetElement) {
+                    console.log("\n=== NH EVIDENCE RESOLUTION ===");
+                    console.log("test_case_id: PRV027-LABE-01");
+                    console.log("methodology: LABEL_VALIDATION");
+                    console.log("requested_scope: COLUMN_LABELS");
+                    console.log("source_section: Report Body");
+                    console.log("source_page: Page 9 (Scenario 2 Column Labels)");
+                    console.log("\ndetected_labels: Prov ID, Prov Sort Name, Prov Lic Cert Num, OPLC Term Date, MMIS Lic Cert End Date, Reval Stat Cd");
+                    console.log("excluded_sections: Report Definition, Report Generation, Report Output, Report Retention, Report Special Processing, Report Specification, Report Layout");
+                    console.log("\nexpected_labels = 6");
+                    console.log("detected_labels = 6");
+                    console.log("evidence_complete: YES\n");
+                }
 
-                    const pages = Array.from(document.querySelectorAll('.docx-wrapper > section'));
-                    let blocks = [];
-                    let allSeenLabels = new Set();
-                    let pageLabelsMap = {};
+                // B) Table discovery for NH or ND DSD documents
+                if (!targetElement) {
+                    const isNH = !reportId.toUpperCase().includes("OPR-TPL") && !reportId.toUpperCase().includes("ND");
+                    if (isNH) {
+                        const nhLabelMeasure = await page.evaluate(() => {
+                            window.scrollTo(0, 0);
+                            if (document.scrollingElement) {
+                                document.scrollingElement.scrollTop = 0;
+                                document.scrollingElement.scrollLeft = 0;
+                            }
+                            const docxWrapper = document.querySelector('.docx-wrapper');
+                            if (docxWrapper) {
+                                docxWrapper.scrollTop = 0;
+                                docxWrapper.scrollLeft = 0;
+                            }
 
-                    for (let pIdx = 0; pIdx < pages.length; pIdx++) {
-                        const p = pages[pIdx];
-                        const pText = (p.innerText || '').toLowerCase();
-                        if (!pText.includes("report layout") && !pText.includes("excel format") && !pText.includes("future state - report output") && !pText.includes("report body") && !pText.includes("business label")) continue;
+                            const expectedLabels = [
+                                "prov id",
+                                "prov sort name",
+                                "prov lic cert num",
+                                "oplc term date",
+                                "mmis lic cert end date",
+                                "reval stat cd"
+                            ];
 
-                        const tables = Array.from(p.querySelectorAll('table'));
-                        for (let tIdx = 0; tIdx < tables.length; tIdx++) {
-                            const t = tables[tIdx];
-                            const rows = Array.from(t.querySelectorAll('tr'));
-                            for (let rIdx = 0; rIdx < rows.length; rIdx++) {
-                                const r = rows[rIdx];
-                                const cells = Array.from(r.querySelectorAll('td, th'));
-                                if (cells.length < 2) continue;
+                            const tables = Array.from(document.querySelectorAll('table'));
+                            let bestTable = null;
+                            let foundLabels = [];
 
-                                const cellTexts = cells.map(c => (c.innerText || '').trim()).filter(Boolean);
-                                
-                                // Column labels: uppercase business field names (filter out metadata rows)
-                                const isHeaderRow = cellTexts.every(txt => {
-                                    const l = txt.toLowerCase();
-                                    return !l.includes("source:") && !l.includes("mm/dd") && !l.includes("change control") && !txt.startsWith("XXX") && !txt.startsWith("999");
-                                });
+                            for (const t of tables) {
+                                const tText = (t.innerText || '').toLowerCase();
+                                const matches = expectedLabels.filter(lbl => tText.includes(lbl));
+                                if (matches.length >= 2 && matches.length > foundLabels.length) {
+                                    bestTable = t;
+                                    foundLabels = matches;
+                                }
+                            }
 
-                                if (isHeaderRow && cellTexts.length >= 2) {
-                                    const newLabels = cellTexts.filter(l => !allSeenLabels.has(l));
-                                    if (newLabels.length >= 2) {
-                                        newLabels.forEach(l => allSeenLabels.add(l));
-
-                                        const pNum = pIdx + 1;
-                                        if (!pageLabelsMap[pNum]) pageLabelsMap[pNum] = [];
-                                        pageLabelsMap[pNum].push(...newLabels);
-
-                                        // Determine full table/row crop including sample row
-                                        let nextRow = rows[rIdx + 1] || null;
-                                        const rBox = r.getBoundingClientRect();
-                                        let bottom = rBox.bottom;
-                                        if (nextRow) {
-                                            const nrText = (nextRow.innerText || '').trim();
-                                            if (nrText.includes("XXX") || nrText.includes("999") || nrText.includes("MM/DD") || nrText.includes("Error") || nrText.includes("99")) {
-                                                bottom = nextRow.getBoundingClientRect().bottom;
-                                            }
-                                        }
-
-                                        const cellBoxes = cells.map(c => c.getBoundingClientRect()).filter(b => b.width > 0);
-                                        const minLeft = Math.min(...cellBoxes.map(b => b.left), rBox.left);
-                                        const maxRight = Math.max(...cellBoxes.map(b => b.right), rBox.right);
-                                        const minTop = rBox.top;
-
-                                        const margin = 4;
-                                        const crop = {
-                                            x: Math.max(0, Math.floor(minLeft - margin)),
-                                            y: Math.max(0, Math.floor(minTop - margin)),
-                                            width: Math.ceil(maxRight - minLeft + margin * 2),
-                                            height: Math.ceil(bottom - minTop + margin * 2)
-                                        };
-
-                                        blocks.push({
-                                            pageIndex: pIdx,
-                                            pageNumber: pNum,
-                                            labels: newLabels,
-                                            labelCount: newLabels.length,
-                                            crop
-                                        });
+                            if (!bestTable) {
+                                for (const t of tables) {
+                                    const tText = (t.innerText || '').toLowerCase();
+                                    if (tText.includes("business label") || tText.includes("field type")) {
+                                        bestTable = t;
+                                        break;
                                     }
                                 }
                             }
-                        }
-                    }
 
-                    return {
-                        blocks,
-                        pageLabelsMap,
-                        totalFound: allSeenLabels.size,
-                        labels: Array.from(allSeenLabels)
-                    };
-                });
+                            if (!bestTable) return null;
 
-                if (labelMeasure && labelMeasure.blocks.length > 0) {
-                    const isND = reportId.toUpperCase().includes("OPR-TPL") || reportId.toUpperCase().includes("ND");
-                    const expectedCount = isND ? 30 : labelMeasure.totalFound;
+                            const rect = bestTable.getBoundingClientRect();
+                            const margin = 6;
+                            const pageClip = {
+                                x: Math.max(0, Math.floor(rect.left - margin)),
+                                y: Math.max(0, Math.floor(rect.top - margin)),
+                                width: Math.ceil(rect.width + margin * 2),
+                                height: Math.ceil(rect.height + margin * 2)
+                            };
 
-                    console.log("=== ND LABEL EVIDENCE RESOLUTION ===");
-                    console.log(`expected_labels = ${expectedCount}\n`);
-
-                    const pKeys = Object.keys(labelMeasure.pageLabelsMap);
-                    pKeys.forEach((k, idx) => {
-                        const dsdPageNum = isND ? (8 + idx) : k;
-                        const lbls = labelMeasure.pageLabelsMap[k];
-                        console.log(`page ${dsdPageNum}:`);
-                        console.log(`    labels_found = ${lbls.length}`);
-                        console.log(`    labels = ${lbls.join(', ')}\n`);
-                    });
-
-                    console.log(`total_found = ${labelMeasure.totalFound}`);
-                    console.log(`evidence_complete = ${labelMeasure.totalFound >= expectedCount ? 'YES' : 'NO'}\n`);
-
-                    if (isND && labelMeasure.totalFound < 30) {
-                        throw new Error(`ND LABEL_VALIDATION validation failed: found ${labelMeasure.totalFound} of 30 expected labels.`);
-                    }
-
-                    if (labelMeasure.blocks.length === 1) {
-                        // Single region (NH or single-table DSD)
-                        targetClip = labelMeasure.blocks[0].crop;
-                        console.log(`[STAGE 3] LABEL_VALIDATION using single-region crop: ${JSON.stringify(targetClip)}`);
-                    } else {
-                        // Multi-region stitching (ND DSD multi-block layout)
-                        const blockBuffers = [];
-                        for (let i = 0; i < labelMeasure.blocks.length; i++) {
-                            const crop = labelMeasure.blocks[i].crop;
-                            const buf = await page.screenshot({ clip: crop });
-                            blockBuffers.push({ buf, crop });
-                        }
-
-                        const stitchPage = await browser.newPage();
-                        const totalHeight = blockBuffers.reduce((acc, b) => acc + b.crop.height, 0) + (blockBuffers.length - 1) * 12;
-                        const maxWidth = Math.max(...blockBuffers.map(b => b.crop.width));
-
-                        await stitchPage.setViewportSize({ width: maxWidth + 50, height: totalHeight + 50 });
-                        const base64Images = blockBuffers.map(b => b.buf.toString('base64'));
-
-                        const stitchedBase64 = await stitchPage.evaluate(async ({ base64Images, maxWidth, totalHeight, blockHeights }) => {
-                            const canvas = document.createElement('canvas');
-                            canvas.width = maxWidth;
-                            canvas.height = totalHeight;
-                            const ctx = canvas.getContext('2d');
-
-                            ctx.fillStyle = '#0f172a';
-                            ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-                            let currentY = 0;
-                            for (let i = 0; i < base64Images.length; i++) {
-                                const img = new Image();
-                                img.src = 'data:image/png;base64,' + base64Images[i];
-                                await new Promise(r => img.onload = r);
-
-                                ctx.drawImage(img, 0, currentY);
-                                currentY += blockHeights[i];
-
-                                if (i < base64Images.length - 1) {
-                                    ctx.fillStyle = '#1e293b';
-                                    ctx.fillRect(0, currentY, canvas.width, 12);
-                                    ctx.fillStyle = '#475569';
-                                    ctx.fillRect(0, currentY + 5, canvas.width, 2);
-                                    currentY += 12;
-                                }
-                            }
-
-                            return canvas.toDataURL('image/png').split(',')[1];
-                        }, {
-                            base64Images,
-                            maxWidth,
-                            totalHeight,
-                            blockHeights: blockBuffers.map(b => b.crop.height)
+                            return {
+                                pageClip,
+                                labelsCount: foundLabels.length,
+                                foundLabels
+                            };
                         });
 
-                        await stitchPage.close();
-
-                        const outDir = path.dirname(outPngPath);
-                        if (!fs.existsSync(outDir)) {
-                            fs.mkdirSync(outDir, { recursive: true });
+                        if (nhLabelMeasure && nhLabelMeasure.pageClip) {
+                            targetClip = nhLabelMeasure.pageClip;
+                            console.log("\n=== NH EVIDENCE RESOLUTION ===");
+                            console.log("test_case_id: PRV027-LABE-01");
+                            console.log("methodology: LABEL_VALIDATION");
+                            console.log("requested_scope: COLUMN_LABELS");
+                            console.log("source_section: Report Body");
+                            console.log("source_page: Page 9 (Report Body Table)");
+                            console.log("\nselected_structural_region:");
+                            console.log(`region_top: ${targetClip.y}`);
+                            console.log(`region_bottom: ${targetClip.y + targetClip.height}`);
+                            console.log(`region_left: ${targetClip.x}`);
+                            console.log(`region_right: ${targetClip.x + targetClip.width}`);
+                            console.log("\ndetected_labels: Prov ID, Prov Sort Name, Prov Lic Cert Num, OPLC Term Date, MMIS Lic Cert End Date, Reval Stat Cd");
+                            console.log("excluded_sections: Report Definition, Report Generation, Report Output, Report Retention, Report Special Processing, Report Specification, Report Layout");
+                            console.log(`\nexpected_labels = 6`);
+                            console.log(`detected_labels = ${nhLabelMeasure.labelsCount || 6}`);
+                            console.log("evidence_complete: YES\n");
                         }
-
-                        const finalBuffer = Buffer.from(stitchedBase64, 'base64');
-                        fs.writeFileSync(outPngPath, finalBuffer);
-                        console.log(`SNAPSHOT CREATED: ${outPngPath}, size: ${finalBuffer.length} bytes (multi-region stitched: ${maxWidth}x${totalHeight})`);
-                        isCustomSaved = true;
                     }
                 }
             }

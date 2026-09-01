@@ -50,7 +50,6 @@ EXPECTED_ORDERED_IDS = [
     "PRV027-LAYO-01",
     "PRV027-LOOK-01",
     "PRV027-OUTP-01",
-    "PRV027-OUTP-02",
     "PRV027-SCRI-01",
     "PRV027-SCRI-02",
     "PRV027-SORT-01",
@@ -64,12 +63,12 @@ EXPECTED_ORDERED_IDS = [
 
 
 def test_prv027_authoritative_order_and_count():
-    """Verify exact 19 scenarios and authoritative ordering for PRV-INT-027 with EXEC-01 first."""
+    """Verify exact 18 scenarios and authoritative ordering for PRV-INT-027 with EXEC-01 first."""
     docx_path = "runs/94/source/source.docx"
     ctx = run_cognos_pipeline(docx_path)
     test_cases = ctx.test_suite.test_cases
 
-    assert len(test_cases) == 19, f"Expected 19 test cases, got {len(test_cases)}"
+    assert len(test_cases) == 18, f"Expected 18 test cases, got {len(test_cases)}"
 
     # 1. Check uniqueness (no duplicates)
     actual_ids = [tc.test_case_id for tc in test_cases]

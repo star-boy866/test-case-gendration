@@ -111,9 +111,6 @@ def build_cognos_workbook(
     # --- Sheet 5: Traceability Matrix ---
     _build_traceability_sheet(wb, context)
 
-    # --- Sheet 6: Evidence Snapshots ---
-    _build_evidence_snapshots_sheet(wb, context.test_suite)
-
     return wb
 
 
@@ -130,24 +127,15 @@ def _build_primary_test_sheet(wb: Workbook, ts: TestSuite) -> None:
     ws = typing.cast(typing.Any, wb.active)
     ws.title = "Test Scenarios"
     ws.sheet_properties.tabColor = "2E75B6"
-
     headers = [
-        "Test Case ID",           # A
-        "Category",               # B
-        "Test Objective",         # C
+        "Test Case ID",               # A
+        "Category",                   # B
+        "Test Objective",             # C
         "DSD / Technical Reference",  # D
         "Preconditions / Test Data",  # E
-        "Test Steps",             # F
-        "Expected Result",        # G
-        "Evidence Required",      # H
-        "Evidence Type",          # I
-        "Open Item / Notes",      # J
-        "Requirement ID(s)",      # K
-        "Source Page",            # L
-        "Source Section",         # M
-        "LLM Refinement Status",  # N
-        "Status",                 # O
-        "Confidence",             # P
+        "Test Steps",                 # F
+        "Expected Result",            # G
+        "Generated SQL",              # H
     ]
 
     for col, header in enumerate(headers, start=1):
@@ -163,32 +151,24 @@ def _build_primary_test_sheet(wb: Workbook, ts: TestSuite) -> None:
 
     ordered_cases = order_cognos_test_cases(ts.test_cases)
     for row_idx, tc in enumerate(ordered_cases, start=2):
-        evidences_str = "\n".join(
-            [f"- {e.description} ({e.placeholder})" for e in tc.evidence_requirements]
-        ) if tc.evidence_requirements else tc.evidence_required
-
-        ev_types = ", ".join(sorted(set(e.evidence_type for e in tc.evidence_requirements))) if tc.evidence_requirements else tc.evidence_type
-        req_ids_str = ", ".join(tc.requirement_ids) if tc.requirement_ids else tc.requirement_id
-
         # Build preconditions + test data as combined cell (reference format)
         prec_data = tc.preconditions
         if tc.test_data and tc.test_data not in ("N/A", "", "N/A — layout verification is structural, no specific data required."):
             prec_data = f"{tc.preconditions}\n\nTest Data:\n{tc.test_data}"
 
-        evidence_pages = ", ".join(sorted(set(str(e.page_number) for e in getattr(tc, 'evidence_references', []) if getattr(e, 'page_number', None))))
-        evidence_sections = tc.source_section or "\n".join(sorted(set(e.section for e in getattr(tc, 'evidence_references', []) if e.section)))
-
         # DSD reference — use new field or fall back to applicability reason
         dsd_ref = getattr(tc, 'dsd_reference', '') or tc.applicability_reason or ""
 
-        # Open item — Phase 10.6 field
+        # Open item / Notes check for row styling
         open_item = getattr(tc, 'open_item', '') or tc.open_questions or ""
 
-        # LLM status
-        llm_status = getattr(tc, 'llm_refinement_status', 'NOT_ATTEMPTED')
+        # Generated validation SQL for this scenario
+        gen_sql = getattr(tc, 'validation_sql', '') or getattr(tc, 'report_validation_sql', '') or ""
 
-        # Confidence
-        confidence = getattr(tc, 'confidence', 'High')
+        # Test steps (with EDMS sanitized to SDR page)
+        clean_test_steps = tc.test_steps
+        if clean_test_steps:
+            clean_test_steps = clean_test_steps.replace("'EDMS' (or SDR delivery repository)", "'SDR page'").replace("EDMS", "SDR page")
 
         values = [
             tc.test_case_id,         # A: Test Case ID
@@ -196,17 +176,9 @@ def _build_primary_test_sheet(wb: Workbook, ts: TestSuite) -> None:
             tc.objective,            # C: Test Objective
             dsd_ref,                 # D: DSD / Technical Reference
             prec_data,               # E: Preconditions / Test Data
-            tc.test_steps,           # F: Test Steps
+            clean_test_steps,        # F: Test Steps
             tc.expected_result,      # G: Expected Result
-            evidences_str,           # H: Evidence Required
-            ev_types,                # I: Evidence Type
-            open_item,               # J: Open Item / Notes
-            req_ids_str,             # K: Requirement ID(s)
-            evidence_pages,          # L: Source Page
-            evidence_sections,       # M: Source Section
-            llm_status,              # N: LLM Refinement Status
-            tc.status.value if hasattr(tc.status, 'value') else tc.status,  # O: Status
-            confidence,              # P: Confidence
+            gen_sql,                 # H: Generated SQL
         ]
 
         for col, val in enumerate(values, start=1):
@@ -223,8 +195,8 @@ def _build_primary_test_sheet(wb: Workbook, ts: TestSuite) -> None:
             for col in range(1, len(headers) + 1):
                 ws.cell(row=row_idx, column=col).fill = _REVIEW_FILL
 
-    # Set column widths (matching reference workbook proportions)
-    col_widths = [16, 28, 45, 40, 45, 55, 50, 40, 18, 35, 22, 14, 28, 20, 18, 14]
+    # Set column widths (clean, readable layout with Generated SQL)
+    col_widths = [18, 28, 45, 40, 45, 60, 50, 65]
     for i, w in enumerate(col_widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 

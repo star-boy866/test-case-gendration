@@ -126,7 +126,10 @@ class DeterministicSqlGenerator:
         if "DB_COUNT" in methodology or tc.category == "DB Count Validation":
             cls._generate_db_count_sql(tc, raw_criteria, field_to_col, col_to_table, rd, req_set)
         elif "LABEL" in methodology or tc.category == "Label Validation":
-            cls._generate_label_validation_sql(tc, raw_criteria, field_to_col, col_to_table, rd, req_set)
+            cls._generate_label_validation_sql(
+                tc, raw_criteria, field_to_col, col_to_table, rd, req_set,
+                full_report_sql=full_report_sql
+            )
         elif "DB_REPORT_DATA" in methodology or tc.category == "DB Report Data Validation" or "DBRE" in tc.test_case_id:
             cls._generate_db_report_data_sql(
                 tc, raw_criteria, field_to_col, col_to_table, rd, req_set,
@@ -508,6 +511,136 @@ class DeterministicSqlGenerator:
         rd: Optional[ReportDefinition],
         req_set: Optional[RequirementSet]
     ):
+        report_id = (rd.metadata.report_id if (rd and rd.metadata and rd.metadata.report_id) else (tc.report_id or "")).upper()
+        field_name = tc.source_field or tc.test_case_title or ""
+
+        # ND MMIS Report specialization (e.g. ND-RP-07-0002)
+        if "ND-RP-07-0002" in report_id or ("ND-" in report_id and any("C_HDR" in (getattr(rf, "source_table", "") or "") for rf in (getattr(rd, "report_fields", []) if rd else []))):
+            title_lower = (tc.test_case_title or "").lower()
+            field_lower = field_name.lower()
+            is_grand = "grand" in title_lower or "grand" in field_lower
+
+            if "total for tcn" in field_lower or ("tcn" in field_lower and "claims" not in field_lower):
+                tc.validation_sql = (
+                    "SELECT\n"
+                    "    CHP.B_SYS_ID                                  AS MEMBER_ID,\n"
+                    "    CHP.P_BLNG_SYS_ID                             AS PROVIDER_ID,\n"
+                    "    CHP.C_TCN_NUM                                 AS TCN,\n"
+                    "    COUNT(DISTINCT CHP.C_TCN_NUM)                 AS CLAIM_COUNT,\n"
+                    "    SUM(CHP.C_TOT_CHRG_AMT)                       AS TOTAL_BILLED_AMT,\n"
+                    "    SUM(CHP.C_TOT_REIMB_AMT)                      AS TOTAL_PAID_AMT\n"
+                    "FROM C_HDR_PARENT_TB CHP\n"
+                    "LEFT JOIN C_LI_TB CLI\n"
+                    "       ON CLI.C_TCN_NUM = CHP.C_TCN_NUM\n"
+                    "WHERE CHP.C_STAT_CD IN ('P','D')\n"
+                    "GROUP BY\n"
+                    "    CHP.B_SYS_ID,\n"
+                    "    CHP.P_BLNG_SYS_ID,\n"
+                    "    CHP.C_TCN_NUM;"
+                )
+                tc.expected_validation = (
+                    "Total for TCN must calculate claim count = 1 per unique TCN against member and provider, "
+                    "total billed amount = sum of claim line charges, and total paid amount = sum of claim reimbursements."
+                )
+            elif "claims processed" in field_lower:
+                if is_grand:
+                    tc.validation_sql = (
+                        "SELECT\n"
+                        "    COUNT(DISTINCT CHP.C_TCN_NUM) AS GRAND_TOTAL_CLAIMS_COUNT,\n"
+                        "    SUM(CHP.C_TOT_REIMB_AMT)      AS GRAND_TOTAL_CLAIMS_PROCESSED_AMT\n"
+                        "FROM C_HDR_PARENT_TB CHP\n"
+                        "WHERE CHP.C_STAT_CD IN ('P','D');"
+                    )
+                    tc.expected_validation = (
+                        "Grand Total of claims processed across the entire report must equal the total count of unique claims (TCNs) "
+                        "and the sum of all paid reimbursement amounts."
+                    )
+                else:
+                    tc.validation_sql = (
+                        "SELECT\n"
+                        "    BLC.B_LL_CNTY_CD                              AS JAIL_CODE,\n"
+                        "    COUNT(DISTINCT CHP.C_TCN_NUM)                 AS TOTAL_CLAIMS_COUNT,\n"
+                        "    SUM(CHP.C_TOT_REIMB_AMT)                      AS TOTAL_CLAIMS_PROCESSED_AMT\n"
+                        "FROM C_HDR_PARENT_TB CHP\n"
+                        "LEFT JOIN B_LL_CNTY_TR BLC\n"
+                        "       ON BLC.B_CASE_NUM = CHP.B_SYS_ID\n"
+                        "WHERE CHP.C_STAT_CD IN ('P','D')\n"
+                        "GROUP BY BLC.B_LL_CNTY_CD;"
+                    )
+                    tc.expected_validation = (
+                        "Section Total of claims processed in each county must equal the count of unique claims (TCNs) "
+                        "and the total paid reimbursement amount for that county invoice."
+                    )
+            elif "fees" in field_lower or "noofclaims" in field_lower:
+                if is_grand:
+                    tc.validation_sql = (
+                        "SELECT\n"
+                        "    COUNT(DISTINCT CHP.C_TCN_NUM)            AS GRAND_TOTAL_NO_OF_CLAIMS,\n"
+                        "    COUNT(DISTINCT CHP.C_TCN_NUM) * 2.50     AS GRAND_TOTAL_STATE_PROCESSING_FEES\n"
+                        "FROM C_HDR_PARENT_TB CHP\n"
+                        "WHERE CHP.C_STAT_CD IN ('P','D');"
+                    )
+                    tc.expected_validation = (
+                        "Grand Total State Processing Fees must equal total unique claims across the report multiplied by "
+                        "the $2.50 statutory processing fee per System Parameter C5-50."
+                    )
+                else:
+                    tc.validation_sql = (
+                        "SELECT\n"
+                        "    BLC.B_LL_CNTY_CD                         AS JAIL_CODE,\n"
+                        "    COUNT(DISTINCT CHP.C_TCN_NUM)            AS NO_OF_CLAIMS,\n"
+                        "    COUNT(DISTINCT CHP.C_TCN_NUM) * 2.50     AS STATE_PROCESSING_FEES\n"
+                        "FROM C_HDR_PARENT_TB CHP\n"
+                        "LEFT JOIN B_LL_CNTY_TR BLC\n"
+                        "       ON BLC.B_CASE_NUM = CHP.B_SYS_ID\n"
+                        "WHERE CHP.C_STAT_CD IN ('P','D')\n"
+                        "GROUP BY BLC.B_LL_CNTY_CD;"
+                    )
+                    tc.expected_validation = (
+                        "Section State Processing Fees must auto-populate #NoOfClaims with unique claims for the county and "
+                        "calculate total processing fees as (unique TCNs x $2.50 statutory fee per parameter C5-50)."
+                    )
+            elif "balance due" in field_lower:
+                if is_grand:
+                    tc.validation_sql = (
+                        "SELECT\n"
+                        "    SUM(CHP.C_TOT_REIMB_AMT)                                            AS GRAND_TOTAL_PAID_AMT,\n"
+                        "    COUNT(DISTINCT CHP.C_TCN_NUM) * 2.50                                AS GRAND_TOTAL_PROCESSING_FEES,\n"
+                        "    SUM(CHP.C_TOT_REIMB_AMT) + (COUNT(DISTINCT CHP.C_TCN_NUM) * 2.50)  AS GRAND_TOTAL_BALANCE_DUE\n"
+                        "FROM C_HDR_PARENT_TB CHP\n"
+                        "WHERE CHP.C_STAT_CD IN ('P','D');"
+                    )
+                    tc.expected_validation = (
+                        "Grand Total Balance Due for the report must equal the sum of all claim paid amounts plus all state processing fees."
+                    )
+                else:
+                    tc.validation_sql = (
+                        "SELECT\n"
+                        "    BLC.B_LL_CNTY_CD                                                    AS JAIL_CODE,\n"
+                        "    SUM(CHP.C_TOT_REIMB_AMT)                                            AS TOTAL_PAID_AMT,\n"
+                        "    COUNT(DISTINCT CHP.C_TCN_NUM) * 2.50                                AS TOTAL_PROCESSING_FEES,\n"
+                        "    SUM(CHP.C_TOT_REIMB_AMT) + (COUNT(DISTINCT CHP.C_TCN_NUM) * 2.50)  AS BALANCE_DUE\n"
+                        "FROM C_HDR_PARENT_TB CHP\n"
+                        "LEFT JOIN B_LL_CNTY_TR BLC\n"
+                        "       ON BLC.B_CASE_NUM = CHP.B_SYS_ID\n"
+                        "WHERE CHP.C_STAT_CD IN ('P','D')\n"
+                        "GROUP BY BLC.B_LL_CNTY_CD;"
+                    )
+                    tc.expected_validation = (
+                        "Section Balance Due for each county must equal total paid claims plus total state processing fees for that county invoice."
+                    )
+            else:
+                tc.validation_sql = (
+                    "SELECT COUNT(DISTINCT CHP.C_TCN_NUM)\n"
+                    "FROM C_HDR_PARENT_TB CHP\n"
+                    "WHERE CHP.C_STAT_CD IN ('P','D');"
+                )
+                tc.expected_validation = "Total report record count must equal the database count of distinct claims matching report criteria."
+            tc.sql_status = "AVAILABLE"
+            tc.source_table = "C_HDR_PARENT_TB"
+            tc.traceability_source = "Report Control Breaks, Totals, Counts, and Sorts"
+            return
+
         table = tc.source_table
         if not table or table in ("NOT_DEFINED", "N/A", "Multiple"):
             tc.sql_status = "UNAVAILABLE"
@@ -517,7 +650,7 @@ class DeterministicSqlGenerator:
         count_target = tc.source_column or tc.source_field or "Total Errors"
         if not count_target or count_target in ("NOT_DEFINED", "Count", "Total"):
             count_target = "Total Errors"
-            
+
         tc.expected_validation = f"Database COUNT(*) must equal the report's '{count_target}' count for the same record set."
         tc.traceability_source = "Selection Criteria • Report Specification / Report Body"
 
@@ -539,7 +672,7 @@ class DeterministicSqlGenerator:
                 tc.validation_sql = f"SELECT COUNT(*)\nFROM {table}\nWHERE /* {crit} */;  -- {err}"
                 tc.selection_criteria = "\n".join(raw_criteria)
                 return
-            
+
             if cond:
                 where_conditions.append(cond)
             if mapping and mapping not in source_mappings:
@@ -568,7 +701,8 @@ class DeterministicSqlGenerator:
         field_to_col: Dict[str, str],
         col_to_table: Dict[str, str],
         rd: Optional[ReportDefinition],
-        req_set: Optional[RequirementSet]
+        req_set: Optional[RequirementSet],
+        full_report_sql: str = ""
     ):
         """
         Generates deterministic SELECT query for all report-body source columns
@@ -658,21 +792,32 @@ class DeterministicSqlGenerator:
         if not tables and tc.source_table and tc.source_table not in ("NOT_DEFINED", "N/A", "Multiple"):
             tables.append(tc.source_table)
 
+        # Multi-table resolution with full_report_sql
+        if len(tables) > 1:
+            if full_report_sql:
+                tc.validation_sql = full_report_sql
+                tc.sql_status = "AVAILABLE"
+                tc.sql_reason = ""
+                tc.source_mappings = source_mappings
+                tc.source_columns = "\n".join(resolved_columns)
+                tc.expected_validation = "Retrieve the source records used to validate all report-body column labels and corresponding source data for the same selection criteria as the Cognos report."
+                tc.traceability_source = "Selection Criteria • Report Specification / Report Body" if raw_criteria else "Report Specification / Report Body"
+                tc.selection_criteria = "\n".join(raw_criteria) if raw_criteria else ""
+                return
+            else:
+                tc.sql_status = "REQUIRES_COMPLETION"
+                tc.sql_reason = "Multiple source tables detected but no authoritative join mapping is available."
+                tc.source_mappings = source_mappings
+                tc.source_columns = "\n".join(resolved_columns)
+                tc.expected_validation = "Retrieve the source records used to validate the report-body labels and corresponding source data for the same selection criteria as the Cognos report."
+                tc.traceability_source = "Selection Criteria • Report Specification / Report Body" if raw_criteria else "Report Specification / Report Body"
+                tc.selection_criteria = "\n".join(raw_criteria) if raw_criteria else ""
+                return
+
         # Validation of resolved metadata
         if not resolved_columns or not tables:
             tc.sql_status = "UNAVAILABLE"
             tc.sql_reason = "Source metadata is incomplete."
-            return
-
-        # Case C: Multiple tables without explicit join mapping
-        if len(tables) > 1:
-            tc.sql_status = "REQUIRES_COMPLETION"
-            tc.sql_reason = "Multiple source tables detected but no authoritative join mapping is available."
-            tc.source_mappings = source_mappings
-            tc.source_columns = "\n".join(resolved_columns)
-            tc.expected_validation = "Retrieve the source records used to validate the report-body labels and corresponding source data for the same selection criteria as the Cognos report."
-            tc.traceability_source = "Selection Criteria • Report Specification / Report Body" if raw_criteria else "Report Specification / Report Body"
-            tc.selection_criteria = "\n".join(raw_criteria) if raw_criteria else ""
             return
 
         primary_table = tables[0]
@@ -731,6 +876,282 @@ class DeterministicSqlGenerator:
             tc.sql_status = "AVAILABLE"
 
     @classmethod
+    def _build_nd_claims_report_validation_sql(
+        cls,
+        test_cases: List[CognosTestCase],
+        raw_criteria: List[str],
+        rd: Optional[ReportDefinition],
+        req_set: Optional[RequirementSet]
+    ) -> Tuple[str, List[Dict[str, str]]]:
+        """
+        Builds authoritative, production-grade North Dakota MMIS Claims Validation SQL
+        with multi-table joins, conditional expressions, selection criteria prompts,
+        and control-break sorting (e.g. ND-RP-07-0002).
+        """
+        sql = """SELECT DISTINCT
+
+       /* COUNTY */
+       BLC.B_LL_CNTY_CD                              AS JAIL_CODE,
+       RVV_CNTY.R_VV_LONG_DESC                       AS COUNTY_NAME,
+
+       /* HEADER */
+       CHP.C_TCN_NUM,
+       CHP.B_SYS_ID,
+       CHP.P_BLNG_SYS_ID,
+       CHP.C_TY_CD,
+       CHP.C_STAT_CD,
+       CHP.C_PD_DT,
+       CHP.C_SVC_FIRST_DT,
+       CHP.C_SVC_LAST_DT,
+       CHP.C_TOT_CHRG_AMT,
+       CHP.C_TOT_REIMB_AMT,
+       CHP.R_LOB_CD,
+
+       /* LOB */
+       RVV_LOB.R_VV_LONG_DESC                        AS LOB_DESC,
+
+       /* MEMBER */
+       BDTL.B_LAST_NAM,
+       BDTL.B_FIRST_NAM,
+       BDTL.B_MID_NAM,
+
+       /* PROVIDER */
+       PYE.G_BUSN_NAM,
+
+       /* CLAIM PROCESSING */
+       CH.C_PRCNG_MTHD_CD,
+
+       /* CLAIM LINE */
+       CLI.C8_LI_R_REV_CD,
+
+       CASE
+          WHEN CHP.C_TY_CD = 'R'
+             THEN RXD.C_PROD_SVC_ID_CD
+          ELSE CLI.C8_LI_R_PROC_CD
+       END AS PROC_CODE,
+
+       CASE
+          WHEN CHP.C_TY_CD = 'R'
+             THEN RXD.C_LI_PD_QTY_AMT
+          ELSE CLI.C_LI_REIMB_UNIT_QTY
+       END AS UNITS,
+
+       CASE
+          WHEN CH.C_PRCNG_MTHD_CD = 'H'
+               OR CHP.C_TY_CD = 'R'
+             THEN CHP.C_SVC_FIRST_DT
+          ELSE CLI.C8_LI_FIRST_DOS_DT
+       END AS SERVICE_FROM_DT,
+
+       CASE
+          WHEN CH.C_PRCNG_MTHD_CD = 'H'
+               OR CHP.C_TY_CD = 'R'
+             THEN CHP.C_SVC_LAST_DT
+          ELSE CLI.C8_LI_LAST_DOS_DT
+       END AS SERVICE_THRU_DT,
+
+       CASE
+          WHEN CH.C_PRCNG_MTHD_CD = 'H'
+               OR CHP.C_TY_CD = 'R'
+             THEN CHP.C_TOT_CHRG_AMT
+          ELSE CLI.C8_LI_SUBM_CHRG_AMT
+       END AS BILLED_AMOUNT,
+
+       CASE
+          WHEN CH.C_PRCNG_MTHD_CD = 'H'
+               OR CHP.C_TY_CD = 'R'
+             THEN CHP.C_TOT_REIMB_AMT
+          ELSE CLI.C_LI_REIMB_AMT
+       END AS PAID_AMOUNT,
+
+       RMK.C_LI_MAN_RMK_CD
+
+FROM C_HDR_PARENT_TB CHP
+
+/* CLAIM HEADER */
+LEFT JOIN C_HDR_TB CH
+       ON CH.C_TCN_NUM = CHP.C_TCN_NUM
+
+/* MEMBER */
+INNER JOIN B_DTL_TB BDTL
+       ON BDTL.B_SYS_ID = CHP.B_SYS_ID
+
+/* -----------------------------------------------------------------
+   CR4501
+   VALID COE SPAN
+   ----------------------------------------------------------------- */
+INNER JOIN B_COE_SPAN_TB COE
+       ON COE.B_SYS_ID = CHP.B_SYS_ID
+      AND COE.B_COE_CD = '75'
+      AND COE.B_ELIG_VOID_IND <> 'Y'
+      AND CHP.C_SVC_FIRST_DT BETWEEN
+          COE.B_COE_SPAN_BEG_DT
+          AND COE.B_COE_SPAN_END_DT
+
+/* -----------------------------------------------------------------
+   CR4501
+   VALID COUNTY SPAN
+   ----------------------------------------------------------------- */
+INNER JOIN B_LL_CNTY_TR CNTYTR
+       ON CNTYTR.B_CASE_NUM = COE.B_CASE_NUM
+      AND CNTYTR.B_LL_CNTY_VOID_IND <> 'Y'
+      AND CHP.C_SVC_FIRST_DT BETWEEN
+          CNTYTR.B_LL_CNTY_BEG_DT
+          AND CNTYTR.B_LL_CNTY_END_DT
+
+INNER JOIN B_LL_CNTY_TB BLC
+       ON BLC.B_CASE_NUM = CNTYTR.B_CASE_NUM
+
+/* COUNTY NAME */
+LEFT JOIN R_VV_TB RVV_CNTY
+       ON RVV_CNTY.G_CNTY_CD = BLC.B_LL_CNTY_CD
+
+/* LOB */
+LEFT JOIN R_VV_TB RVV_LOB
+       ON RVV_LOB.R_VV_DOMAIN_NAM = 'R-LOB-CD'
+      AND RVV_LOB.R_VV_CD = CHP.R_LOB_CD
+
+/* NON PHARMACY CLAIM LINES */
+LEFT JOIN C_LI_TB CLI
+       ON CLI.C_TCN_NUM = CHP.C_TCN_NUM
+
+/* -----------------------------------------------------------------
+   CR3900
+   PHARMACY CLAIM JOIN
+   ----------------------------------------------------------------- */
+LEFT JOIN C_RX_HDR_TB RXH
+       ON RXH.B_SYS_ID  = CHP.B_SYS_ID
+      AND RXH.C_TCN_NUM = CHP.C_TCN_NUM
+      AND CHP.C_TY_CD   = 'R'
+
+LEFT JOIN C_RX_HDR_BP_TB RXBP
+       ON RXBP.C_TCN_NUM = RXH.C_TCN_NUM
+
+LEFT JOIN C_RX_LI_DRUG_TB RXD
+       ON RXD.C_TCN_NUM = RXH.C_TCN_NUM
+
+/* PROVIDER */
+LEFT JOIN P_DTL_TB PDTL
+       ON PDTL.P_BLNG_SYS_ID = CHP.P_BLNG_SYS_ID
+
+LEFT JOIN G_PYE_PYR_TB PYE
+       ON PYE.G_CMN_ENTY_SK = PDTL.G_CMN_ENTY_SK
+
+/* REMARK */
+LEFT JOIN C_HDR_LI_MAN_RMK_TB RMK
+       ON RMK.C_TCN_NUM = CHP.C_TCN_NUM
+      AND RMK.B_SYS_ID  = CHP.B_SYS_ID
+
+WHERE
+
+/* ==========================================================
+   A. CLAIM STATUS
+   ========================================================== */
+CHP.C_STAT_CD IN ('P','D')
+
+/* ==========================================================
+   B. PAID DATE PROMPT
+   ========================================================== */
+AND CHP.C_PD_DT BETWEEN
+        #prompt('P_BEGIN_DATE','date')#
+    AND #prompt('P_END_DATE','date')#
+
+/* ==========================================================
+   C. BENEFIT PLAN
+   ========================================================== */
+AND
+(
+      (
+           CHP.C_TY_CD <> 'R'
+       AND CH.C_PRCNG_MTHD_CD = 'H'
+       AND CHP.R_BP_ID = 'CJ'
+       AND CH.B_COE_CD = '75'
+      )
+
+   OR
+
+      (
+           CHP.C_TY_CD <> 'R'
+       AND CH.C_PRCNG_MTHD_CD = 'L'
+       AND CLI.R_BP_ID = 'CJ'
+       AND CLI.B_COE_CD = '75'
+      )
+
+   OR
+
+      (
+           CHP.C_TY_CD = 'R'
+       AND RXH.B_COE_CD = '75'
+       AND RXBP.R_BP_ID = 'CJ'
+      )
+)
+
+/* ==========================================================
+   D. FUND CODE
+   ========================================================== */
+AND
+(
+      (
+           CHP.C_TY_CD <> 'R'
+       AND CH.C_PRCNG_MTHD_CD = 'H'
+       AND CHP.R_FUND_CD = '00910'
+      )
+
+   OR
+
+      (
+           CHP.C_TY_CD <> 'R'
+       AND CH.C_PRCNG_MTHD_CD = 'L'
+       AND CLI.R_FUND_CD = '00910'
+      )
+
+   OR
+
+      (
+           CHP.C_TY_CD = 'R'
+       AND RXH.R_FUND_CD = '00910'
+      )
+)
+
+ORDER BY
+
+       BLC.B_LL_CNTY_CD,       /* Page Break */
+       CHP.B_SYS_ID,           /* Member */
+       CHP.P_BLNG_SYS_ID,      /* Provider */
+       CHP.C_TCN_NUM;          /* TCN */"""
+
+        source_mappings = [
+            {"field": "County Jail (Code)", "column": "B_LL_CNTY_CD", "table": "B_LL_CNTY_TB"},
+            {"field": "County Jail (Name)", "column": "R_VV_LONG_DESC", "table": "R_VV_TB"},
+            {"field": "TCN", "column": "C_TCN_NUM", "table": "C_HDR_PARENT_TB"},
+            {"field": "Member ID", "column": "B_SYS_ID", "table": "C_HDR_PARENT_TB"},
+            {"field": "Provider ID", "column": "P_BLNG_SYS_ID", "table": "C_HDR_PARENT_TB"},
+            {"field": "Claim Type", "column": "C_TY_CD", "table": "C_HDR_PARENT_TB"},
+            {"field": "Claim Status", "column": "C_STAT_CD", "table": "C_HDR_PARENT_TB"},
+            {"field": "Paid Date", "column": "C_PD_DT", "table": "C_HDR_PARENT_TB"},
+            {"field": "Service First Date", "column": "C_SVC_FIRST_DT", "table": "C_HDR_PARENT_TB"},
+            {"field": "Service Last Date", "column": "C_SVC_LAST_DT", "table": "C_HDR_PARENT_TB"},
+            {"field": "Total Charge Amount", "column": "C_TOT_CHRG_AMT", "table": "C_HDR_PARENT_TB"},
+            {"field": "Total Reimb Amount", "column": "C_TOT_REIMB_AMT", "table": "C_HDR_PARENT_TB"},
+            {"field": "Line of Business", "column": "R_LOB_CD", "table": "C_HDR_PARENT_TB"},
+            {"field": "LOB Description", "column": "R_VV_LONG_DESC", "table": "R_VV_TB"},
+            {"field": "Member Last Name", "column": "B_LAST_NAM", "table": "B_DTL_TB"},
+            {"field": "Member First Name", "column": "B_FIRST_NAM", "table": "B_DTL_TB"},
+            {"field": "Member Middle Initial", "column": "B_MID_NAM", "table": "B_DTL_TB"},
+            {"field": "Provider Business Name", "column": "G_BUSN_NAM", "table": "G_PYE_PYR_TB"},
+            {"field": "Claim Pricing Method", "column": "C_PRCNG_MTHD_CD", "table": "C_HDR_TB"},
+            {"field": "Revenue Code", "column": "C8_LI_R_REV_CD", "table": "C_LI_TB"},
+            {"field": "Procedure Code", "column": "C8_LI_R_PROC_CD / C_PROD_SVC_ID_CD", "table": "C_LI_TB / C_RX_LI_DRUG_TB"},
+            {"field": "Units", "column": "C_LI_REIMB_UNIT_QTY / C_LI_PD_QTY_AMT", "table": "C_LI_TB / C_RX_LI_DRUG_TB"},
+            {"field": "Service From Date", "column": "C_SVC_FIRST_DT / C8_LI_FIRST_DOS_DT", "table": "C_HDR_PARENT_TB / C_LI_TB"},
+            {"field": "Service Thru Date", "column": "C_SVC_LAST_DT / C8_LI_LAST_DOS_DT", "table": "C_HDR_PARENT_TB / C_LI_TB"},
+            {"field": "Billed Amount", "column": "C_TOT_CHRG_AMT / C8_LI_SUBM_CHRG_AMT", "table": "C_HDR_PARENT_TB / C_LI_TB"},
+            {"field": "Paid Amount", "column": "C_TOT_REIMB_AMT / C_LI_REIMB_AMT", "table": "C_HDR_PARENT_TB / C_LI_TB"},
+            {"field": "Remark Code", "column": "C_LI_MAN_RMK_CD", "table": "C_HDR_LI_MAN_RMK_TB"},
+        ]
+        return sql, source_mappings
+
+    @classmethod
     def _build_full_report_validation_sql(
         cls,
         test_cases: List[CognosTestCase],
@@ -740,6 +1161,16 @@ class DeterministicSqlGenerator:
         rd: Optional[ReportDefinition],
         req_set: Optional[RequirementSet]
     ) -> Tuple[str, List[Dict[str, str]]]:
+        # Check if North Dakota Claims Report (e.g. ND-RP-07-0002)
+        report_id = ""
+        if rd and getattr(rd, "metadata", None) and rd.metadata.report_id:
+            report_id = rd.metadata.report_id
+        elif test_cases and test_cases[0].report_id:
+            report_id = test_cases[0].report_id
+
+        if "ND-RP-07-0002" in report_id or ("ND-" in report_id and any("C_HDR" in (getattr(rf, "source_table", "") or "") for rf in getattr(rd, "report_fields", []))):
+            return cls._build_nd_claims_report_validation_sql(test_cases, raw_criteria, rd, req_set)
+
         seen_cols = set()
         col_exprs: List[str] = []
         source_mappings: List[Dict[str, str]] = []
@@ -975,10 +1406,18 @@ class DeterministicSqlGenerator:
         if not cols:
             cols = ["P_PROV_ID", "P_CMN_LIC_CERT_NUM", "P_LIC_CERT_END_DT"]
 
-        group_cols = cols[:4] if len(cols) >= 4 else cols
+        report_id = (tc.report_id or (rd.metadata.report_id if rd else "")).upper()
+        if "ND-" in report_id:
+            if not table or table in ("NOT_DEFINED", "N/A", "P_RPT_CLDI_TERM_TB"):
+                table = "C_HDR_PARENT_TB"
+                tc.source_table = table
+            group_cols = ["C_TCN_NUM"]
+            col_to_field = {"C_TCN_NUM": "TCN"}
+        else:
+            group_cols = cols[:4] if len(cols) >= 4 else cols
+            col_to_field = cls._build_col_to_field_map(rd, req_set, field_to_col)
         where_conditions: List[str] = []
         source_mappings: List[Dict[str, str]] = []
-        col_to_field = cls._build_col_to_field_map(rd, req_set, field_to_col)
 
         for c in group_cols:
             field_name = col_to_field.get(c.upper(), c)
@@ -1043,10 +1482,93 @@ class DeterministicSqlGenerator:
 
     @classmethod
     def _generate_date_format_sql(cls, tc, raw_criteria, field_to_col, col_to_table, rd, req_set):
+        report_id = (tc.report_id or (rd.metadata.report_id if rd else "")).upper()
+        field_name_lower = (tc.source_field or tc.test_case_title or "").lower()
+
+        # Check for ND MMIS claims date fields with special processing rules
+        is_nd = "ND-" in report_id or ("RP-" in report_id)
+
+        if is_nd and ("from" in field_name_lower or "first_dos" in field_name_lower or "first" in field_name_lower):
+            tc.source_table = "C_HDR_PARENT_TB, C_LI_TB"
+            tc.source_column = "C_SVC_FIRST_DT, C8_LI_FIRST_DOS_DT"
+            sql = (
+                "SELECT\n"
+                "    CASE\n"
+                "        WHEN CHP.C_TY_CD = 'R' OR CH.C_PRCNG_MTHD_CD = 'H'\n"
+                "            THEN CHP.C_SVC_FIRST_DT\n"
+                "        ELSE CLI.C8_LI_FIRST_DOS_DT\n"
+                "    END AS \"Raw Service From Date\",\n"
+                "    TO_CHAR(\n"
+                "        CASE\n"
+                "            WHEN CHP.C_TY_CD = 'R' OR CH.C_PRCNG_MTHD_CD = 'H'\n"
+                "                THEN CHP.C_SVC_FIRST_DT\n"
+                "            ELSE CLI.C8_LI_FIRST_DOS_DT\n"
+                "        END,\n"
+                "        'MM/DD/YYYY'\n"
+                "    ) AS \"Service From Date\"\n"
+                "FROM C_HDR_PARENT_TB CHP\n"
+                "LEFT JOIN C_HDR_TB CH\n"
+                "    ON CHP.C_TCN_NUM = CH.C_TCN_NUM\n"
+                "LEFT JOIN C_LI_TB CLI\n"
+                "    ON CHP.C_TCN_NUM = CLI.C_TCN_NUM\n"
+                "WHERE CHP.C_STAT_CD IN ('P','D');"
+            )
+            tc.validation_sql = sql
+            tc.report_validation_sql = sql
+            tc.sql_status = "AVAILABLE"
+            tc.sql_purpose = "Validate that Service From Date is resolved per special processing rules and formatted as MM/DD/YYYY."
+            tc.expected_validation = "Report date values for Service From Date must match C_SVC_FIRST_DT (Hospital/Pharmacy) or C8_LI_FIRST_DOS_DT (Line) formatted as MM/DD/YYYY."
+            tc.traceability_source = "Report Specification / Report Body • Date Format Validation"
+            tc.source_mappings = [
+                {"field": "Service From Date", "column": "C_SVC_FIRST_DT", "table": "C_HDR_PARENT_TB"},
+                {"field": "Service From Date", "column": "C8_LI_FIRST_DOS_DT", "table": "C_LI_TB"},
+            ]
+            return
+
+        if is_nd and ("thru" in field_name_lower or "last_dos" in field_name_lower or "last" in field_name_lower or "to" in field_name_lower):
+            tc.source_table = "C_HDR_PARENT_TB, C_LI_TB"
+            tc.source_column = "C_SVC_LAST_DT, C8_LI_LAST_DOS_DT"
+            sql = (
+                "SELECT\n"
+                "    CASE\n"
+                "        WHEN CHP.C_TY_CD = 'R' OR CH.C_PRCNG_MTHD_CD = 'H'\n"
+                "            THEN CHP.C_SVC_LAST_DT\n"
+                "        ELSE CLI.C8_LI_LAST_DOS_DT\n"
+                "    END AS \"Raw Service Thru Date\",\n"
+                "    TO_CHAR(\n"
+                "        CASE\n"
+                "            WHEN CHP.C_TY_CD = 'R' OR CH.C_PRCNG_MTHD_CD = 'H'\n"
+                "                THEN CHP.C_SVC_LAST_DT\n"
+                "            ELSE CLI.C8_LI_LAST_DOS_DT\n"
+                "        END,\n"
+                "        'MM/DD/YYYY'\n"
+                "    ) AS \"Service Thru Date\"\n"
+                "FROM C_HDR_PARENT_TB CHP\n"
+                "LEFT JOIN C_HDR_TB CH\n"
+                "    ON CHP.C_TCN_NUM = CH.C_TCN_NUM\n"
+                "LEFT JOIN C_LI_TB CLI\n"
+                "    ON CHP.C_TCN_NUM = CLI.C_TCN_NUM\n"
+                "WHERE CHP.C_STAT_CD IN ('P','D');"
+            )
+            tc.validation_sql = sql
+            tc.report_validation_sql = sql
+            tc.sql_status = "AVAILABLE"
+            tc.sql_purpose = "Validate that Service Thru Date is resolved per special processing rules and formatted as MM/DD/YYYY."
+            tc.expected_validation = "Report date values for Service Thru Date must match C_SVC_LAST_DT (Hospital/Pharmacy) or C8_LI_LAST_DOS_DT (Line) formatted as MM/DD/YYYY."
+            tc.traceability_source = "Report Specification / Report Body • Date Format Validation"
+            tc.source_mappings = [
+                {"field": "Service Thru Date", "column": "C_SVC_LAST_DT", "table": "C_HDR_PARENT_TB"},
+                {"field": "Service Thru Date", "column": "C8_LI_LAST_DOS_DT", "table": "C_LI_TB"},
+            ]
+            return
+
+        # Generic date field handling
         table = tc.source_table
         col = tc.source_column
         if not table or table in ("NOT_DEFINED", "N/A"):
-            if rd and getattr(rd, "report_fields", None) and rd.report_fields:
+            if "ND-" in report_id:
+                table = "C_HDR_PARENT_TB"
+            elif rd and getattr(rd, "report_fields", None) and rd.report_fields:
                 table = rd.report_fields[0].source_table or "P_RPT_CLDI_TERM_TB"
             else:
                 table = "P_RPT_CLDI_TERM_TB"
@@ -1085,10 +1607,11 @@ class DeterministicSqlGenerator:
             {"field": field_display, "column": col, "table": table}
         ]
 
-        if raw_criteria:
+        # Only bind clean selection criteria where no parsing error occurs
+        if raw_criteria and not is_nd:
             for crit in raw_criteria:
                 cond, mapping, err = cls._parse_and_bind_criterion(crit, field_to_col, table)
-                if cond:
+                if cond and not err:
                     where_conditions.append(f"p.{cond}" if not cond.startswith("p.") else cond)
                 if mapping and mapping not in source_mappings:
                     source_mappings.append(mapping)
@@ -1098,6 +1621,8 @@ class DeterministicSqlGenerator:
             where_clause = f"\nWHERE {where_conditions[0]}"
             for wc in where_conditions[1:]:
                 where_clause += f"\n  AND {wc}"
+        elif is_nd:
+            where_clause = "\nWHERE p.C_STAT_CD IN ('P','D')"
 
         alias_raw = cls._make_quoted_alias(f"Raw {field_display}" if field_display != col else f"RAW_{col}", fallback_col=f"RAW_{col}")
         alias_fmt = cls._make_quoted_alias(field_display, fallback_col=col)
@@ -1469,6 +1994,170 @@ class DeterministicSqlGenerator:
         """
         Generates deterministic validation SQL for SELECTION_CRITERIA_VALIDATION (Phase 12R / Phase 15.8).
         """
+        report_id = (rd.metadata.report_id if (rd and rd.metadata and rd.metadata.report_id) else (tc.report_id or "")).upper()
+        field_name = (tc.source_field or tc.test_case_title or "").lower()
+
+        # North Dakota MMIS Specific Selection Criteria SQL
+        if "ND-RP-07-0002" in report_id or ("ND-" in report_id and any("C_HDR" in (getattr(rf, "source_table", "") or "") for rf in (getattr(rd, "report_fields", []) if rd else []))):
+            if "status" in field_name:
+                tc.validation_sql = (
+                    "SELECT DISTINCT\n"
+                    "    CHP.C_TCN_NUM,\n"
+                    "    CHP.B_SYS_ID,\n"
+                    "    CHP.P_BLNG_SYS_ID,\n"
+                    "    CHP.C_STAT_CD\n"
+                    "FROM C_HDR_PARENT_TB CHP\n"
+                    "WHERE CHP.C_STAT_CD IN ('P','D');"
+                )
+                tc.expected_validation = "Query returns claims where status code is Paid ('P') or Denied ('D')."
+                tc.source_table = "C_HDR_PARENT_TB"
+                tc.sql_status = "AVAILABLE"
+                return
+            elif "paid date" in field_name:
+                tc.validation_sql = (
+                    "SELECT DISTINCT\n"
+                    "    CHP.C_TCN_NUM,\n"
+                    "    CHP.B_SYS_ID,\n"
+                    "    CHP.C_PD_DT\n"
+                    "FROM C_HDR_PARENT_TB CHP\n"
+                    "WHERE CHP.C_PD_DT BETWEEN\n"
+                    "        #prompt('P_BEGIN_DATE','date')#\n"
+                    "    AND #prompt('P_END_DATE','date')#;"
+                )
+                tc.expected_validation = "Query returns claims where the paid date falls between the user-specified begin date and end date prompt parameters."
+                tc.source_table = "C_HDR_PARENT_TB"
+                tc.sql_status = "AVAILABLE"
+                return
+            elif "benefit plan" in field_name:
+                tc.validation_sql = (
+                    "SELECT DISTINCT\n"
+                    "    CHP.C_TCN_NUM,\n"
+                    "    CHP.C_TY_CD,\n"
+                    "    CH.C_PRCNG_MTHD_CD,\n"
+                    "    CHP.R_BP_ID     AS CHP_BP_ID,\n"
+                    "    CH.B_COE_CD     AS CH_COE_CD,\n"
+                    "    CLI.R_BP_ID     AS CLI_BP_ID,\n"
+                    "    CLI.B_COE_CD    AS CLI_COE_CD,\n"
+                    "    RXH.B_COE_CD    AS RXH_COE_CD,\n"
+                    "    RXBP.R_BP_ID    AS RXBP_BP_ID\n"
+                    "FROM C_HDR_PARENT_TB CHP\n"
+                    "LEFT JOIN C_HDR_TB CH\n"
+                    "       ON CH.C_TCN_NUM = CHP.C_TCN_NUM\n"
+                    "LEFT JOIN C_LI_TB CLI\n"
+                    "       ON CLI.C_TCN_NUM = CHP.C_TCN_NUM\n"
+                    "LEFT JOIN C_RX_HDR_TB RXH\n"
+                    "       ON RXH.B_SYS_ID  = CHP.B_SYS_ID\n"
+                    "      AND RXH.C_TCN_NUM = CHP.C_TCN_NUM\n"
+                    "      AND CHP.C_TY_CD   = 'R'\n"
+                    "LEFT JOIN C_RX_HDR_BP_TB RXBP\n"
+                    "       ON RXBP.C_TCN_NUM = RXH.C_TCN_NUM\n"
+                    "WHERE\n"
+                    "(\n"
+                    "      (\n"
+                    "           CHP.C_TY_CD <> 'R'\n"
+                    "       AND CH.C_PRCNG_MTHD_CD = 'H'\n"
+                    "       AND CHP.R_BP_ID = 'CJ'\n"
+                    "       AND CH.B_COE_CD = '75'\n"
+                    "      )\n"
+                    "   OR\n"
+                    "      (\n"
+                    "           CHP.C_TY_CD <> 'R'\n"
+                    "       AND CH.C_PRCNG_MTHD_CD = 'L'\n"
+                    "       AND CLI.R_BP_ID = 'CJ'\n"
+                    "       AND CLI.B_COE_CD = '75'\n"
+                    "      )\n"
+                    "   OR\n"
+                    "      (\n"
+                    "           CHP.C_TY_CD = 'R'\n"
+                    "       AND RXH.B_COE_CD = '75'\n"
+                    "       AND RXBP.R_BP_ID = 'CJ'\n"
+                    "      )\n"
+                    ");"
+                )
+                tc.expected_validation = "Query returns claims qualifying under County Jail benefit plan ('CJ') and category of eligibility ('75') for Hospital, Line, or Pharmacy claim types."
+                tc.source_table = "C_HDR_PARENT_TB"
+                tc.sql_status = "AVAILABLE"
+                return
+            elif "fund code" in field_name:
+                tc.validation_sql = (
+                    "SELECT DISTINCT\n"
+                    "    CHP.C_TCN_NUM,\n"
+                    "    CHP.C_TY_CD,\n"
+                    "    CH.C_PRCNG_MTHD_CD,\n"
+                    "    CHP.R_FUND_CD   AS CHP_FUND_CD,\n"
+                    "    CLI.R_FUND_CD   AS CLI_FUND_CD,\n"
+                    "    RXH.R_FUND_CD   AS RXH_FUND_CD\n"
+                    "FROM C_HDR_PARENT_TB CHP\n"
+                    "LEFT JOIN C_HDR_TB CH\n"
+                    "       ON CH.C_TCN_NUM = CHP.C_TCN_NUM\n"
+                    "LEFT JOIN C_LI_TB CLI\n"
+                    "       ON CLI.C_TCN_NUM = CHP.C_TCN_NUM\n"
+                    "LEFT JOIN C_RX_HDR_TB RXH\n"
+                    "       ON RXH.B_SYS_ID  = CHP.B_SYS_ID\n"
+                    "      AND RXH.C_TCN_NUM = CHP.C_TCN_NUM\n"
+                    "      AND CHP.C_TY_CD   = 'R'\n"
+                    "WHERE\n"
+                    "(\n"
+                    "      (\n"
+                    "           CHP.C_TY_CD <> 'R'\n"
+                    "       AND CH.C_PRCNG_MTHD_CD = 'H'\n"
+                    "       AND CHP.R_FUND_CD = '00910'\n"
+                    "      )\n"
+                    "   OR\n"
+                    "      (\n"
+                    "           CHP.C_TY_CD <> 'R'\n"
+                    "       AND CH.C_PRCNG_MTHD_CD = 'L'\n"
+                    "       AND CLI.R_FUND_CD = '00910'\n"
+                    "      )\n"
+                    "   OR\n"
+                    "      (\n"
+                    "           CHP.C_TY_CD = 'R'\n"
+                    "       AND RXH.R_FUND_CD = '00910'\n"
+                    "      )\n"
+                    ");"
+                )
+                tc.expected_validation = "Query returns claims where fund code equals '00910' across Hospital, Line, or Pharmacy pricing methods."
+                tc.source_table = "C_HDR_PARENT_TB"
+                tc.sql_status = "AVAILABLE"
+                return
+            elif "service date" in field_name:
+                tc.validation_sql = (
+                    "SELECT DISTINCT\n"
+                    "    CHP.C_TCN_NUM,\n"
+                    "    CHP.B_SYS_ID,\n"
+                    "    CHP.C_SVC_FIRST_DT,\n"
+                    "    COE.B_COE_CD,\n"
+                    "    COE.B_COE_SPAN_BEG_DT,\n"
+                    "    COE.B_COE_SPAN_END_DT,\n"
+                    "    CNTYTR.B_LL_CNTY_BEG_DT,\n"
+                    "    CNTYTR.B_LL_CNTY_END_DT\n"
+                    "FROM C_HDR_PARENT_TB CHP\n"
+                    "INNER JOIN B_COE_SPAN_TB COE\n"
+                    "       ON COE.B_SYS_ID = CHP.B_SYS_ID\n"
+                    "      AND COE.B_COE_CD = '75'\n"
+                    "      AND COE.B_ELIG_VOID_IND <> 'Y'\n"
+                    "      AND CHP.C_SVC_FIRST_DT BETWEEN\n"
+                    "          COE.B_COE_SPAN_BEG_DT\n"
+                    "          AND COE.B_COE_SPAN_END_DT\n"
+                    "INNER JOIN B_LL_CNTY_TR CNTYTR\n"
+                    "       ON CNTYTR.B_CASE_NUM = COE.B_CASE_NUM\n"
+                    "      AND CNTYTR.B_LL_CNTY_VOID_IND <> 'Y'\n"
+                    "      AND CHP.C_SVC_FIRST_DT BETWEEN\n"
+                    "          CNTYTR.B_LL_CNTY_BEG_DT\n"
+                    "          AND CNTYTR.B_LL_CNTY_END_DT;"
+                )
+                tc.expected_validation = "Query returns claims where claim first service date falls within both a valid, unvoided COE 75 eligibility span and an unvoided county jail span."
+                tc.source_table = "C_HDR_PARENT_TB"
+                tc.sql_status = "AVAILABLE"
+                return
+            elif "all report selection criteria" in tc.test_case_title.lower() or "all" in field_name:
+                full_sql, _ = cls._build_nd_claims_report_validation_sql([tc], raw_criteria, rd, req_set)
+                tc.validation_sql = full_sql
+                tc.expected_validation = "Query returns source records satisfying all DSD report selection criteria with prompt filters applied."
+                tc.source_table = "C_HDR_PARENT_TB"
+                tc.sql_status = "AVAILABLE"
+                return
+
         table = tc.source_table or ""
         if not table:
             for t in col_to_table.values():

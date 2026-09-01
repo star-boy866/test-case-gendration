@@ -155,35 +155,28 @@ def test_full_pipeline_prv027_authoritative_order_and_selc():
     ctx = run_cognos_pipeline(SAMPLE_DOCX)
     ts = ctx.test_suite
 
-    assert len(ts.test_cases) == 25, f"Expected 25 test cases, got {len(ts.test_cases)}"
+    assert len(ts.test_cases) == 18, f"Expected 18 test cases, got {len(ts.test_cases)}"
 
     # Authoritative Expected Scenarios Order:
     expected_order = [
-        ("PRV027-REPO-01", "Report Name Description Validation", 10),
-        ("PRV027-RHDR-01", "Report Header Validation", 20),
-        ("PRV027-SECT-01", "Report Section Heading Validation", 30),
-        ("PRV027-SELC-01", "Selection Criteria Validation", 40),
-        ("PRV027-LABE-01", "Label Validation", 50),
-        ("PRV027-LAYO-01", "Layout Validation", 60),
-        ("PRV027-LOOK-01", "Lookup Validation", 70),
-        ("PRV027-OUTP-01", "Output Delivery Validation", 80),
-        ("PRV027-OUTP-02", "Output Delivery Validation", 90),
+        ("PRV027-EXEC-01", "Scheduled Execution Validation", 10),
+        ("PRV027-REPO-01", "Report Name Description Validation", 20),
+        ("PRV027-RHDR-01", "Report Header Validation", 30),
+        ("PRV027-SECT-01", "Report Section Heading Validation", 40),
+        ("PRV027-SELC-01", "Selection Criteria Validation", 50),
+        ("PRV027-LABE-01", "Label Validation", 60),
+        ("PRV027-LAYO-01", "Layout Validation", 70),
+        ("PRV027-LOOK-01", "Lookup Validation", 80),
+        ("PRV027-OUTP-01", "Output Delivery Validation", 90),
         ("PRV027-SCRI-01", "Script Output Validation", 100),
         ("PRV027-SCRI-02", "Script Output Validation", 110),
-        ("PRV027-SCHE-01", "Scheduled Execution Validation", 120),
-        ("PRV027-SORT-01", "Sort Validation", 130),
-        ("PRV027-SORT-02", "Sort Validation", 140),
-        ("PRV027-SPEC-01", "Special Processing Validation", 150),
-        ("PRV027-DATE-01", "Date Format Validation", 160),
-        ("PRV027-DATE-02", "Date Format Validation", 170),
-        ("PRV027-DBRE-01", "DB Report Data Validation", 180),
-        ("PRV027-DBRE-02", "DB Report Data Validation", 190),
-        ("PRV027-DBRE-03", "DB Report Data Validation", 200),
-        ("PRV027-DBRE-04", "DB Report Data Validation", 210),
-        ("PRV027-DBRE-05", "DB Report Data Validation", 220),
-        ("PRV027-DBRE-06", "DB Report Data Validation", 230),
-        ("PRV027-DBCO-01", "DB Count Validation", 240),
-        ("PRV027-DUPL-01", "Duplicate Validation", 250),
+        ("PRV027-SORT-01", "Sort Validation", 120),
+        ("PRV027-SPEC-01", "Special Processing Validation", 130),
+        ("PRV027-DATE-01", "Date Format Validation", 140),
+        ("PRV027-DATE-02", "Date Format Validation", 150),
+        ("PRV027-DBRV-01", "DB Report Data Validation", 160),
+        ("PRV027-DBCO-01", "DB Count Validation", 170),
+        ("PRV027-DUPL-01", "Duplicate Validation", 180),
     ]
 
     for idx, (exp_id, exp_cat, exp_order) in enumerate(expected_order):
@@ -193,8 +186,7 @@ def test_full_pipeline_prv027_authoritative_order_and_selc():
         assert actual_tc.scenario_order == exp_order, f"Index {idx}: expected order {exp_order}, got {actual_tc.scenario_order}"
 
     # Verify SELC-01 specific contents
-    selc = ts.test_cases[3]
-    assert selc.test_case_id == "PRV027-SELC-01"
+    selc = next(tc for tc in ts.test_cases if tc.test_case_id == "PRV027-SELC-01")
     assert selc.category == "Selection Criteria Validation"
     assert "OPLC Term Date >= current date" in selc.selection_criteria
     assert "MMIS Lic Cert End Date <= 31/12/9999" in selc.selection_criteria

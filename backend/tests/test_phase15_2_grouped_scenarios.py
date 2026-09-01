@@ -55,4 +55,4 @@ def test_phase15_2_grouped_scenarios():
     assert any("Error Field" in f for f in sort_fields)
     
     # 3. Overall Count
-    assert len(test_cases) == 19, f"Expected 19 total scenarios, found {len(test_cases)}"
+    assert len(test_cases) == 18, f"Expected 18 total scenarios, found {len(test_cases)}"

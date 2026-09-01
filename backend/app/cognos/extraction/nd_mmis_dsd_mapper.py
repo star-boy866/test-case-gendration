@@ -11,6 +11,10 @@ from app.domain.cognos_models import (
     ReportMetadata,
     SelectionCriterion,
     SortDefinition,
+    ControlBreakDefinition,
+    TotalDefinition,
+    CountDefinition,
+    SpecialProcessingItem,
     OutputDefinition,
     LayoutDefinition,
     LayoutElement,
@@ -47,6 +51,18 @@ def map_nd_dsd_to_domain(dsd: NdMmisDsd, source_document_name: str = "") -> Doma
     )
     domain_rd.metadata = meta
 
+    # Selection Criteria
+    for sc in dsd.selection_criteria:
+        if sc.field_name and sc.field_name.upper() not in ("N/A", "NONE", "REPORT FIELD"):
+            crit = SelectionCriterion(
+                field=sc.field_name,
+                filter_logic=sc.parameters or sc.field_name,
+                default_value=sc.default_value or "",
+                prompt=sc.prompt == "Yes" if sc.prompt else False,
+                source=SourceReference(document_name=source_document_name, section="Report Selection Criteria"),
+            )
+            domain_rd.selection_criteria.append(crit)
+
     # Sort Definitions
     for i, s in enumerate(dsd.sorts):
         direction = (
@@ -60,6 +76,48 @@ def map_nd_dsd_to_domain(dsd: NdMmisDsd, source_document_name: str = "") -> Doma
             direction=direction,
             source=SourceReference(document_name=source_document_name, section="Report Control Breaks, Totals, Counts, and Sorts"),
         ))
+
+    # Control Breaks
+    for cb in dsd.control_breaks:
+        for fname in cb.field_names:
+            if fname and fname.upper() not in ("N/A", "NONE", ""):
+                domain_rd.control_break_definitions.append(ControlBreakDefinition(
+                    field=fname,
+                    break_type=cb.break_type,
+                    source=SourceReference(document_name=source_document_name, section="Report Control Breaks, Totals, Counts, and Sorts"),
+                ))
+
+    # Totals & Counts
+    for tc in dsd.totals_and_counts:
+        for fname in tc.field_names:
+            if fname and fname.upper() not in ("N/A", "NONE", ""):
+                if tc.total_type == "Count":
+                    domain_rd.count_definitions.append(CountDefinition(
+                        field=fname,
+                        count_type=tc.scope,
+                        description=tc.description or fname,
+                        source=SourceReference(document_name=source_document_name, section="Report Control Breaks, Totals, Counts, and Sorts"),
+                    ))
+                else:
+                    domain_rd.total_definitions.append(TotalDefinition(
+                        field=fname,
+                        total_type=tc.scope,
+                        description=tc.description or fname,
+                        source=SourceReference(document_name=source_document_name, section="Report Control Breaks, Totals, Counts, and Sorts"),
+                    ))
+
+    # Special Processing & Calculations
+    for sp in dsd.special_processing:
+        if sp.label and sp.label.upper() not in ("N/A", "NONE", ""):
+            domain_rd.special_processing.append(SpecialProcessingItem(
+                use_case=sp.label,
+                description=sp.description or sp.label,
+                source_table=sp.source_table or "",
+                source_column=sp.source_column or "",
+                raw_rule_text=sp.processing_rules or "",
+                sql_example=sp.sql_example or "",
+                source=SourceReference(document_name=source_document_name, section="Report Special Processing"),
+            ))
 
     # Output Definition
     out_def = OutputDefinition(

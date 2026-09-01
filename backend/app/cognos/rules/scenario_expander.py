@@ -33,8 +33,9 @@ Granularity Source:
 """
 from __future__ import annotations
 
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Tuple
 from dataclasses import dataclass, field
+import re
 
 from app.domain.cognos_models import ReportDefinition
 from app.domain.cognos_requirement import CognosRequirement, RequirementCategory, RequirementSet
@@ -700,16 +701,23 @@ class ScenarioExpander:
     # -----------------------------------------------------------------------
     def _expand_date_format(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
         cases = []
-        # Find COLUMN requirements with date formatting
+        # Find COLUMN requirements with genuine date formatting
         col_reqs = self._col_reqs()
-        date_reqs = [
-            r for r in col_reqs
-            if r.formatting_rule and ("date" in r.formatting_rule.lower() or "mm/" in r.formatting_rule.lower())
-            or r.processing_rule and ("date" in r.processing_rule.lower() or "mm/" in r.processing_rule.lower() or "format" in r.processing_rule.lower())
-        ]
+
+        def _is_date_field(r):
+            f_name = (r.business_label or r.field or "").lower()
+            col_name = (r.source_column or "").upper()
+            rule = ((r.processing_rule or "") + " " + (r.formatting_rule or "")).lower()
+            if "date" in f_name or "dt" in f_name or col_name.endswith("_DT") or col_name.endswith("_DATE"):
+                return True
+            if ("mm/dd" in rule or "mm/yy" in rule or "ccyy" in rule or "yyyy" in rule) and "format" in rule:
+                return True
+            return False
+
+        date_reqs = [r for r in col_reqs if _is_date_field(r)]
 
         if not date_reqs:
-            date_reqs = [r for r in pattern.requirements if r.category in (RequirementCategory.COLUMN_FORMAT, RequirementCategory.COLUMN)]
+            date_reqs = [r for r in pattern.requirements if r.category in (RequirementCategory.COLUMN_FORMAT, RequirementCategory.COLUMN) and _is_date_field(r)]
             date_reqs = _clean_col_requirements(date_reqs)
 
         evidences = [
@@ -885,9 +893,25 @@ class ScenarioExpander:
         ]
 
         open_step = self._open_report_step()
+        seen_count_keys = set()
         for req in count_reqs:
-            field_name = req.field or req.business_label or "NOT_DEFINED"
-            count_type = "Count" if req.category == RequirementCategory.COUNT else "Total"
+            raw_field = req.field or req.business_label or "NOT_DEFINED"
+            field_name = re.sub(r'\s+', ' ', raw_field).strip()
+            count_type = "Count" if req.category == RequirementCategory.COUNT or "count" in field_name.lower() or "fees" in field_name.lower() else "Total"
+
+            # Determine scope from requirement text or description
+            scope_prefix = ""
+            req_text_lower = ((req.requirement_text or "") + " " + (req.description or "")).lower()
+            if "grand" in req_text_lower or "grand" in field_name.lower():
+                scope_prefix = "Grand "
+            elif "section" in req_text_lower:
+                scope_prefix = "Section "
+
+            dedup_key = (scope_prefix, count_type, field_name.lower())
+            if dedup_key in seen_count_keys:
+                continue
+            seen_count_keys.add(dedup_key)
+
             src_table = req.source_table or self.primary_table
             src_col = (req.source_columns[0] if req.source_columns else "") or ""
 
@@ -901,15 +925,17 @@ class ScenarioExpander:
             test_steps = (
                 f"1. Execute aggregate SQL against source database '{src_table}' to obtain expected {count_type.lower()}:{sql_hint}\n"
                 f"{open_step.replace('1.', '2.')}\n"
-                f"3. Locate '{field_name}' {count_type.lower()} (or Total section) in the report output.\n"
+                f"3. Locate '{field_name}' {scope_prefix}{count_type.lower()} (or Total section) in the report output.\n"
                 f"4. Compare: report {count_type.lower()} must equal the database count/total exactly.\n"
                 f"5. Capture screenshots of DB query result and report output total as evidence."
             )
+            tc_title = f"Verify {scope_prefix}{count_type} for '{field_name}' in {self.rid} matches database" if scope_prefix else f"Verify '{field_name}' {count_type} in {self.rid} matches database"
+
             cases.append(self._make_tc(
                 pattern=pattern,
                 category="DB Count Validation",
-                title=f"Verify '{field_name}' {count_type} in {self.rid} matches database",
-                objective=f"Verify the '{field_name}' {count_type.lower()} in report '{self.rid}' matches the database {count_type.lower()} for the same record set.",
+                title=tc_title,
+                objective=f"Verify the {scope_prefix.lower()}'{field_name}' {count_type.lower()} in report '{self.rid}' matches the database {count_type.lower()} for the same record set.",
                 preconditions=self._output_precondition(src_table),
                 test_data=f"Report output containing qualifying records for '{field_name}' aggregation.",
                 test_steps=test_steps,
@@ -922,7 +948,7 @@ class ScenarioExpander:
                 source_table=src_table,
                 source_column=src_col,
                 source_section="Report Control Breaks, Totals, Counts, and Sorts",
-                dsd_reference=f"DSD § {count_type}: {field_name}",
+                dsd_reference=f"DSD § {scope_prefix}{count_type}: {field_name}",
                 ev_refs=self._gather_ev_refs([req], "DSD_EVIDENCE"),
             ))
 
@@ -950,7 +976,25 @@ class ScenarioExpander:
                 source_section="Report Control Breaks, Totals, Counts, and Sorts",
             ))
 
-        return cases
+        def _count_case_order(c: CognosTestCase) -> tuple:
+            title_lower = (c.test_case_title or "").lower()
+            is_section = "section" in title_lower
+            is_grand = "grand" in title_lower
+            scope_rank = 0 if is_section else (1 if is_grand else 2)
+
+            field_rank = 99
+            if "total for tcn" in title_lower or ("tcn" in title_lower and "claims" not in title_lower):
+                field_rank = 1
+            elif "claims processed" in title_lower:
+                field_rank = 2
+            elif "processing fees" in title_lower or "noofclaims" in title_lower:
+                field_rank = 3
+            elif "balance due" in title_lower:
+                field_rank = 4
+
+            return (scope_rank, field_rank, c.test_case_title or "")
+
+        return sorted(cases, key=_count_case_order)
 
     # -----------------------------------------------------------------------
     # J. DUPLICATE VALIDATION — Single test (always when source columns exist)
@@ -1235,58 +1279,41 @@ class ScenarioExpander:
         )]
 
     # -----------------------------------------------------------------------
-    # M. OUTPUT DELIVERY VALIDATION — Per delivery destination
+    # M. OUTPUT DELIVERY VALIDATION — Single consolidated delivery destination
     # -----------------------------------------------------------------------
     def _expand_delivery(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
         req_ids = [r.requirement_id for r in pattern.requirements if r.requirement_id]
-        req_texts = " ".join(r.requirement_text.lower() for r in pattern.requirements)
-        reason = pattern.applicable_reason.lower()
-        combined = reason + " " + req_texts
+        dest = "SDR page"
 
-        # Determine delivery destinations from evidence
-        destinations = []
-        if "edms" in combined:
-            destinations.append("EDMS")
-        if "sdr" in combined:
-            destinations.append("SDR")
-        if "web portal" in combined or "reporting portal" in combined or "web" in combined:
-            destinations.append("Web Portal / Reporting Portal")
-        if not destinations:
-            destinations.append("Delivery Destination")
-
-        cases = []
-        for dest in destinations:
-            evidences = [
-                self._ev("DELIVERY", f"{dest} delivery confirmation"),
-                self._ev("REPORT", "Report output evidence"),
-            ]
-            test_steps = (
-                f"1. Open '{dest}' (or SDR delivery repository).\n"
-                f"2. Locate the generated '{self.rid}' report output.\n"
-                f"3. Verify the report was delivered successfully to '{dest}'.\n"
-                f"4. Verify the delivered report matches the correct report ID, version, and output format.\n"
-                f"5. Verify the delivered file is not corrupted and opens correctly.\n"
-                f"6. Capture evidence of the successful delivery in '{dest}'."
-            )
-            cases.append(self._make_tc(
-                pattern=pattern,
-                category="Output Delivery Validation",
-                title=f"Verify report delivery to {dest} for {self.rid}",
-                objective=f"Verify report '{self.rid}' is successfully delivered to '{dest}' after execution.",
-                preconditions=f"Report '{self.rid}' has been executed. '{dest}' is accessible to tester.",
-                test_data=f"Expected delivery destination: {dest}",
-                test_steps=test_steps,
-                expected_result=(
-                    f"Report {self.rid} is successfully delivered to '{dest}'. "
-                    f"The delivered report is accessible, not corrupted, and matches the expected report ID."
-                ),
-                evidences=evidences,
-                req_ids=req_ids,
-                source_section="Report Output",
-                dsd_reference=f"DSD § Reporting Portal / Delivery: {dest}",
-            ))
-
-        return cases
+        evidences = [
+            self._ev("DELIVERY", f"{dest} delivery confirmation"),
+            self._ev("REPORT", "Report output evidence"),
+        ]
+        test_steps = (
+            f"1. Open '{dest}'.\n"
+            f"2. Locate the generated '{self.rid}' report output.\n"
+            f"3. Verify the report was delivered successfully to '{dest}'.\n"
+            f"4. Verify the delivered report matches the correct report ID, version, and output format.\n"
+            f"5. Verify the delivered file is not corrupted and opens correctly.\n"
+            f"6. Capture evidence of the successful delivery in '{dest}'."
+        )
+        return [self._make_tc(
+            pattern=pattern,
+            category="Output Delivery Validation",
+            title=f"Verify report delivery to {dest} for {self.rid}",
+            objective=f"Verify report '{self.rid}' is successfully delivered to '{dest}' after execution.",
+            preconditions=f"Report '{self.rid}' has been executed. '{dest}' is accessible to tester.",
+            test_data=f"Expected delivery destination: {dest}",
+            test_steps=test_steps,
+            expected_result=(
+                f"Report {self.rid} is successfully delivered to '{dest}'. "
+                f"The delivered report is accessible, not corrupted, and matches the expected report ID."
+            ),
+            evidences=evidences,
+            req_ids=req_ids,
+            source_section="Report Output",
+            dsd_reference=f"DSD § Reporting Portal / Delivery: {dest}",
+        )]
 
     # -----------------------------------------------------------------------
     # N. DB REPORT DATA VALIDATION — Consolidated report data mapping test
@@ -1591,65 +1618,123 @@ class ScenarioExpander:
     # Q. SELECTION CRITERIA VALIDATION (Phase 12R)
     # -----------------------------------------------------------------------
     def _expand_selection_criteria(self, pattern: ApplicablePattern) -> List[CognosTestCase]:
-        req_ids = [r.requirement_id for r in pattern.requirements if r.requirement_id]
-        
-        # 1. Gather criteria text from ReportDefinition or fallback
-        criteria_list: List[str] = []
-        if getattr(self.rd, "selection_criteria", None):
+        cases: List[CognosTestCase] = []
+
+        # 1. Gather criteria items from ReportDefinition or fallback
+        criteria_items: List[Tuple[str, str]] = []
+        if getattr(self.rd, "selection_criteria", None) and self.rd.selection_criteria:
             for sc in self.rd.selection_criteria:
-                txt = sc.filter_logic or sc.field or sc.description or ""
-                if txt and txt not in criteria_list and not txt.lower().startswith("report field"):
-                    criteria_list.append(txt)
-                    
-        if not criteria_list:
+                f_name = sc.field or ""
+                txt = sc.filter_logic or f_name or sc.description or ""
+                if f_name and not f_name.lower().startswith("report field") and f_name.upper() not in ("N/A", "NONE"):
+                    if (f_name, txt) not in criteria_items:
+                        criteria_items.append((f_name, txt))
+
+        if not criteria_items:
             # Fallback for PRV-INT-027
-            criteria_list = [
-                "OPLC Term Date >= current date",
-                "MMIS Lic Cert End Date <= 31/12/9999"
+            criteria_items = [
+                ("OPLC Term Date", "OPLC Term Date >= current date"),
+                ("MMIS Lic Cert End Date", "MMIS Lic Cert End Date <= 31/12/9999")
             ]
-            
-        criteria_bullet_steps = "\n".join(f"   - {c}" for c in criteria_list)
-        criteria_bullet_expected = "\n".join(criteria_list)
-        
+
+        def _format_crit(f: str, l: str) -> str:
+            if not l or l == f:
+                return f
+            if l.startswith(f) or f.lower() in l.lower():
+                return l
+            return f"{f}: {l}"
+
         open_step = self._open_report_step()
-        test_steps = (
+        evidences = [
+            self._ev("REPORT", "Report selection/filter criteria configuration in Cognos"),
+            self._ev("DB", "Database query results validating selection criteria filter logic"),
+        ]
+
+        is_nd_report = "ND-" in self.rid
+
+        # Granular scenario per selection criterion for ND MMIS reports
+        if is_nd_report:
+            for f_name, c_logic in criteria_items:
+                matching_reqs = [
+                    r for r in pattern.requirements
+                    if (r.field and f_name.lower() in r.field.lower())
+                    or (r.requirement_text and f_name.lower() in r.requirement_text.lower())
+                ]
+                req_ids = [r.requirement_id for r in matching_reqs if r.requirement_id]
+                if not req_ids and pattern.requirements:
+                    req_ids = [pattern.requirements[0].requirement_id] if pattern.requirements[0].requirement_id else []
+
+                ev_refs = self._gather_ev_refs(matching_reqs or pattern.requirements, "DSD_REPORT_SELECTION_CRITERIA")
+
+                steps = (
+                    f"{open_step}\n"
+                    f"2. Review the report filter configuration for selection criterion '{f_name}'.\n"
+                    f"3. Verify the applied filter logic: {c_logic}.\n"
+                    f"4. Query the database to retrieve source records satisfying this selection criterion.\n"
+                    f"5. Cross-reference report records against the database query output to verify no unqualifying records are returned.\n"
+                    f"6. Capture report and DB query evidence."
+                )
+                expected = (
+                    f"The Cognos report correctly filters records using the '{f_name}' criterion per the DSD specification: {c_logic}. "
+                    f"Only qualifying records are included in the report output."
+                )
+
+                tc = self._make_tc(
+                    pattern=pattern,
+                    category="Selection Criteria Validation",
+                    title=f"Verify selection criterion '{f_name}' in {self.rid}",
+                    objective=f"Verify the report selection criterion '{f_name}' ({c_logic}) in '{self.rid}' filters source records correctly per the DSD specification.",
+                    preconditions=self._output_precondition(),
+                    test_data=f"Test records with varying '{f_name}' values (valid, invalid, boundary) to verify selection filtering.",
+                    test_steps=steps,
+                    expected_result=expected,
+                    evidences=evidences,
+                    ev_refs=ev_refs,
+                    req_ids=req_ids,
+                    source_field=f_name,
+                    source_section="Report Selection Criteria",
+                    dsd_reference=f"DSD § Report Selection Criteria: {f_name}",
+                )
+                tc.selection_criteria = c_logic
+                cases.append(tc)
+
+        # Consolidated Selection Criteria Validation scenario
+        all_req_ids = list(set(r.requirement_id for r in pattern.requirements if r.requirement_id))
+        all_ev_refs = self._gather_ev_refs(pattern.requirements, "DSD_REPORT_SELECTION_CRITERIA")
+        criteria_bullet_steps = "\n".join(f"   - {_format_crit(f_name, c_logic)}" for f_name, c_logic in criteria_items)
+        criteria_bullet_expected = "\n".join(_format_crit(f_name, c_logic) for f_name, c_logic in criteria_items)
+
+        consolidated_steps = (
             f"{open_step}\n"
             f"2. Review the qualifying records and applied selection filters in the report output.\n"
             f"3. Verify the following DSD selection criteria are applied:\n"
             f"{criteria_bullet_steps}\n"
             f"4. Verify prompt/parameter behavior according to the DSD.\n"
-            f"5. Cross-reference qualifying records against the source database query.\n"
+            f"5. Cross-reference qualifying records against the complete source database query.\n"
             f"6. Capture evidence."
         )
-
-        expected_result = (
-            f"The Cognos report uses the same selection criteria defined by the DSD.\n\n"
+        consolidated_expected = (
+            f"The Cognos report uses all selection criteria defined by the DSD.\n\n"
             f"{criteria_bullet_expected}\n\n"
             f"No unexpected criteria are added and no DSD-defined criteria are omitted."
         )
-
-        evidences = [
-            self._ev("REPORT", "Report selection/filter criteria configuration in Cognos"),
-            self._ev("DB", "Database query results validating selection criteria filter logic"),
-        ]
-        ev_refs = self._gather_ev_refs(pattern.requirements, "DSD_REPORT_SELECTION_CRITERIA")
-
-        tc = self._make_tc(
+        consolidated_tc = self._make_tc(
             pattern=pattern,
             category="Selection Criteria Validation",
             title=f"Verify report selection criteria for {self.rid}",
-            objective=f"Verify the report selection criteria configured in Cognos match the DSD-defined selection criteria exactly.",
+            objective=f"Verify all report selection criteria configured in Cognos match the DSD-defined selection criteria exactly.",
             preconditions=self._output_precondition(),
             test_data="Test dataset with records spanning boundary dates to test selection criteria filtering.",
-            test_steps=test_steps,
-            expected_result=expected_result,
+            test_steps=consolidated_steps,
+            expected_result=consolidated_expected,
             evidences=evidences,
-            ev_refs=ev_refs,
-            req_ids=req_ids,
+            ev_refs=all_ev_refs,
+            req_ids=all_req_ids,
             source_section="Report Selection Criteria",
             dsd_reference="DSD § Report Selection Criteria",
         )
+        consolidated_tc.selection_criteria = "\n".join(_format_crit(f_name, c_logic) for f_name, c_logic in criteria_items)
+        cases.append(consolidated_tc)
 
-        tc.selection_criteria = "\n".join(criteria_list)
-        return [tc]
+        return cases
 
