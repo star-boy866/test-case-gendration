@@ -1242,7 +1242,7 @@ ORDER BY
                 col_expr = f"t.{col}{' ' * pad}AS {alias}"
 
             col_exprs.append(col_expr)
-            source_mappings.append({"field": lbl, "column": col, "table": tbl or primary_table})
+            source_mappings.append({"field": lbl, "column": col, "table": tbl or primary_table or ""})
 
         if not primary_table:
             primary_table = "P_RPT_CLDI_TERM_TB"

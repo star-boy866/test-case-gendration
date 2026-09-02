@@ -647,8 +647,8 @@ export default function CognosDashboard() {
 
       {/* ── Main Content Area ─────────────────────────────────────────────────── */}
       <div className="flex-1 min-w-0 overflow-hidden bg-[#f8fafc] flex flex-col">
-        <main className={`flex-1 overflow-hidden ${activeTab === "scenarios" ? "p-0" : "p-6 lg:p-8 overflow-y-auto"}`}>
-          <div className="h-full">
+        <main className={`flex-1 overflow-hidden min-h-0 ${activeTab === "scenarios" ? "p-0" : "p-3 sm:p-4 lg:p-4.5 flex flex-col"}`}>
+          <div className="h-full min-h-0 flex flex-col">
             {renderActiveTab()}
           </div>
         </main>
