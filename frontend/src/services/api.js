@@ -1,8 +1,10 @@
 import axios from "axios";
 
 // Vite dev server proxies /api -> http://localhost:8000 (see vite.config.js)
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
+
 export const api = axios.create({
-  baseURL: "/api",
+  baseURL: API_BASE_URL,
   timeout: 60000, // generation calls can involve a local LLM, allow more time
 });
 
@@ -38,7 +40,7 @@ api.interceptors.response.use(
   }
 );
 
-export const checkHealth = () => axios.get("/health");
+export const checkHealth = () => api.get("/health");
 
 // --- Auth (Phase 9) ---------------------------------------------------------
 export const login = ({ username, password }) =>
