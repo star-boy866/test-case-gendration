@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     # --- CORS ---
-    ALLOWED_ORIGINS: str = "http://localhost:5173"
+    ALLOWED_ORIGINS: str = "http://localhost:5173,https://cognos-test-case-frontend.onrender.com"
 
     # --- Database (PostgreSQL for Prod, SQLite for Dev) ---
     DATABASE_URL: str | None = None
