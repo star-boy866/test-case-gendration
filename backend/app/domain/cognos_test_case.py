@@ -163,6 +163,18 @@ class CognosTestCase(BaseModel):
     report_validation_sql: str = ""   # Phase 15 Full Report-Level Validation SQL
     sql_purpose: str = ""             # Phase 15 Purpose of the SQL query / validation focus
 
+    # --- Added for Human-in-the-Loop (HITL) Review Workflow ---
+    review_status: str = "GENERATED"  # GENERATED, NEEDS_REVIEW, CORRECTED, APPROVED, REJECTED
+    review_comments: str = ""
+    reviewer: str = ""
+    reviewed_at: str = ""
+    issue_type: str = ""
+    issue_comment: str = ""
+    duplicate_of_id: str = ""
+    execution_method: str = ""        # Scheduled, On Request, Batch, Other
+    execution_tool: str = ""          # IWA, UC4, Cognos Portal, Info Analysis, etc.
+    edit_history: list[dict[str, Any]] = Field(default_factory=list)
+
     @property
     def requirement_id(self) -> str:
         """Legacy accessor: returns comma-separated requirement IDs."""

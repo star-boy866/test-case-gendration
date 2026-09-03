@@ -204,7 +204,13 @@ export default function CognosDashboard() {
     const effectiveProfile = manualOverride ? dsdProfile : (detectedInfo?.detected_format || dsdProfile || "AUTO");
 
     try {
-      const response = await uploadCognosDocument({ file, dsdProfile: effectiveProfile });
+      const response = await uploadCognosDocument({ 
+        file, 
+        dsdProfile: effectiveProfile,
+        workType: projectContext.work_type,
+        workItemId: projectContext.work_item_id,
+        workItemTitle: projectContext.work_item_title,
+      });
       const resData = response.data;
       
       // Update canonical project context from result

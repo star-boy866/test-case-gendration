@@ -156,11 +156,20 @@ export const detectDsdFormat = (file) => {
   });
 };
 
-export const uploadCognosDocument = ({ file, dsdProfile = "AUTO" }) => {
+export const uploadCognosDocument = ({ file, dsdProfile = "AUTO", workType = "", workItemId = "", workItemTitle = "" }) => {
   const formData = new FormData();
   formData.append("file", file);
   if (dsdProfile) {
     formData.append("dsd_profile", dsdProfile);
+  }
+  if (workType) {
+    formData.append("work_type", workType);
+  }
+  if (workItemId) {
+    formData.append("work_item_id", workItemId);
+  }
+  if (workItemTitle) {
+    formData.append("work_item_title", workItemTitle);
   }
   return api.post("/cognos/upload-and-generate", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -184,5 +193,24 @@ export const downloadCognosExport = async (runId) => {
   link.remove();
   window.URL.revokeObjectURL(url);
 };
+
+// --- Cognos HITL (Human-in-the-Loop) Review APIs ---
+export const getRunTestCases = (runId) =>
+  api.get(`/cognos/runs/${runId}/test-cases`);
+
+export const reviewTestCase = (runId, testCaseId, payload) =>
+  api.patch(`/cognos/runs/${runId}/test-cases/${encodeURIComponent(testCaseId)}/review`, payload);
+
+export const suggestCorrection = (runId, testCaseId, payload) =>
+  api.post(`/cognos/runs/${runId}/test-cases/${encodeURIComponent(testCaseId)}/suggest-correction`, payload);
+
+export const suggestMissingScenario = (runId, { whatToTest, dsdReference }) =>
+  api.post(`/cognos/runs/${runId}/suggest-missing-scenario`, {
+    what_to_test: whatToTest,
+    dsd_reference: dsdReference,
+  });
+
+export const addMissingScenario = (runId, scenario) =>
+  api.post(`/cognos/runs/${runId}/add-scenario`, { scenario });
 
 export default api;

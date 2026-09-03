@@ -54,7 +54,16 @@ const JSZip = require('jszip');
 
     const base64Data = docxBuffer.toString('base64');
 
-    const browser = await chromium.launch({ headless: true });
+    let browser;
+    try {
+        browser = await chromium.launch({ headless: true });
+    } catch (launchErr) {
+        try {
+            browser = await chromium.launch({ headless: true, channel: 'chrome' });
+        } catch (chromeErr) {
+            browser = await chromium.launch({ headless: true, channel: 'msedge' });
+        }
+    }
     const page = await browser.newPage();
     await page.setViewportSize({ width: 3200, height: 6000 });
 

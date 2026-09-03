@@ -7,11 +7,25 @@ import {
   RefreshCw, Copy, Check, SlidersHorizontal, Sparkles, 
   Shield, ArrowLeft, CheckCircle, XCircle, Ban, 
   HelpCircle, MessageSquare, ChevronUp, ExternalLink,
-  Briefcase
+  Briefcase, Lock, Unlock, Edit3, History, Plus
 } from "lucide-react";
-import { api } from "../../services/api";
+import { 
+  api, 
+  reviewTestCase, 
+  suggestCorrection, 
+  suggestMissingScenario, 
+  addMissingScenario 
+} from "../../services/api";
 import InteractiveEvidenceViewer from "./InteractiveEvidenceViewer";
 import DriftingParticles from "../common/DriftingParticles";
+import {
+  FlagIssueModal,
+  SuggestCorrectionModal,
+  ManualScenarioEditorModal,
+  VersionHistoryModal,
+  AddMissingScenarioModal,
+  DuplicateScenarioModal
+} from "./HitlModals";
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 
@@ -545,13 +559,30 @@ function ScenarioWorkspaceDetail({
   onNext, 
   setZoomImage,
   executionState,
-  onUpdateExecution
+  onUpdateExecution,
+  onFlagIssue,
+  onSuggestCorrection,
+  onEditScenario,
+  onApproveScenario,
+  onCreateRevision,
+  onViewHistory,
+  onMarkDuplicate,
+  isActionLoading,
 }) {
   const steps = useMemo(() => parseSteps(tc?.test_steps), [tc?.test_steps]);
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [activeTab, setActiveTab] = useState("steps");
   const [copiedSql, setCopiedSql] = useState(false);
   const [commentDraft, setCommentDraft] = useState("");
+
+  const reviewStatus = (tc?.review_status || "GENERATED").toUpperCase();
+  const isApproved = reviewStatus === "APPROVED";
+
+  // Check execution path mismatch (e.g. Scheduled using Cognos directly instead of IWA/UC4)
+  const stepsStr = String(tc?.test_steps || "");
+  const hasCognosDirect = /login to cognos|cognos portal/i.test(stepsStr);
+  const isScheduled = tc?.execution_method === "Scheduled" || !tc?.execution_method;
+  const isMismatch = isScheduled && hasCognosDirect;
 
   // Reset step index and comment on scenario change
   useEffect(() => {
@@ -742,28 +773,226 @@ function ScenarioWorkspaceDetail({
               </div>
             </div>
 
-            {/* Right Column: Minimal Scenario Workspace (ONLY Objective & Execution Comments) */}
-            <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-5 space-y-6 shadow-2xs">
+            {/* Right Column: Clean Scenario Workspace per Requirement 4 */}
+            <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-5 space-y-5 shadow-2xs">
               
               {/* 1. SCENARIO OBJECTIVE */}
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
                   Scenario Objective
                 </h3>
-                <p className="text-xs sm:text-sm text-slate-900 leading-relaxed font-normal">
+                <p className="text-xs sm:text-sm text-slate-900 leading-relaxed font-normal bg-slate-50/60 p-3 rounded-lg border border-slate-200/80">
                   {tc?.objective || "Verify scenario requirements according to DSD specification."}
                 </p>
               </div>
 
               <div className="border-t border-slate-100" />
 
-              {/* 2. EXECUTION COMMENTS */}
-              <div className="space-y-2">
+              {/* 2. HITL REVIEW */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                    <Shield className="h-3.5 w-3.5 text-blue-600" />
+                    HITL Review
+                  </h3>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                      v{tc?.version || 1}
+                    </span>
+                    {/* Review Badge */}
+                    {reviewStatus === "APPROVED" && (
+                      <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Approved
+                      </span>
+                    )}
+                    {reviewStatus === "NEEDS_REVIEW" && (
+                      <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300">
+                        <AlertTriangle className="h-3.5 w-3.5 text-amber-600" /> Needs Review
+                      </span>
+                    )}
+                    {reviewStatus === "CORRECTED" && (
+                      <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-sky-50 text-sky-800 border border-sky-300">
+                        <Edit3 className="h-3.5 w-3.5 text-sky-600" /> Corrected
+                      </span>
+                    )}
+                    {reviewStatus === "REJECTED" && (
+                      <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-800 border border-rose-300">
+                        <Ban className="h-3.5 w-3.5 text-rose-600" /> Rejected
+                      </span>
+                    )}
+                    {(!reviewStatus || reviewStatus === "GENERATED") && (
+                      <span className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                        Generated
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Status Banners & AI Findings */}
+                {isApproved && (
+                  <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs text-emerald-950 flex items-start gap-2.5">
+                    <Lock className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <p className="font-bold text-emerald-900">Scenario Locked (Approved)</p>
+                      <p className="text-emerald-800 text-[11px] leading-relaxed">
+                        Approved by <span className="font-semibold">{tc?.reviewer || "tester"}</span>
+                        {tc?.reviewed_at ? ` on ${new Date(tc.reviewed_at).toLocaleDateString()}` : ""}.
+                        All fields are read-only to guarantee integrity. To make modifications, click <strong>Create Revision</strong>.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {reviewStatus === "NEEDS_REVIEW" && (
+                  <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl text-xs text-amber-950 flex items-start gap-2.5">
+                    <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <p className="font-bold text-amber-900">
+                        Flagged Issue: <span className="underline">{tc?.issue_type || "Review Requested"}</span>
+                      </p>
+                      {tc?.issue_comment && (
+                        <p className="text-amber-800 text-[11px] leading-relaxed">
+                          "{tc.issue_comment}"
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {reviewStatus === "CORRECTED" && (
+                  <div className="p-3 bg-sky-50/70 border border-sky-200 rounded-xl text-xs text-sky-950 flex items-start gap-2.5">
+                    <Edit3 className="h-4 w-4 text-sky-600 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <p className="font-bold text-sky-900">Human-Corrected Specification (v{tc?.version || 1})</p>
+                      <p className="text-sky-800 text-[11px] leading-relaxed">
+                        Scenario modified with manual edits or applied AI suggestion. Ready for approval.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {reviewStatus === "REJECTED" && (
+                  <div className="p-3 bg-rose-50/70 border border-rose-200 rounded-xl text-xs text-rose-950 flex items-start gap-2.5">
+                    <Ban className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <p className="font-bold text-rose-900">Scenario Rejected</p>
+                      <p className="text-rose-800 text-[11px] leading-relaxed">
+                        {tc?.duplicate_of_id ? `Duplicate of ${tc.duplicate_of_id}.` : (tc?.issue_comment || "Excluded from test execution.")}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* AI Execution-Path Mismatch Warning */}
+                {isMismatch && !isApproved && (
+                  <div className="p-3 bg-indigo-50/70 border border-indigo-200 rounded-xl text-xs text-indigo-950 flex items-start justify-between gap-2.5">
+                    <div className="flex items-start gap-2">
+                      <Sparkles className="h-4 w-4 text-indigo-600 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <p className="font-bold text-indigo-900">Potential Execution-Path Mismatch</p>
+                        <p className="text-indigo-800 text-[11px] leading-relaxed">
+                          Scheduled report in NH should execute through <strong>IWA</strong> (or UC4 for ND) with RPT prefix and deliver to SDR rather than direct Cognos portal.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onSuggestCorrection}
+                      className="shrink-0 inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 shadow-2xs transition-colors"
+                    >
+                      Review
+                    </button>
+                  </div>
+                )}
+
+                {/* Action Buttons */}
+                <div className="flex items-center flex-wrap gap-2 pt-1">
+                  {!isApproved ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={onFlagIssue}
+                        disabled={isActionLoading}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50/80 hover:bg-amber-100 text-amber-900 text-xs font-semibold shadow-2xs transition-colors"
+                      >
+                        <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
+                        Flag Issue
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={onSuggestCorrection}
+                        disabled={isActionLoading}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50/80 hover:bg-blue-100 text-blue-900 text-xs font-semibold shadow-2xs transition-colors"
+                      >
+                        <Sparkles className="h-3.5 w-3.5 text-blue-600" />
+                        Suggest Correction
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={onEditScenario}
+                        disabled={isActionLoading}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold shadow-2xs transition-colors"
+                      >
+                        <Edit3 className="h-3.5 w-3.5 text-slate-600" />
+                        Edit Scenario
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={onApproveScenario}
+                        disabled={isActionLoading}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-colors ml-auto"
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        Approve Scenario
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={onCreateRevision}
+                        disabled={isActionLoading}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold shadow-xs transition-colors"
+                      >
+                        <Unlock className="h-3.5 w-3.5" />
+                        Create Revision
+                      </button>
+                    </>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={onViewHistory}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 transition-colors ml-1"
+                  >
+                    <History className="h-3.5 w-3.5 text-slate-500" />
+                    Version History
+                  </button>
+
+                  {!isApproved && (
+                    <button
+                      type="button"
+                      onClick={onMarkDuplicate}
+                      className="text-xs text-rose-600 hover:text-rose-800 px-2 py-1 hover:underline"
+                    >
+                      Duplicate / Reject
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100" />
+
+              {/* 3. EXECUTION COMMENTS */}
+              <div className="space-y-1.5">
                 <label className="text-xs font-bold uppercase tracking-wider text-slate-700 block">
                   Execution Comments
                 </label>
                 <textarea
-                  rows={8}
+                  rows={4}
                   placeholder="Enter observation, defect reference, or execution comments..."
                   value={commentDraft}
                   onChange={(e) => setCommentDraft(e.target.value)}
@@ -1023,9 +1252,32 @@ export default function TestScenarioExplorer({ result, projectContext }) {
     return null;
   }, [projectContext]);
 
+  // Local scenario list to support interactive HITL updates
+  const [scenariosList, setScenariosList] = useState([]);
+  const [reviewQueueFilter, setReviewQueueFilter] = useState("ALL");
+
+  // Modals & Action State
+  const [flagModalOpen, setFlagModalOpen] = useState(false);
+  const [suggestModalOpen, setSuggestModalOpen] = useState(false);
+  const [manualEditorOpen, setManualEditorOpen] = useState(false);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [missingScenarioModalOpen, setMissingScenarioModalOpen] = useState(false);
+  const [duplicateModalOpen, setDuplicateModalOpen] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(null);
+  const [activeProposedScenario, setActiveProposedScenario] = useState(null);
+  const [manualEditorInitial, setManualEditorInitial] = useState(null);
+  const [isActionLoading, setIsActionLoading] = useState(false);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+
+  useEffect(() => {
+    if (Array.isArray(result?.test_cases)) {
+      setScenariosList(result.test_cases);
+    }
+  }, [result?.test_cases]);
+
   // Scenario Normalization and Business Consolidation
   const allTests = useMemo(() => {
-    const rawList = [...(result?.test_cases || [])];
+    const rawList = [...(scenariosList.length > 0 ? scenariosList : (result?.test_cases || []))];
     rawList.sort((a, b) => (a.scenario_order || 0) - (b.scenario_order || 0));
 
     const dbScenarios = rawList.filter(tc => {
@@ -1183,7 +1435,7 @@ export default function TestScenarioExplorer({ result, projectContext }) {
           : tc.evidences,
       };
     });
-  }, [result]);
+  }, [result, scenariosList]);
 
   // State
   const [selectedTestCaseId, setSelectedTestCaseId] = useState(null);
@@ -1207,7 +1459,14 @@ export default function TestScenarioExplorer({ result, projectContext }) {
   const risks = useMemo(() => ["ALL", ...Array.from(new Set(allTests.map(tc => tc.priority || "Medium").filter(Boolean))).sort()], [allTests]);
   const statuses = useMemo(() => ["ALL", ...Array.from(new Set(allTests.map(tc => tc.status || "Generated").filter(Boolean))).sort()], [allTests]);
 
-  // Filter logic
+  // Review Queue Counts
+  const allCount = allTests.length;
+  const needsReviewCount = useMemo(() => allTests.filter(t => t.review_status === "NEEDS_REVIEW").length, [allTests]);
+  const approvedCount = useMemo(() => allTests.filter(t => t.review_status === "APPROVED").length, [allTests]);
+  const correctedCount = useMemo(() => allTests.filter(t => t.review_status === "CORRECTED").length, [allTests]);
+  const rejectedCount = useMemo(() => allTests.filter(t => t.review_status === "REJECTED").length, [allTests]);
+
+  // Filter logic including review queue filter
   const filteredTests = useMemo(() => {
     return allTests.filter(tc => {
       const q = searchQuery.toLowerCase().trim();
@@ -1223,9 +1482,17 @@ export default function TestScenarioExplorer({ result, projectContext }) {
       const matchRisk = riskFilter === "ALL" || (tc.priority || "Medium") === riskFilter;
       const matchStatus = statusFilter === "ALL" || (tc.status || "Generated") === statusFilter;
       
-      return matchSearch && matchMethodology && matchRisk && matchStatus;
+      const tcStatus = (tc.review_status || "GENERATED").toUpperCase();
+      const matchReviewQueue =
+        reviewQueueFilter === "ALL" ||
+        (reviewQueueFilter === "NEEDS_REVIEW" && tcStatus === "NEEDS_REVIEW") ||
+        (reviewQueueFilter === "APPROVED" && tcStatus === "APPROVED") ||
+        (reviewQueueFilter === "CORRECTED" && tcStatus === "CORRECTED") ||
+        (reviewQueueFilter === "REJECTED" && tcStatus === "REJECTED");
+
+      return matchSearch && matchMethodology && matchRisk && matchStatus && matchReviewQueue;
     });
-  }, [allTests, searchQuery, methodologyFilter, riskFilter, statusFilter]);
+  }, [allTests, searchQuery, methodologyFilter, riskFilter, statusFilter, reviewQueueFilter]);
 
   // Initial selection
   useEffect(() => {
@@ -1249,6 +1516,286 @@ export default function TestScenarioExplorer({ result, projectContext }) {
     if (selectedIndex >= 0) return filteredTests[selectedIndex];
     return filteredTests[0] || null;
   }, [filteredTests, selectedIndex]);
+
+  // ─── HITL Review Action Handlers ──────────────────────────────────────────
+
+  const updateScenarioInList = (updatedTc) => {
+    setScenariosList(prev => {
+      const exists = prev.some(t => t.test_case_id === updatedTc.test_case_id);
+      if (exists) {
+        return prev.map(t => t.test_case_id === updatedTc.test_case_id ? { ...t, ...updatedTc } : t);
+      }
+      return [...prev, updatedTc];
+    });
+  };
+
+  const handleFlagIssueSubmit = async ({ issue_type, issue_comment }) => {
+    if (!selectedTestCase) return;
+    setIsActionLoading(true);
+    try {
+      if (result?.run_id) {
+        const res = await reviewTestCase(result.run_id, selectedTestCase.test_case_id, {
+          action: "FLAG_ISSUE",
+          issue_type,
+          issue_comment,
+        });
+        if (res.data?.test_case) {
+          updateScenarioInList(res.data.test_case);
+        }
+      } else {
+        updateScenarioInList({
+          ...selectedTestCase,
+          review_status: "NEEDS_REVIEW",
+          issue_type,
+          issue_comment,
+        });
+      }
+      setFlagModalOpen(false);
+    } catch (err) {
+      console.error("Failed to flag issue:", err);
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const handleOpenSuggestCorrection = async (tc) => {
+    setSuggestModalOpen(true);
+    setSuggestLoading(true);
+    setActiveSuggestion(null);
+    try {
+      if (result?.run_id) {
+        const res = await suggestCorrection(result.run_id, tc.test_case_id, {
+          issue_type: tc.issue_type || "",
+          issue_comment: tc.issue_comment || "",
+        });
+        setActiveSuggestion(res.data?.suggestion || null);
+      } else {
+        // Fallback demo suggestion
+        setActiveSuggestion({
+          correction_type: "EXECUTION_METHOD_CORRECTION",
+          reason: "Scheduled execution for NH must execute via IWA and deliver to SDR (20-minute SLA).",
+          suggested: {
+            execution_tool: "IWA",
+            report_id: `RPT-${tc.report_id || 'PRV-INT-027'}`,
+            test_steps: "1. Login to IWA.\n2. Search for RPT-" + (tc.report_id || 'PRV-INT-027') + ".\n3. Run the report.\n4. Output delivers to SDR (~20 min).",
+          }
+        });
+      }
+    } catch (err) {
+      console.error("Failed to fetch suggestion:", err);
+    } finally {
+      setSuggestLoading(false);
+    }
+  };
+
+  const handleApplySuggestion = async (suggested) => {
+    if (!selectedTestCase || !suggested) return;
+    setIsActionLoading(true);
+    try {
+      if (result?.run_id) {
+        const res = await reviewTestCase(result.run_id, selectedTestCase.test_case_id, {
+          action: "UPDATE_SCENARIO",
+          scenario_data: suggested,
+        });
+        if (res.data?.test_case) {
+          updateScenarioInList(res.data.test_case);
+        }
+      } else {
+        updateScenarioInList({
+          ...selectedTestCase,
+          ...suggested,
+          review_status: "CORRECTED",
+          version: (selectedTestCase.version || 1) + 1,
+        });
+      }
+      setSuggestModalOpen(false);
+    } catch (err) {
+      console.error("Failed to apply suggestion:", err);
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const handleOpenManualEditor = (tc, initialValues = null) => {
+    setManualEditorInitial(initialValues || null);
+    setManualEditorOpen(true);
+  };
+
+  const handleSaveManualDraft = async (formData) => {
+    if (!selectedTestCase) return;
+    setIsActionLoading(true);
+    try {
+      if (result?.run_id) {
+        const res = await reviewTestCase(result.run_id, selectedTestCase.test_case_id, {
+          action: "UPDATE_SCENARIO",
+          scenario_data: formData,
+        });
+        if (res.data?.test_case) {
+          updateScenarioInList(res.data.test_case);
+        }
+      } else {
+        updateScenarioInList({
+          ...selectedTestCase,
+          ...formData,
+          review_status: "CORRECTED",
+          version: (selectedTestCase.version || 1) + 1,
+        });
+      }
+      setManualEditorOpen(false);
+    } catch (err) {
+      console.error("Failed to save manual draft:", err);
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const handleApproveDirect = async (tc, formData = null) => {
+    const target = tc || selectedTestCase;
+    if (!target) return;
+    setIsActionLoading(true);
+    try {
+      if (result?.run_id) {
+        if (formData) {
+          await reviewTestCase(result.run_id, target.test_case_id, {
+            action: "UPDATE_SCENARIO",
+            scenario_data: formData,
+          });
+        }
+        const res = await reviewTestCase(result.run_id, target.test_case_id, {
+          action: "APPROVE",
+        });
+        if (res.data?.test_case) {
+          updateScenarioInList(res.data.test_case);
+        }
+      } else {
+        updateScenarioInList({
+          ...target,
+          ...(formData || {}),
+          review_status: "APPROVED",
+          reviewer: "tester",
+          reviewed_at: new Date().toISOString(),
+        });
+      }
+      setManualEditorOpen(false);
+    } catch (err) {
+      console.error("Failed to approve scenario:", err);
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const handleCreateRevision = async (tc) => {
+    const target = tc || selectedTestCase;
+    if (!target) return;
+    setIsActionLoading(true);
+    try {
+      if (result?.run_id) {
+        const res = await reviewTestCase(result.run_id, target.test_case_id, {
+          action: "CREATE_REVISION",
+        });
+        if (res.data?.test_case) {
+          updateScenarioInList(res.data.test_case);
+        }
+      } else {
+        updateScenarioInList({
+          ...target,
+          review_status: "CORRECTED",
+          version: (target.version || 1) + 1,
+        });
+      }
+    } catch (err) {
+      console.error("Failed to create revision:", err);
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const handleConfirmDuplicate = async ({ duplicateOfId, reason }) => {
+    if (!selectedTestCase) return;
+    setIsActionLoading(true);
+    try {
+      if (result?.run_id) {
+        const res = await reviewTestCase(result.run_id, selectedTestCase.test_case_id, {
+          action: "REJECT",
+          duplicate_of_id: duplicateOfId,
+          issue_comment: reason,
+        });
+        if (res.data?.test_case) {
+          updateScenarioInList(res.data.test_case);
+        }
+      } else {
+        updateScenarioInList({
+          ...selectedTestCase,
+          review_status: "REJECTED",
+          duplicate_of_id: duplicateOfId,
+          issue_comment: reason,
+        });
+      }
+      setDuplicateModalOpen(false);
+    } catch (err) {
+      console.error("Failed to mark duplicate:", err);
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const handleProposeMissingScenario = async (payload) => {
+    if (!payload) {
+      setActiveProposedScenario(null);
+      return;
+    }
+    setIsActionLoading(true);
+    try {
+      if (result?.run_id) {
+        const res = await suggestMissingScenario(result.run_id, {
+          whatToTest: payload.whatToTest,
+          dsdReference: payload.dsdReference,
+        });
+        setActiveProposedScenario(res.data?.proposed_scenario || null);
+      } else {
+        setActiveProposedScenario({
+          test_case_id: "TC-NEW-01",
+          test_case_title: `Verify ${payload.whatToTest}`,
+          category: "Custom Validation",
+          objective: `Validate ${payload.whatToTest} per ${payload.dsdReference}`,
+          execution_tool: "IWA",
+          test_steps: `1. Open specification at ${payload.dsdReference}.\n2. Verify ${payload.whatToTest}.\n3. Validate output in SDR.`,
+          expected_result: `${payload.whatToTest} operates according to specification.`,
+        });
+      }
+    } catch (err) {
+      console.error("Failed to propose missing scenario:", err);
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
+  const handleAcceptMissingScenario = async (proposed) => {
+    if (!proposed) return;
+    setIsActionLoading(true);
+    try {
+      if (result?.run_id) {
+        const res = await addMissingScenario(result.run_id, proposed);
+        if (res.data?.test_case) {
+          updateScenarioInList(res.data.test_case);
+          setSelectedTestCaseId(res.data.test_case.test_case_id);
+        }
+      } else {
+        updateScenarioInList({
+          ...proposed,
+          review_status: "GENERATED",
+          version: 1,
+        });
+        setSelectedTestCaseId(proposed.test_case_id);
+      }
+      setMissingScenarioModalOpen(false);
+      setActiveProposedScenario(null);
+    } catch (err) {
+      console.error("Failed to accept missing scenario:", err);
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
 
   // Navigation handlers
   const handleNext = (e) => {
@@ -1346,8 +1893,87 @@ export default function TestScenarioExplorer({ result, projectContext }) {
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 font-normal mt-0.5">
-                Generated validation procedures
+                Authoritative validation procedures
               </p>
+            </div>
+
+            {/* ── HITL Review Queue Counter Pills & Add Scenario ──────────────── */}
+            <div className="space-y-1.5 pb-2 border-b border-slate-200">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  Review Queue
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveProposedScenario(null);
+                    setMissingScenarioModalOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors"
+                >
+                  <Plus className="h-3 w-3 text-blue-600" /> Add Scenario
+                </button>
+              </div>
+
+              <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5">
+                <button
+                  type="button"
+                  onClick={() => setReviewQueueFilter("ALL")}
+                  className={`px-2 py-1 rounded text-[11px] font-semibold shrink-0 transition-colors ${
+                    reviewQueueFilter === "ALL"
+                      ? "bg-slate-800 text-white shadow-2xs"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  }`}
+                >
+                  All ({allCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReviewQueueFilter("NEEDS_REVIEW")}
+                  className={`px-2 py-1 rounded text-[11px] font-semibold shrink-0 transition-colors ${
+                    reviewQueueFilter === "NEEDS_REVIEW"
+                      ? "bg-amber-600 text-white shadow-2xs"
+                      : "bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100"
+                  }`}
+                >
+                  Needs Review ({needsReviewCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReviewQueueFilter("APPROVED")}
+                  className={`px-2 py-1 rounded text-[11px] font-semibold shrink-0 transition-colors ${
+                    reviewQueueFilter === "APPROVED"
+                      ? "bg-emerald-600 text-white shadow-2xs"
+                      : "bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100"
+                  }`}
+                >
+                  Approved ({approvedCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReviewQueueFilter("CORRECTED")}
+                  className={`px-2 py-1 rounded text-[11px] font-semibold shrink-0 transition-colors ${
+                    reviewQueueFilter === "CORRECTED"
+                      ? "bg-sky-600 text-white shadow-2xs"
+                      : "bg-sky-50 text-sky-800 border border-sky-200 hover:bg-sky-100"
+                  }`}
+                >
+                  Corrected ({correctedCount})
+                </button>
+                {rejectedCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setReviewQueueFilter("REJECTED")}
+                    className={`px-2 py-1 rounded text-[11px] font-semibold shrink-0 transition-colors ${
+                      reviewQueueFilter === "REJECTED"
+                        ? "bg-rose-600 text-white shadow-2xs"
+                        : "bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-100"
+                    }`}
+                  >
+                    Rejected ({rejectedCount})
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Search Input */}
@@ -1454,13 +2080,35 @@ export default function TestScenarioExplorer({ result, projectContext }) {
                   </div>
 
                   <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-100">
-                    <span className="truncate max-w-[200px]" title={tc.source_section || "Report Layout"}>
+                    <span className="truncate max-w-[180px]" title={tc.source_section || "Report Layout"}>
                       {tc.source_section || "Report Layout"}
                     </span>
-                    <span className="flex items-center gap-1 font-medium text-emerald-600">
-                      <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-                      <span>{status}</span>
-                    </span>
+                    {/* Authoritative HITL Review Badge */}
+                    {tc.review_status === "APPROVED" && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <Check className="h-3 w-3 text-emerald-600" /> Approved
+                      </span>
+                    )}
+                    {tc.review_status === "NEEDS_REVIEW" && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300">
+                        <AlertTriangle className="h-3 w-3 text-amber-600" /> Needs Review
+                      </span>
+                    )}
+                    {tc.review_status === "CORRECTED" && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 text-sky-800 border border-sky-300">
+                        <Edit3 className="h-3 w-3 text-sky-600" /> Corrected
+                      </span>
+                    )}
+                    {tc.review_status === "REJECTED" && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-50 text-rose-800 border border-rose-300">
+                        <Ban className="h-3 w-3 text-rose-600" /> Rejected
+                      </span>
+                    )}
+                    {(!tc.review_status || tc.review_status === "GENERATED") && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                        Generated
+                      </span>
+                    )}
                   </div>
                 </button>
               );
@@ -1509,6 +2157,14 @@ export default function TestScenarioExplorer({ result, projectContext }) {
                 setZoomImage={setZoomImage}
                 executionState={executionState}
                 onUpdateExecution={handleUpdateExecution}
+                onFlagIssue={() => setFlagModalOpen(true)}
+                onSuggestCorrection={() => handleOpenSuggestCorrection(selectedTestCase)}
+                onEditScenario={() => handleOpenManualEditor(selectedTestCase)}
+                onApproveScenario={() => handleApproveDirect(selectedTestCase)}
+                onCreateRevision={() => handleCreateRevision(selectedTestCase)}
+                onViewHistory={() => setHistoryModalOpen(true)}
+                onMarkDuplicate={() => setDuplicateModalOpen(true)}
+                isActionLoading={isActionLoading}
               />
             ) : (
               <div className="h-full flex flex-col items-center justify-center text-center p-8 bg-white rounded-2xl border border-slate-200 shadow-2xs">
@@ -1535,6 +2191,68 @@ export default function TestScenarioExplorer({ result, projectContext }) {
             previewMeta={typeof zoomImage === 'object' ? zoomImage.previewMeta : null}
           />
         )}
+
+        {/* ── HITL Review Modals ───────────────────────────────────────────── */}
+        <FlagIssueModal
+          isOpen={flagModalOpen}
+          onClose={() => setFlagModalOpen(false)}
+          scenario={selectedTestCase}
+          onSubmit={handleFlagIssueSubmit}
+          isLoading={isActionLoading}
+        />
+
+        <SuggestCorrectionModal
+          isOpen={suggestModalOpen}
+          onClose={() => setSuggestModalOpen(false)}
+          scenario={selectedTestCase}
+          suggestion={activeSuggestion}
+          isLoading={suggestLoading}
+          onApply={handleApplySuggestion}
+          onEditMyself={(suggested) => handleOpenManualEditor(selectedTestCase, suggested)}
+        />
+
+        <ManualScenarioEditorModal
+          isOpen={manualEditorOpen}
+          onClose={() => {
+            setManualEditorOpen(false);
+            setManualEditorInitial(null);
+          }}
+          scenario={selectedTestCase}
+          initialValues={manualEditorInitial}
+          onSaveDraft={handleSaveManualDraft}
+          onApproveDirect={(formData) => handleApproveDirect(selectedTestCase, formData)}
+          isLoading={isActionLoading}
+        />
+
+        <VersionHistoryModal
+          isOpen={historyModalOpen}
+          onClose={() => setHistoryModalOpen(false)}
+          scenario={selectedTestCase}
+        />
+
+        <AddMissingScenarioModal
+          isOpen={missingScenarioModalOpen}
+          onClose={() => {
+            setMissingScenarioModalOpen(false);
+            setActiveProposedScenario(null);
+          }}
+          onPropose={handleProposeMissingScenario}
+          onAccept={handleAcceptMissingScenario}
+          onEditInModal={(proposed) => {
+            handleOpenManualEditor(proposed, proposed);
+          }}
+          isLoading={isActionLoading}
+          proposedScenario={activeProposedScenario}
+        />
+
+        <DuplicateScenarioModal
+          isOpen={duplicateModalOpen}
+          onClose={() => setDuplicateModalOpen(false)}
+          scenario={selectedTestCase}
+          allScenarios={allTests}
+          onConfirmDuplicate={handleConfirmDuplicate}
+          isLoading={isActionLoading}
+        />
 
       </div>
     </ScenarioErrorBoundary>

@@ -60,6 +60,11 @@ class CognosGenerationRun(Base):
     
     requested_by = Column(String, nullable=False)
 
+    # Project Context (Optional CR / Defect metadata)
+    work_type = Column(String, nullable=True)
+    work_item_id = Column(String, nullable=True)
+    work_item_title = Column(String, nullable=True)
+
     requirements = relationship("CognosRequirementModel", back_populates="run", cascade="all, delete-orphan")
     test_cases = relationship("CognosTestCaseModel", back_populates="run", cascade="all, delete-orphan")
 
@@ -144,7 +149,18 @@ class CognosTestCaseModel(Base):
     # Phase 12Q Authoritative scenario execution order
     scenario_order = Column(Integer, nullable=True, default=0)
     
-    # Store history of human edits (if applicable in HITL phase)
+    # HITL Review fields
+    review_status = Column(String, default="GENERATED", nullable=True)  # GENERATED, NEEDS_REVIEW, CORRECTED, APPROVED, REJECTED
+    review_comments = Column(Text, nullable=True)
+    reviewer = Column(String, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    issue_type = Column(String, nullable=True)
+    issue_comment = Column(Text, nullable=True)
+    duplicate_of_id = Column(String, nullable=True)
+    execution_method = Column(String, nullable=True)
+    execution_tool = Column(String, nullable=True)
+
+    # Store history of human edits (HITL revision history with diffs)
     edit_history = Column(JSON, nullable=True)
 
     run = relationship("CognosGenerationRun", back_populates="test_cases")
@@ -153,3 +169,49 @@ class CognosTestCaseModel(Base):
         secondary=cognos_test_case_requirements,
         back_populates="test_cases"
     )
+
+
+def ensure_cognos_columns():
+    """Ensure newly added HITL and project context columns exist in existing database tables."""
+    try:
+        from app.db.session import engine
+        from sqlalchemy import text, inspect
+        with engine.connect() as conn:
+            insp = inspect(conn)
+            table_names = insp.get_table_names()
+
+            if "cognos_generation_runs" in table_names:
+                run_cols = [c["name"] for c in insp.get_columns("cognos_generation_runs")]
+                for col, col_type in [("work_type", "VARCHAR"), ("work_item_id", "VARCHAR"), ("work_item_title", "VARCHAR")]:
+                    if col not in run_cols:
+                        try:
+                            conn.execute(text(f"ALTER TABLE cognos_generation_runs ADD COLUMN {col} {col_type}"))
+                            conn.commit()
+                        except Exception:
+                            pass
+
+            if "cognos_test_cases" in table_names:
+                tc_cols = [c["name"] for c in insp.get_columns("cognos_test_cases")]
+                new_cols = [
+                    ("review_status", "VARCHAR DEFAULT 'GENERATED'"),
+                    ("review_comments", "TEXT"),
+                    ("reviewer", "VARCHAR"),
+                    ("reviewed_at", "DATETIME"),
+                    ("issue_type", "VARCHAR"),
+                    ("issue_comment", "TEXT"),
+                    ("duplicate_of_id", "VARCHAR"),
+                    ("execution_method", "VARCHAR"),
+                    ("execution_tool", "VARCHAR"),
+                ]
+                for col, col_type in new_cols:
+                    if col not in tc_cols:
+                        try:
+                            conn.execute(text(f"ALTER TABLE cognos_test_cases ADD COLUMN {col} {col_type}"))
+                            conn.commit()
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
+
+ensure_cognos_columns()
