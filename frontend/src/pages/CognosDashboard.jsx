@@ -58,7 +58,24 @@ export default function CognosDashboard() {
   const [detectionState, setDetectionState] = useState("IDLE"); // IDLE | DETECTING | DETECTED | LOW_CONFIDENCE | UNKNOWN
   const [detectedInfo, setDetectedInfo] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [result, setResult] = useState(null);
+  const [result, setResultState] = useState(() => {
+    try {
+      const cached = sessionStorage.getItem("cognos_active_result");
+      if (cached) return JSON.parse(cached);
+    } catch {}
+    return null;
+  });
+
+  const setResult = (val) => {
+    setResultState(val);
+    try {
+      if (val) {
+        sessionStorage.setItem("cognos_active_result", JSON.stringify(val));
+      } else {
+        sessionStorage.removeItem("cognos_active_result");
+      }
+    } catch {}
+  };
   const [error, setError] = useState("");
   const [validationErrors, setValidationErrors] = useState([]);
   const fileInputRef = useRef(null);

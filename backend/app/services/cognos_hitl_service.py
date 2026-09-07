@@ -321,10 +321,13 @@ def compute_field_diffs(old_data: Dict[str, Any], new_data: Dict[str, Any]) -> L
         ("test_steps", "Test Steps"),
         ("expected_result", "Expected Result"),
         ("review_comments", "Execution Comments"),
+        ("validation_sql", "Validation SQL Query"),
     ]
 
     diffs = []
     for key, label in fields_to_track:
+        if key not in new_data:
+            continue
         old_val = str(old_data.get(key, "") or "").strip()
         new_val = str(new_data.get(key, "") or "").strip()
         if old_val != new_val:

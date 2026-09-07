@@ -41,7 +41,7 @@ export default function LoginPage() {
       } else {
         await login(username, password);
       }
-      navigate("/");
+      navigate("/cognos");
     } catch (err) {
       if (import.meta.env.DEV) {
         console.error("Login failed:", {

@@ -128,6 +128,7 @@ class CognosTestCaseModel(Base):
     test_steps = Column(Text, nullable=False)
     expected_result = Column(Text, nullable=False)
     validation_logic = Column(Text, nullable=True)
+    validation_sql = Column(Text, nullable=True)
     
     source_section = Column(String, nullable=False)
     source_page = Column(Integer, nullable=True)
@@ -202,6 +203,7 @@ def ensure_cognos_columns():
                     ("duplicate_of_id", "VARCHAR"),
                     ("execution_method", "VARCHAR"),
                     ("execution_tool", "VARCHAR"),
+                    ("validation_sql", "TEXT"),
                 ]
                 for col, col_type in new_cols:
                     if col not in tc_cols:

@@ -37,7 +37,7 @@ export default function UsersPage() {
   // (see core/rbac.py), so this page can't actually leak anything even if
   // someone bypassed this check entirely.
   if (!hasAtLeast("admin")) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/cognos" replace />;
   }
 
   const handleCreate = async (e) => {

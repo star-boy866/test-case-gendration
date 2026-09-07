@@ -267,6 +267,7 @@ async def upload_and_generate(
                 test_steps=tc.test_steps,
                 expected_result=tc.expected_result,
                 validation_logic=tc.validation_logic,
+                validation_sql=getattr(tc, "validation_sql", None),
                 source_section=tc.source_section,
                 source_page=tc.source_page,
                 source_table=tc.source_table,
@@ -676,6 +677,22 @@ class AddScenarioRequest(BaseModel):
     scenario: Dict[str, Any]
 
 
+def _extract_sql_from_model(tc: CognosTestCaseModel) -> str:
+    val_sql = getattr(tc, "validation_sql", None)
+    if val_sql and str(val_sql).strip():
+        return str(val_sql).strip()
+    import re
+    if getattr(tc, "validation_logic", None):
+        m = re.search(r"```sql\s*([\s\S]*?)```", tc.validation_logic or "")
+        if m:
+            return m.group(1).strip()
+    if getattr(tc, "test_data", None):
+        m = re.search(r"```sql\s*([\s\S]*?)```", tc.test_data or "")
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
 def _serialize_test_case_model(tc: CognosTestCaseModel, run_id: int) -> Dict[str, Any]:
     return {
         "id": tc.id,
@@ -691,6 +708,7 @@ def _serialize_test_case_model(tc: CognosTestCaseModel, run_id: int) -> Dict[str
         "test_steps": tc.test_steps,
         "expected_result": tc.expected_result,
         "validation_logic": tc.validation_logic,
+        "validation_sql": _extract_sql_from_model(tc),
         "source_section": tc.source_section,
         "source_page": tc.source_page,
         "source_table": tc.source_table,
@@ -715,6 +733,10 @@ def _serialize_test_case_model(tc: CognosTestCaseModel, run_id: int) -> Dict[str
         "execution_method": tc.execution_method or "Scheduled",
         "execution_tool": tc.execution_tool or "IWA",
         "edit_history": tc.edit_history or [],
+        "sql_status": getattr(tc, "sql_status", None) or ("AVAILABLE" if _extract_sql_from_model(tc) else ""),
+        "sql_reason": getattr(tc, "sql_reason", None) or "",
+        "source_mappings": getattr(tc, "source_mappings", None) or [],
+        "shared_sql_group": getattr(tc, "shared_sql_group", None) or "",
     }
 
 
@@ -878,6 +900,8 @@ def review_test_case(
             tc.test_steps = "\n".join(steps) if isinstance(steps, list) else str(steps)
         if "expected_result" in data and data["expected_result"]:
             tc.expected_result = data["expected_result"]
+        if "validation_sql" in data:
+            tc.validation_sql = data["validation_sql"]
         if "review_comments" in data:
             tc.review_comments = data["review_comments"]
 
@@ -1024,6 +1048,7 @@ def add_missing_scenario(
         test_steps=sc.get("test_steps") or "",
         expected_result=sc.get("expected_result") or "",
         validation_logic=sc.get("validation_logic") or "",
+        validation_sql=sc.get("validation_sql") or "",
         source_section=sc.get("source_section") or "Report Specification",
         source_page=sc.get("source_page"),
         source_table=sc.get("source_table") or "",

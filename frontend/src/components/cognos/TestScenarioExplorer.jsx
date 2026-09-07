@@ -7,7 +7,7 @@ import {
   RefreshCw, Copy, Check, SlidersHorizontal, Sparkles, 
   Shield, ArrowLeft, CheckCircle, XCircle, Ban, 
   HelpCircle, MessageSquare, ChevronUp, ExternalLink,
-  Briefcase, Lock, Unlock, Edit3, History, Plus
+  Briefcase, Lock, Unlock, Edit3, History, Plus, Save
 } from "lucide-react";
 import { 
   api, 
@@ -567,6 +567,7 @@ function ScenarioWorkspaceDetail({
   onCreateRevision,
   onViewHistory,
   onMarkDuplicate,
+  onUpdateScenarioSql,
   isActionLoading,
 }) {
   const steps = useMemo(() => parseSteps(tc?.test_steps), [tc?.test_steps]);
@@ -574,6 +575,12 @@ function ScenarioWorkspaceDetail({
   const [activeTab, setActiveTab] = useState("steps");
   const [copiedSql, setCopiedSql] = useState(false);
   const [commentDraft, setCommentDraft] = useState("");
+  const [isSqlEditing, setIsSqlEditing] = useState(false);
+  const [sqlDraft, setSqlDraft] = useState("");
+  const [sqlSaveError, setSqlSaveError] = useState(null);
+  const [sqlSavedNotice, setSqlSavedNotice] = useState(false);
+  const [sqlSubmitting, setSqlSubmitting] = useState(false);
+  const sqlTextareaRef = useRef(null);
 
   const reviewStatus = (tc?.review_status || "GENERATED").toUpperCase();
   const isApproved = reviewStatus === "APPROVED";
@@ -587,6 +594,10 @@ function ScenarioWorkspaceDetail({
   // Reset step index and comment on scenario change
   useEffect(() => {
     setSelectedStepIndex(0);
+    setIsSqlEditing(false);
+    setSqlDraft("");
+    setSqlSaveError(null);
+    setSqlSavedNotice(false);
   }, [tc?.test_case_id]);
 
   const scenarioCommentKey = `${tc?.test_case_id}-scenario-comment`;
@@ -602,6 +613,128 @@ function ScenarioWorkspaceDetail({
   };
 
   const sql = extractSql(tc?.validation_logic, tc?.test_data, tc?.validation_sql);
+  const currentSql = sql || "";
+  const isDirtySql = isSqlEditing && sqlDraft !== currentSql;
+
+  // Unsaved changes window listener
+  useEffect(() => {
+    if (!isDirtySql) return;
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isDirtySql]);
+
+  const handlePrevWithCheck = (e) => {
+    if (isDirtySql) {
+      if (!window.confirm("You have unsaved changes to the SQL query. Discard changes and navigate away?")) {
+        return;
+      }
+      setIsSqlEditing(false);
+    }
+    onPrev(e);
+  };
+
+  const handleNextWithCheck = (e) => {
+    if (isDirtySql) {
+      if (!window.confirm("You have unsaved changes to the SQL query. Discard changes and navigate away?")) {
+        return;
+      }
+      setIsSqlEditing(false);
+    }
+    onNext(e);
+  };
+
+  const handleTabClick = (tabId) => {
+    if (isDirtySql && activeTab === "sql" && tabId !== "sql") {
+      if (!window.confirm("You have unsaved changes to the SQL query. Discard changes and switch tabs?")) {
+        return;
+      }
+      setIsSqlEditing(false);
+    }
+    setActiveTab(tabId);
+  };
+
+  const handleStartEditSql = () => {
+    if (isApproved) {
+      if (window.confirm("This scenario is approved and locked for editing. Would you like to create a new editable revision?")) {
+        if (onCreateRevision) onCreateRevision();
+      }
+      return;
+    }
+    setSqlDraft(currentSql);
+    setSqlSaveError(null);
+    setIsSqlEditing(true);
+    setTimeout(() => {
+      if (sqlTextareaRef.current) {
+        sqlTextareaRef.current.focus();
+      }
+    }, 50);
+  };
+
+  const handleCancelSql = () => {
+    if (isDirtySql) {
+      if (!window.confirm("You have unsaved changes to the SQL query. Are you sure you want to discard them?")) {
+        return;
+      }
+    }
+    setIsSqlEditing(false);
+    setSqlDraft(currentSql);
+    setSqlSaveError(null);
+  };
+
+  const handleSaveSql = async () => {
+    const trimmed = (sqlDraft || "").trim();
+    if (!trimmed) {
+      setSqlSaveError("Validation SQL Query cannot be empty.");
+      return;
+    }
+    if (trimmed === currentSql.trim()) {
+      setIsSqlEditing(false);
+      return;
+    }
+    setSqlSubmitting(true);
+    setSqlSaveError(null);
+    try {
+      if (onUpdateScenarioSql) {
+        await onUpdateScenarioSql(tc, trimmed);
+      }
+      setIsSqlEditing(false);
+      setSqlSavedNotice("Validation SQL query updated successfully.");
+      setTimeout(() => setSqlSavedNotice(false), 3500);
+    } catch (err) {
+      const msg = err?.response?.data?.detail || err?.message || "Failed to save SQL update.";
+      setSqlSaveError(msg);
+    } finally {
+      setSqlSubmitting(false);
+    }
+  };
+
+  const handleSqlKeyDown = (e) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const textarea = e.target;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const val = textarea.value;
+      const insertText = "    ";
+      const nextVal = val.substring(0, start) + insertText + val.substring(end);
+      setSqlDraft(nextVal);
+      requestAnimationFrame(() => {
+        if (sqlTextareaRef.current) {
+          sqlTextareaRef.current.selectionStart = sqlTextareaRef.current.selectionEnd = start + insertText.length;
+        }
+      });
+    } else if (e.key === "Escape") {
+      handleCancelSql();
+    } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      handleSaveSql();
+    }
+  };
+
   const evidenceRefs = Array.isArray(tc?.evidence_references) ? tc.evidence_references : [];
   const snapshots = evidenceRefs.filter(ev => ev?.evidence_type === "SOURCE_DSD_SNAPSHOT");
   const others = evidenceRefs.filter(
@@ -611,9 +744,10 @@ function ScenarioWorkspaceDetail({
   const hasTestData = Boolean(tc?.test_data || tc?.preconditions);
 
   const handleCopySql = (e) => {
-    e.stopPropagation();
-    if (sql) {
-      navigator.clipboard.writeText(sql);
+    if (e) e.stopPropagation();
+    const textToCopy = isSqlEditing ? sqlDraft : currentSql;
+    if (textToCopy) {
+      navigator.clipboard.writeText(textToCopy);
       setCopiedSql(true);
       setTimeout(() => setCopiedSql(false), 2000);
     }
@@ -642,7 +776,7 @@ function ScenarioWorkspaceDetail({
           <div className="flex items-center gap-1.5 shrink-0 self-start sm:self-center">
             <button
               type="button"
-              onClick={onPrev}
+              onClick={handlePrevWithCheck}
               disabled={selectedIndex <= 0}
               title="Previous test scenario"
               className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs border border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
@@ -654,7 +788,7 @@ function ScenarioWorkspaceDetail({
             </span>
             <button
               type="button"
-              onClick={onNext}
+              onClick={handleNextWithCheck}
               disabled={selectedIndex >= totalCount - 1}
               title="Next test scenario"
               className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs border border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
@@ -680,7 +814,7 @@ function ScenarioWorkspaceDetail({
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => handleTabClick(tab.id)}
                 className={`inline-flex items-center gap-1.5 py-2.5 text-xs font-semibold transition-all whitespace-nowrap border-b-2 bg-transparent ${
                   isTabActive
                     ? "border-blue-600 text-blue-600 font-bold"
@@ -1078,11 +1212,107 @@ function ScenarioWorkspaceDetail({
       {activeTab === "sql" && (
         <div className="space-y-4">
           
+          {sqlSavedNotice && (
+            <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-3 flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+              <span className="font-semibold">{sqlSavedNotice}</span>
+            </div>
+          )}
+
           {/* Validation SQL Area */}
-          {tc?.sql_status === "UNAVAILABLE" ? (
+          {isSqlEditing ? (
+            <div className="border border-blue-300 bg-slate-900 rounded-xl overflow-hidden shadow-lg ring-2 ring-blue-500/20">
+              <div className="flex items-center justify-between px-3.5 py-2.5 bg-slate-800 border-b border-slate-700 text-xs">
+                <div className="flex items-center gap-2">
+                  <Code className="h-4 w-4 text-blue-400" />
+                  <span className="font-semibold text-slate-100">Inline SQL Editor</span>
+                  <span className="text-[10px] font-semibold text-amber-300 bg-amber-900/60 px-2 py-0.5 rounded border border-amber-600/40">
+                    {isDirtySql ? "Unsaved Changes" : "Draft"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button 
+                    type="button"
+                    onClick={handleCopySql}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-slate-300 hover:text-white bg-slate-700/80 hover:bg-slate-700 px-2.5 py-1 rounded transition-colors border border-slate-600"
+                  >
+                    {copiedSql ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5 text-slate-400" />}
+                    {copiedSql ? "Copied" : "Copy SQL"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCancelSql}
+                    disabled={sqlSubmitting}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-slate-300 hover:text-white bg-slate-700/80 hover:bg-slate-700 px-2.5 py-1 rounded transition-colors border border-slate-600 disabled:opacity-50"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveSql}
+                    disabled={sqlSubmitting}
+                    className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded transition-colors shadow-xs disabled:opacity-50"
+                  >
+                    {sqlSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                    {sqlSubmitting ? "Saving..." : "Save SQL"}
+                  </button>
+                </div>
+              </div>
+
+              {sqlSaveError && (
+                <div className="p-2.5 bg-rose-950/80 border-b border-rose-800 text-rose-200 text-xs flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400" />
+                  <span>{sqlSaveError}</span>
+                </div>
+              )}
+
+              <textarea
+                ref={sqlTextareaRef}
+                value={sqlDraft}
+                onChange={(e) => {
+                  setSqlDraft(e.target.value);
+                  if (sqlSaveError) setSqlSaveError(null);
+                }}
+                onKeyDown={handleSqlKeyDown}
+                spellCheck={false}
+                rows={Math.min(22, Math.max(8, (sqlDraft || "").split("\n").length + 2))}
+                className="w-full p-4 bg-slate-900 text-slate-100 font-mono text-xs leading-relaxed focus:outline-none resize-y border-0 min-h-[220px]"
+                placeholder="SELECT ... FROM ... WHERE ..."
+              />
+
+              <div className="px-3.5 py-2 bg-slate-800/90 border-t border-slate-700 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
+                <div className="flex items-center gap-3">
+                  <span>Lines: <strong className="text-slate-200 font-mono">{(sqlDraft || "").split("\n").length}</strong></span>
+                  <span>Chars: <strong className="text-slate-200 font-mono">{(sqlDraft || "").length}</strong></span>
+                  <span className="hidden sm:inline text-slate-500">|</span>
+                  <span className="hidden sm:inline text-slate-400">Tab indents 4 spaces • Ctrl+Enter saves • Esc cancels</span>
+                </div>
+                <div>
+                  {isDirtySql ? (
+                    <span className="text-amber-400 font-semibold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                      Modified
+                    </span>
+                  ) : (
+                    <span className="text-slate-500">Unchanged</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : tc?.sql_status === "UNAVAILABLE" && !sql ? (
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5 text-slate-700">
-              <div className="font-semibold text-xs uppercase tracking-wider text-slate-600 flex items-center gap-1.5 mb-1">
-                <Info className="h-3.5 w-3.5 text-slate-500" /> SQL Generation Unavailable
+              <div className="flex items-center justify-between mb-1">
+                <div className="font-semibold text-xs uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
+                  <Info className="h-3.5 w-3.5 text-slate-500" /> SQL Generation Unavailable
+                </div>
+                <button
+                  type="button"
+                  onClick={handleStartEditSql}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 px-2.5 py-1 rounded transition-colors border border-blue-200"
+                >
+                  <Edit3 className="h-3.5 w-3.5" /> Add Custom SQL
+                </button>
               </div>
               <div className="text-xs text-slate-500">
                 Reason: {tc?.sql_reason || "Source metadata is incomplete."}
@@ -1102,14 +1332,26 @@ function ScenarioWorkspaceDetail({
                     <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-800 flex items-center gap-1.5">
                       <Code className="h-3.5 w-3.5 text-amber-700" /> Validation SQL Draft
                     </h4>
-                    <button 
-                      type="button"
-                      onClick={handleCopySql}
-                      className="inline-flex items-center gap-1 text-xs font-medium text-amber-800 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 px-2.5 py-0.5 rounded transition-colors border border-amber-300"
-                    >
-                      {copiedSql ? <Check className="h-3 w-3 text-emerald-700" /> : <Copy className="h-3 w-3" />}
-                      {copiedSql ? "Copied" : "Copy SQL"}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleStartEditSql}
+                        title={isApproved ? "Approved scenario is locked. Click to create a revision." : "Edit Validation SQL Query"}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 px-2.5 py-1 rounded transition-colors border border-slate-300 shadow-2xs"
+                      >
+                        {isApproved ? <Lock className="h-3.5 w-3.5 text-amber-600" /> : <Edit3 className="h-3.5 w-3.5 text-blue-600" />}
+                        <span>Edit SQL</span>
+                        {isApproved && <span className="text-[10px] text-amber-600 font-normal">(Locked)</span>}
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={handleCopySql}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-amber-800 hover:text-amber-900 bg-amber-100 hover:bg-amber-200 px-2.5 py-0.5 rounded transition-colors border border-amber-300"
+                      >
+                        {copiedSql ? <Check className="h-3 w-3 text-emerald-700" /> : <Copy className="h-3 w-3" />}
+                        {copiedSql ? "Copied" : "Copy SQL"}
+                      </button>
+                    </div>
                   </div>
                   <pre className="text-xs text-slate-200 bg-slate-900 p-3.5 rounded-lg overflow-x-auto font-mono leading-relaxed shadow-inner">
                     {sql}
@@ -1130,21 +1372,51 @@ function ScenarioWorkspaceDetail({
                       Consolidated Report Query
                     </span>
                   )}
+                  {tc?.version > 1 && (
+                    <span className="text-[10px] font-bold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200">
+                      v{tc.version}
+                    </span>
+                  )}
                 </div>
-                <button 
-                  type="button"
-                  onClick={handleCopySql}
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 px-2.5 py-1 rounded transition-colors border border-blue-200"
-                >
-                  {copiedSql ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
-                  {copiedSql ? "Copied" : "Copy SQL"}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleStartEditSql}
+                    title={isApproved ? "Approved scenario is locked. Click to create a revision." : "Edit Validation SQL Query"}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 px-2.5 py-1 rounded transition-colors border border-slate-300 shadow-2xs"
+                  >
+                    {isApproved ? <Lock className="h-3.5 w-3.5 text-amber-600" /> : <Edit3 className="h-3.5 w-3.5 text-blue-600" />}
+                    <span>Edit SQL</span>
+                    {isApproved && <span className="text-[10px] text-amber-600 font-normal">(Locked)</span>}
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={handleCopySql}
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 px-2.5 py-1 rounded transition-colors border border-blue-200"
+                  >
+                    {copiedSql ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+                    {copiedSql ? "Copied" : "Copy SQL"}
+                  </button>
+                </div>
               </div>
               <pre className="text-xs text-slate-200 bg-slate-900 p-3.5 rounded-lg overflow-x-auto font-mono leading-relaxed shadow-inner">
                 {sql}
               </pre>
             </div>
-          ) : null}
+          ) : (
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3.5 text-slate-700 flex items-center justify-between">
+              <div className="text-xs text-slate-500">
+                No validation SQL query defined for this scenario.
+              </div>
+              <button
+                type="button"
+                onClick={handleStartEditSql}
+                className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 px-2.5 py-1 rounded transition-colors border border-blue-200"
+              >
+                <Edit3 className="h-3.5 w-3.5" /> Add SQL
+              </button>
+            </div>
+          )}
 
           {/* Structured Source Mappings Table */}
           {Array.isArray(tc?.source_mappings) && tc.source_mappings.length > 0 ? (
@@ -1214,7 +1486,7 @@ function ScenarioWorkspaceDetail({
       <div className="border-t border-slate-200/80 pt-3 flex items-center justify-between">
         <button
           type="button"
-          onClick={onPrev}
+          onClick={handlePrevWithCheck}
           disabled={selectedIndex <= 0}
           className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs border border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
@@ -1225,7 +1497,7 @@ function ScenarioWorkspaceDetail({
         </span>
         <button
           type="button"
-          onClick={onNext}
+          onClick={handleNextWithCheck}
           disabled={selectedIndex >= totalCount - 1}
           className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs border border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
@@ -1710,6 +1982,57 @@ export default function TestScenarioExplorer({ result, projectContext }) {
     }
   };
 
+  const handleSaveScenarioSql = async (tc, newSql) => {
+    const target = tc || selectedTestCase;
+    if (!target) return;
+    setIsActionLoading(true);
+    try {
+      if (result?.run_id) {
+        const res = await reviewTestCase(result.run_id, target.test_case_id, {
+          action: "UPDATE_SCENARIO",
+          scenario_data: { validation_sql: newSql },
+        });
+        if (res.data?.test_case) {
+          updateScenarioInList(res.data.test_case);
+          return res.data.test_case;
+        }
+      } else {
+        const oldSql = target.validation_sql || "";
+        const updated = {
+          ...target,
+          validation_sql: newSql,
+          review_status: "CORRECTED",
+          version: (target.version || 1) + 1,
+          edit_history: [
+            ...(target.edit_history || []),
+            {
+              version: (target.version || 1) + 1,
+              action: "HUMAN_CORRECTED",
+              status: "CORRECTED",
+              author: "tester",
+              timestamp: new Date().toISOString(),
+              summary: "Validation SQL Query updated manually",
+              diffs: [
+                {
+                  field: "Validation SQL Query",
+                  from: oldSql.slice(0, 120),
+                  to: newSql.slice(0, 120),
+                }
+              ]
+            }
+          ]
+        };
+        updateScenarioInList(updated);
+        return updated;
+      }
+    } catch (err) {
+      console.error("Failed to save scenario SQL:", err);
+      throw err;
+    } finally {
+      setIsActionLoading(false);
+    }
+  };
+
   const handleConfirmDuplicate = async ({ duplicateOfId, reason }) => {
     if (!selectedTestCase) return;
     setIsActionLoading(true);
@@ -2164,6 +2487,7 @@ export default function TestScenarioExplorer({ result, projectContext }) {
                 onCreateRevision={() => handleCreateRevision(selectedTestCase)}
                 onViewHistory={() => setHistoryModalOpen(true)}
                 onMarkDuplicate={() => setDuplicateModalOpen(true)}
+                onUpdateScenarioSql={handleSaveScenarioSql}
                 isActionLoading={isActionLoading}
               />
             ) : (
