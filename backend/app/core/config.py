@@ -23,7 +23,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_and_resolve_paths(self) -> "Settings":
-        for attr in ("SQLITE_DB_PATH", "AUDIT_LOG_PATH", "FAISS_INDEX_PATH", "UPLOAD_DIR", "EXPORT_DIR"):
+        for attr in ("SQLITE_DB_PATH", "AUDIT_LOG_PATH", "FAISS_INDEX_PATH", "UPLOAD_DIR", "EXPORT_DIR", "RUNS_DIR"):
             val = getattr(self, attr, None)
             if val and isinstance(val, str):
                 p = Path(val)
@@ -122,6 +122,7 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     MAX_UPLOAD_MB: int = 50
     EXPORT_DIR: str = "./exports"
+    RUNS_DIR: str = "./runs"
 
     # --- SharePoint (Phase 8, credentials supplied by user's org) ---
     SHAREPOINT_TENANT_ID: str = ""

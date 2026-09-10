@@ -472,116 +472,38 @@ def get_source_snapshot(
     )
 
     run, assignment = validate_test_case_file_access(db, run_id, current_user)
-        
-    if not run.source_document_path:
-        logger.warning(f"[SOURCE_SNAPSHOT 404] Run {run_id} has no source_document_path.")
-        raise HTTPException(status_code=404, detail="Run does not have an associated source document path.")
-        
-    source_path = Path(str(run.source_document_path))
-    if not source_path.exists():
-        logger.warning(f"[SOURCE_SNAPSHOT 404] Source document not found at {source_path}.")
-        raise HTTPException(status_code=404, detail="Source document not found on disk.")
 
-    evidence_dir = (source_path.parent.parent / "evidence").resolve()
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Path Traversal Protection & Parameter Sanitization
-    safe_evidence_id = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', evidence_id.strip()) if evidence_id else ""
-    safe_test_case_id = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', test_case_id.strip()) if test_case_id else ""
-    safe_methodology = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', methodology.strip()) if methodology else ""
-    safe_scope = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', evidence_scope.strip()) if evidence_scope else ""
-
-    # Phase 12O.1: Layout Validation snapshot cache key is page-level
-    if safe_methodology == "LAYOUT_VALIDATION" or safe_scope == "FULL_REPORT_LAYOUT":
-        png_filename = f"source_snapshot_{run_id}_REPORT_LAYOUT_FULL.png"
-        target_field = ""
-        evidence_scope = "FULL_REPORT_LAYOUT"
-        section = "Report Layout"
-    elif safe_methodology == "DB_REPORT_DATA_VALIDATION" or safe_scope == "REPORT_BODY_MAPPING":
-        png_filename = f"source_snapshot_{run_id}_DBRV_FULL_REPORT_BODY.png"
-        target_field = "Full Mapping"
-        evidence_scope = "REPORT_BODY_MAPPING"
-        section = "Report Body"
-    else:
-        # Safe fallback if evidence_id isn't provided
-        fallback_id = safe_evidence_id or (f"snap_{safe_test_case_id}_{safe_methodology[:6]}" if (safe_test_case_id or safe_methodology) else "default")
-        png_filename = f"source_snapshot_{fallback_id}.png"
-
-    # Strictly ensure png_filename is a safe file name without path separators
-    png_filename = Path(png_filename).name
-    png_path = (evidence_dir / png_filename).resolve()
-
-    if not png_path.is_relative_to(evidence_dir):
-        logger.warning(f"[SOURCE_SNAPSHOT 400] Path traversal attempt detected: {png_filename}")
+    # Path Traversal Protection
+    if evidence_id and (".." in evidence_id or "/" in evidence_id or "\\" in evidence_id):
+        logger.warning(f"[SOURCE_SNAPSHOT 400] Path traversal attempt detected: {evidence_id}")
         raise HTTPException(status_code=400, detail="Invalid evidence parameters.")
 
-    render_script = Path(__file__).parent.parent.parent / "render" / "render_snapshot.js"
+    from app.services.dsd_source_snapshot_service import DSDSourceSnapshotService
 
-    # Cache check: return cached PNG if file exists, has size > 0, and is not older than render_snapshot.js
-    if png_path.exists() and png_path.stat().st_size > 0:
-        if render_script.exists() and png_path.stat().st_mtime >= render_script.stat().st_mtime:
-            logger.info(f"[SOURCE_SNAPSHOT CACHE HIT] {png_path} ({png_path.stat().st_size} bytes)")
-            return FileResponse(path=png_path, media_type="image/png")
-        else:
-            logger.info(f"[SOURCE_SNAPSHOT CACHE INVALIDATED] {png_path} is older than render_snapshot.js. Regenerating...")
-    
-    # Try to find node executable path (fallback if 'node' not in PATH)
-    node_cmd = "node"
-    args: list[str] = [
-        str(render_script),
-        str(source_path),
-        str(png_path),
-        section or "",
-        str(run.report_id or ""),
-        methodology or "",
-        target_field or "",
-        evidence_scope or "",
-        test_case_id or ""
-    ]
-    
-    logger.info(f"[SOURCE_SNAPSHOT RENDER] Starting render_snapshot.js for {png_path.name}...")
     try:
-        res = subprocess.run(
-            [node_cmd] + args,
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace"
+        snapshot_file = DSDSourceSnapshotService.get_or_generate_snapshot(
+            db=db,
+            run_id=run_id,
+            evidence_id=evidence_id,
+            section=section,
+            methodology=methodology,
+            target_field=target_field,
+            evidence_scope=evidence_scope,
+            test_case_id=test_case_id,
         )
-        logger.info(f"[SOURCE_SNAPSHOT RENDER STDOUT] {res.stdout.strip()}")
-    except FileNotFoundError:
-        # If 'node' is not in path, try hardcoded paths for this specific environment
-        try:
-            node_cmd = r"D:\Tools\node-v26.5.0-win-x64\node-v26.5.0-win-x64\node.exe"
-            res = subprocess.run(
-                [node_cmd] + args,
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace"
-            )
-            logger.info(f"[SOURCE_SNAPSHOT RENDER STDOUT] {res.stdout.strip()}")
-        except subprocess.CalledProcessError as sub_e:
-            logger.error(f"[SOURCE_SNAPSHOT PROCESS ERROR] Return code {sub_e.returncode}. Stderr: {sub_e.stderr}")
-            raise HTTPException(status_code=404, detail=f"Visual source preview unavailable: {sub_e.stderr or sub_e.stdout}")
-        except Exception as fallback_e:
-            logger.error(f"[SOURCE_SNAPSHOT NODE ERROR] Node execution failed: {fallback_e}")
-            raise HTTPException(status_code=404, detail=f"Visual source preview unavailable (Node not found: {str(fallback_e)})")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"[SOURCE_SNAPSHOT PROCESS ERROR] Return code {e.returncode}. Stderr: {e.stderr}")
-        raise HTTPException(status_code=404, detail=f"Visual source preview unavailable: {e.stderr or e.stdout}")
-    except Exception as e:
-        logger.error(f"[SOURCE_SNAPSHOT ERROR] {str(e)}")
-        raise HTTPException(status_code=404, detail=f"Visual source preview unavailable ({str(e)})")
+    except ValueError as ve:
+        logger.warning(f"[SOURCE_SNAPSHOT 404] Run {run_id} validation: {ve}")
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as exc:
+        logger.error(f"[SOURCE_SNAPSHOT ERROR] Run {run_id} snapshot failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=404, detail=f"Visual source preview unavailable: {exc}")
 
-    if not png_path.exists() or png_path.stat().st_size == 0:
-        logger.error(f"[SOURCE_SNAPSHOT MISSING] Output file {png_path} was not created or empty.")
-        raise HTTPException(status_code=404, detail="Visual source preview unavailable (image not saved)")
-        
-    logger.info(f"[SOURCE_SNAPSHOT CREATED] {png_path} ({png_path.stat().st_size} bytes)")
-    return FileResponse(path=png_path, media_type="image/png")
+    logger.info(f"[SOURCE_SNAPSHOT SERVED] Run {run_id}: {snapshot_file.name} ({snapshot_file.stat().st_size} bytes)")
+    return FileResponse(
+        path=snapshot_file,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"}
+    )
 
 
 @router.get("/runs/{run_id}/export/excel")
@@ -749,32 +671,48 @@ def get_evidence_image(
     if not evidence_id:
         raise HTTPException(status_code=400, detail="Invalid evidence ID.")
     
+    from app.services.dsd_source_snapshot_service import DSDSourceSnapshotService
+
     job_id_str = re.sub(r'[^a-zA-Z0-9_\-]', '', str(run.job_id or ""))
     run_id_str = str(run.id)
-    candidate_paths: list[Path] = [
-        Path("jobs") / job_id_str / "evidence" / evidence_id,
-        Path("jobs") / job_id_str / "evidence" / f"{evidence_id}.png",
-        Path("runs") / run_id_str / "evidence" / evidence_id,
-        Path("runs") / run_id_str / "evidence" / f"{evidence_id}.png",
-    ]
-    
-    allowed_bases = [
-        (Path("jobs") / job_id_str / "evidence").resolve(),
-        (Path("runs") / run_id_str / "evidence").resolve(),
-    ]
-    
+
+    candidate_paths: list[Path] = []
+    # Search across all candidate runs roots
+    for r_dir in DSDSourceSnapshotService.get_candidate_runs_dirs():
+        candidate_paths.append(r_dir / run_id_str / "evidence" / evidence_id)
+        candidate_paths.append(r_dir / run_id_str / "evidence" / f"{evidence_id}.png")
+        # Also check jobs/ directory beside runs/
+        j_dir = r_dir.parent / "jobs"
+        if job_id_str:
+            candidate_paths.append(j_dir / job_id_str / "evidence" / evidence_id)
+            candidate_paths.append(j_dir / job_id_str / "evidence" / f"{evidence_id}.png")
+
     img_path: Optional[Path] = None
     for p in candidate_paths:
         try:
             resolved_p = p.resolve()
-            if not any(resolved_p.is_relative_to(base) for base in allowed_bases):
-                continue
+            if resolved_p.exists() and resolved_p.is_file() and resolved_p.stat().st_size > 0:
+                img_path = resolved_p
+                break
         except (ValueError, RuntimeError):
             continue
-        if p.exists() and p.is_file() and p.stat().st_size > 0:
-            img_path = p
-            break
-            
+
+    if img_path is None:
+        # Fallback: attempt to generate or find through snapshot service
+        try:
+            img_path = DSDSourceSnapshotService.get_or_generate_snapshot(
+                db=db,
+                run_id=run.id,
+                evidence_id=evidence_id,
+                section="",
+                methodology="",
+                target_field="",
+                evidence_scope="",
+                test_case_id="",
+            )
+        except Exception:
+            pass
+
     if img_path is None:
         raise HTTPException(status_code=404, detail="Evidence image not found.")
         
