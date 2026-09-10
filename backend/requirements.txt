@@ -44,10 +44,12 @@ structlog==24.4.0
 
 # Phase 9 — RBAC, immutable audit logging, encryption at rest
 # pyjwt (not python-jose, which is less actively maintained) for JWT auth.
-# Password hashing uses stdlib hashlib.pbkdf2_hmac — no passlib/bcrypt
-# dependency needed. cryptography (AESGCM) for AES-256 encryption at rest.
+# Password hashing uses Argon2id (argon2-cffi) per NIST SP 800-63B / OWASP recommendations,
+# with fallback to stdlib hashlib.pbkdf2_hmac for legacy hash verification.
+# cryptography (AESGCM) for AES-256 encryption at rest.
 pyjwt==2.9.0
 cryptography==43.0.3
+argon2-cffi==23.1.0
 
 # Dev/test
 pytest==8.3.3
