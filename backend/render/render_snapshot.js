@@ -1868,8 +1868,10 @@ const JSZip = require('jszip');
                 const sourcePages = domResult.targetBlocks.map(b => `Page ${b.pageNumber}`).join(', ');
 
                 // Check expected targets
-                const isPRV027 = reportId.toUpperCase().includes("PRV") || reportId.toUpperCase().includes("027");
-                const expectedCount = isPRV027 ? 6 : Math.max(1, totalMappings);
+                // Accept whatever mappings were actually detected (require at least 1).
+                // Previously this used isPRV027 = reportId.includes("PRV") which incorrectly
+                // applied PRV-INT-027's 6-mapping expectation to ALL PRV reports.
+                const expectedCount = Math.max(1, totalMappings);
                 const evidenceComplete = (totalMappings >= expectedCount && totalMappings > 0) ? "YES" : "NO";
 
                 if (domResult.targetBlocks.length === 1) {

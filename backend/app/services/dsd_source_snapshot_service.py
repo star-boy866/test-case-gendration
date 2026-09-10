@@ -257,6 +257,60 @@ class DSDSourceSnapshotService:
     # -------------------------------------------------------------------------
     # Tier 2: Pure-Python DOCX Extractor & PIL Renderer
     # -------------------------------------------------------------------------
+
+    @classmethod
+    def _select_docx_table(cls, doc: Any, section: str, methodology: str, evidence_scope: str) -> Optional[Any]:
+        """
+        Selects the most relevant table from the DOCX for the given section/methodology.
+        Prefers section-keyword matching on the table's title/header row.
+        """
+        section_lower = (section or "").lower()
+        meth_lower = (methodology or "").lower()
+        scope_lower = (evidence_scope or "").lower()
+
+        # Map methodology/scope keywords to preferred table heading keywords
+        if (
+            "layout" in section_lower
+            or "layout" in scope_lower
+            or meth_lower == "layout_validation"
+            or "full_report_layout" in scope_lower
+        ):
+            priority_keywords = ["layout"]
+        elif (
+            "spec" in section_lower
+            or "specification" in scope_lower
+            or "report_body" in scope_lower
+            or "db_report" in meth_lower
+        ):
+            priority_keywords = ["specification", "spec"]
+        elif "definition" in section_lower:
+            priority_keywords = ["definition"]
+        else:
+            # For generic test-case evidence (schedule, db count, duplicate, etc.)
+            # prefer Report Definition which contains schedule / control / totals data
+            priority_keywords = ["definition"]
+
+        if not doc.tables:
+            return None
+
+        # Try preferred keywords first
+        for keyword in priority_keywords:
+            for table in doc.tables:
+                header_text = ""
+                if table.rows:
+                    # Deduplicate merged cells in header row
+                    seen = set()
+                    for cell in table.rows[0].cells:
+                        v = cell.text.strip()
+                        if v and v not in seen:
+                            header_text += " " + v
+                            seen.add(v)
+                if keyword in header_text.lower():
+                    return table
+
+        # Fallback: return first non-empty table
+        return doc.tables[0]
+
     @classmethod
     def render_tier2_docx(
         cls,
@@ -272,81 +326,226 @@ class DSDSourceSnapshotService:
         description: str,
     ) -> bool:
         """
-        Extracts the relevant paragraphs or table rows directly from source.docx
-        using python-docx and renders a clean, high-resolution authoritative snapshot card.
+        Extracts the relevant table directly from source.docx using python-docx and
+        renders a faithful document-page style image — white background, Word-like table
+        grid with actual DOCX content — instead of a synthetic summary card.
         """
         try:
-            import docx
-            doc = docx.Document(source_path)
+            import docx as _docx
+            doc = _docx.Document(source_path)
         except Exception as e:
             logger.warning(f"[TIER 2 WARN] Failed to open DOCX {source_path}: {e}")
             return False
 
-        # Identify relevant paragraphs / tables
-        extracted_rows: List[List[str]] = []
-        extracted_paragraphs: List[str] = []
-        search_terms = [
-            section.lower().strip(),
-            evidence_scope.lower().strip(),
-            target_field.lower().strip(),
-            report_id.lower().strip(),
-        ]
-        search_terms = [t for t in search_terms if t]
+        selected_table = cls._select_docx_table(doc, section, methodology, evidence_scope)
 
-        # 1. Search tables
-        for table in doc.tables:
-            matched_table = False
-            t_rows: List[List[str]] = []
-            for r in table.rows:
-                # Deduplicate merged cells
-                row_vals: List[str] = []
-                for c in r.cells:
-                    text = c.text.strip().replace("\n", " ")
-                    if not row_vals or text != row_vals[-1]:
-                        row_vals.append(text)
-                if any(row_vals):
-                    t_rows.append(row_vals)
-                    combined = " ".join(row_vals).lower()
-                    if any(st in combined for st in search_terms):
-                        matched_table = True
+        if selected_table is None:
+            logger.warning("[TIER 2 WARN] No tables found in DOCX; skipping Tier 2.")
+            return False
 
-            if matched_table and t_rows:
-                # Limit to top 14 rows for snapshot clarity
-                extracted_rows = t_rows[:14]
-                break
+        # Derive heading from the table's first row (full-width title cell)
+        doc_heading = section or ""
+        if selected_table.rows:
+            first_row_vals: List[str] = []
+            prev = None
+            for cell in selected_table.rows[0].cells:
+                v = cell.text.strip()
+                if v and v != prev:
+                    first_row_vals.append(v)
+                    prev = v
+            if first_row_vals:
+                # Prefer the table's own title text as heading
+                doc_heading = first_row_vals[0][:120]
 
-        # 2. Search paragraphs if no table matched or for supplemental context
-        for p in doc.paragraphs:
-            text = p.text.strip()
-            if text:
-                lower = text.lower()
-                if any(st in lower for st in search_terms):
-                    extracted_paragraphs.append(text)
-                    if len(extracted_paragraphs) >= 6:
-                        break
-
-        # Fallback to initial paragraphs if empty
-        if not extracted_rows and not extracted_paragraphs:
-            for p in doc.paragraphs[:8]:
-                if p.text.strip():
-                    extracted_paragraphs.append(p.text.strip())
-
-        # Render image via PIL
-        return cls._draw_evidence_card(
+        logger.info(f"[TIER 2 DOCX] Rendering document-page image for '{doc_heading}' from {source_path.name}")
+        return cls._draw_docx_document_page(
             png_path=png_path,
-            doc_name=source_path.name,
+            docx_table=selected_table,
+            section_heading=doc_heading,
             report_id=report_id,
             report_title=report_title,
-            section=section,
-            methodology=methodology,
-            target_field=target_field,
-            evidence_scope=evidence_scope,
-            test_case_id=test_case_id,
-            description=description,
-            table_rows=extracted_rows,
-            paragraphs=extracted_paragraphs,
-            source_badge="EXTRACTED FROM SOURCE DSD (.DOCX)",
+            source_docx_name=source_path.name,
+            max_rows=40,
         )
+
+    # -------------------------------------------------------------------------
+    # Document-Page Renderer (used by Tier 2)
+    # -------------------------------------------------------------------------
+    @classmethod
+    def _draw_docx_document_page(
+        cls,
+        png_path: Path,
+        docx_table: Any,
+        section_heading: str,
+        report_id: str,
+        report_title: str,
+        source_docx_name: str,
+        max_rows: int = 40,
+    ) -> bool:
+        """
+        Renders a faithful Word-document-style page image from a python-docx Table.
+
+        Visual output mimics a screenshot of a real Word document:
+          - Off-white page background with subtle shadow border
+          - Blue full-width title row (matching Word's default heading table style)
+          - Alternating white/light-gray data rows with grid borders
+          - Actual cell text from the DOCX -- NOT a synthetic summary
+
+        This replaces the old synthetic dark-card renderer for Tier 2 fallback.
+        """
+        # --- 1. Extract rows (deduplicate merged cells per row) ---------------
+        raw_rows: List[List[str]] = []
+        for row in docx_table.rows[:max_rows]:
+            row_vals: List[str] = []
+            prev_val: Optional[str] = None
+            for cell in row.cells:
+                v = cell.text.strip().replace("\n", " ").replace("\t", "  ")
+                if v != prev_val:
+                    row_vals.append(v)
+                    prev_val = v
+            if any(row_vals):
+                raw_rows.append(row_vals)
+
+        if not raw_rows:
+            logger.warning("[TIER 2 DOCX PAGE] No rows extracted from selected table.")
+            return False
+
+        # --- 2. Layout constants ----------------------------------------------
+        PAGE_W = 1240
+        MARGIN_X = 50
+        MARGIN_TOP = 48
+        MARGIN_BOT = 44
+        CONTENT_W = PAGE_W - 2 * MARGIN_X
+        ROW_H = 28
+        HEADER_ROW_H = 36
+        MIN_COL_W = 80
+
+        f_title, f_sub, f_head, f_body = cls._get_fonts()
+
+        # --- 3. Calculate column layout ----------------------------------------
+        max_cols = 1
+        for row_vals in raw_rows:
+            if len(row_vals) > 1:
+                max_cols = max(max_cols, len(row_vals))
+        max_cols = min(max_cols, 8)
+
+        col_w = max(MIN_COL_W, CONTENT_W // max(1, max_cols))
+
+        # --- 4. Calculate total image height ----------------------------------
+        total_h = MARGIN_TOP
+        for row_vals in raw_rows:
+            total_h += HEADER_ROW_H if len(row_vals) <= 1 else ROW_H
+        total_h += MARGIN_BOT + 60
+        total_h = max(500, total_h)
+
+        # --- 5. Create image --------------------------------------------------
+        img = Image.new("RGB", (PAGE_W, total_h), color=(220, 220, 220))
+        draw = ImageDraw.Draw(img)
+
+        # White page area with shadow-like border
+        page_x1, page_y1 = 10, 10
+        page_x2, page_y2 = PAGE_W - 10, total_h - 10
+        draw.rectangle(
+            [(page_x1, page_y1), (page_x2, page_y2)],
+            fill=(255, 255, 255),
+            outline=(160, 160, 160),
+            width=1,
+        )
+
+        # --- 6. Render rows ---------------------------------------------------
+        current_y = page_y1 + MARGIN_TOP
+
+        # Word 2016 default table header palette
+        WORD_BLUE_DARK  = (31, 73, 125)    # #1F497D
+        WORD_BLUE_LIGHT = (189, 215, 238)  # #BDD7EE
+        WORD_TEXT_WHITE = (255, 255, 255)
+        WORD_TEXT_DARK  = (0,   0,   0)
+        ROW_ALT_WHITE   = (255, 255, 255)
+        ROW_ALT_GRAY    = (242, 242, 242)  # #F2F2F2
+        GRID_COLOR      = (166, 166, 166)  # #A6A6A6
+
+        data_row_idx = 0
+
+        for r_idx, row_vals in enumerate(raw_rows):
+            is_full_span = len(row_vals) <= 1
+
+            if is_full_span:
+                rh = HEADER_ROW_H
+                bg = WORD_BLUE_DARK
+                text_col = WORD_TEXT_WHITE
+                use_font = f_head
+            elif r_idx == 0:
+                rh = ROW_H
+                bg = WORD_BLUE_LIGHT
+                text_col = WORD_TEXT_DARK
+                use_font = f_head
+            else:
+                rh = ROW_H
+                bg = ROW_ALT_WHITE if data_row_idx % 2 == 0 else ROW_ALT_GRAY
+                text_col = WORD_TEXT_DARK
+                use_font = f_body
+                data_row_idx += 1
+
+            row_x1 = MARGIN_X
+            row_x2 = MARGIN_X + CONTENT_W
+            row_y2 = current_y + rh
+            draw.rectangle(
+                [(row_x1, current_y), (row_x2, row_y2)],
+                fill=bg,
+                outline=GRID_COLOR,
+                width=1,
+            )
+
+            if is_full_span:
+                val = row_vals[0][:140] if row_vals else ""
+                draw.text(
+                    (row_x1 + 10, current_y + (rh - 14) // 2),
+                    val,
+                    fill=text_col,
+                    font=use_font,
+                )
+            else:
+                for c_idx in range(max_cols):
+                    val = str(row_vals[c_idx]).strip() if c_idx < len(row_vals) else ""
+                    cell_x = MARGIN_X + c_idx * col_w
+                    if c_idx > 0:
+                        draw.line(
+                            [(cell_x, current_y), (cell_x, row_y2)],
+                            fill=GRID_COLOR,
+                            width=1,
+                        )
+                    max_chars = max(8, col_w // 7)
+                    disp_val = val[:max_chars] + ("\u2026" if len(val) > max_chars else "")
+                    draw.text(
+                        (cell_x + 6, current_y + (rh - 12) // 2),
+                        disp_val,
+                        fill=text_col,
+                        font=use_font,
+                    )
+
+            current_y = row_y2
+
+        # --- 7. Footer --------------------------------------------------------
+        footer_y = page_y2 - MARGIN_BOT
+        draw.line(
+            [(MARGIN_X, footer_y), (PAGE_W - MARGIN_X, footer_y)],
+            fill=(200, 200, 200),
+            width=1,
+        )
+        footer_text = f"{source_docx_name}  |  {report_id} \u2014 {report_title}"
+        draw.text((MARGIN_X, footer_y + 8), footer_text[:130], fill=(100, 100, 100), font=f_body)
+
+        # --- 8. Save ----------------------------------------------------------
+        png_path.parent.mkdir(parents=True, exist_ok=True)
+        img.save(png_path, format="PNG", optimize=True)
+        logger.info(
+            "[TIER 2 DOCX PAGE] Saved document-page snapshot: %s (%dx%d, %d bytes)",
+            png_path.name,
+            img.size[0],
+            img.size[1],
+            png_path.stat().st_size,
+        )
+        return True
 
     # -------------------------------------------------------------------------
     # Tier 3: Pure-Python Authoritative DB Metadata Snapshot Renderer
