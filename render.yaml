@@ -1,0 +1,16 @@
+# Render Blueprint Configuration
+# Deploying backend via Docker provides LibreOffice + fonts + Python runtime for genuine Tier 2 document-page rendering.
+
+services:
+  - type: web
+    name: cognos-testcase-backend
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: standard
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PORT
+        value: 8000

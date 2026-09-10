@@ -18,7 +18,9 @@ Strictly enforces:
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -132,18 +134,54 @@ class DSDSourceSnapshotService:
         return primary
 
     @classmethod
-    def find_cached_snapshot(cls, run_id: int, png_filename: str) -> Optional[Path]:
+    def find_cached_snapshot(
+        cls,
+        run_id: int,
+        png_filename: str,
+        evidence_id: Optional[str] = None,
+        test_case_id: Optional[str] = None,
+    ) -> Optional[Path]:
         """
-        Searches all candidate runs directories for an existing, non-empty PNG snapshot.
+        Searches all candidate runs directories for an existing authentic snapshot.
+        Checks:
+          1. Direct png_filename match
+          2. Sanitized evidence_id variations
+          3. Test case ID pattern matching (e.g. *PRV008-EXEC-01*.png)
+        Ensures existing authentic snapshots are returned immediately and never overwritten.
         """
-        safe_name = Path(png_filename).name
+        candidate_names: List[str] = [Path(png_filename).name]
+
+        if evidence_id:
+            clean_ev = Path(evidence_id).name
+            candidate_names.append(clean_ev)
+            if not clean_ev.endswith(".png"):
+                candidate_names.append(f"{clean_ev}.png")
+                candidate_names.append(f"source_snapshot_{clean_ev}.png")
+            else:
+                candidate_names.append(f"source_snapshot_{clean_ev}")
+
         for r_dir in cls.get_candidate_runs_dirs():
-            cand = r_dir / str(run_id) / "evidence" / safe_name
-            if cand.exists() and cand.is_file() and cand.stat().st_size > 0:
-                return cand
-            cand_legacy = r_dir / "evidence" / safe_name
+            ev_dir = r_dir / str(run_id) / "evidence"
+            if ev_dir.exists() and ev_dir.is_dir():
+                # 1. Exact candidate filename checks
+                for name in candidate_names:
+                    cand = ev_dir / name
+                    if cand.exists() and cand.is_file() and cand.stat().st_size > 0:
+                        return cand
+
+                # 2. Test case ID matching (e.g. source_snapshot_snapshot_PRV008-EXEC-01_SCHEDU.png)
+                if test_case_id:
+                    clean_tc = re.sub(r"[^a-zA-Z0-9_\-]", "", test_case_id)
+                    if clean_tc:
+                        for existing_file in ev_dir.glob(f"*{clean_tc}*.png"):
+                            if existing_file.is_file() and existing_file.stat().st_size > 0:
+                                return existing_file
+
+            # Check legacy root evidence path
+            cand_legacy = r_dir / "evidence" / Path(png_filename).name
             if cand_legacy.exists() and cand_legacy.is_file() and cand_legacy.stat().st_size > 0:
                 return cand_legacy
+
         return None
 
     # -------------------------------------------------------------------------
@@ -255,7 +293,153 @@ class DSDSourceSnapshotService:
         return False
 
     # -------------------------------------------------------------------------
-    # Tier 2: Pure-Python DOCX Extractor & PIL Renderer
+    # Tier 2: Genuine Document Rendering (DOCX -> PDF -> Page Image)
+    # -------------------------------------------------------------------------
+    @classmethod
+    def _find_soffice_binary(cls) -> Optional[str]:
+        """Locates headless LibreOffice / soffice across Linux/Render and Windows."""
+        for env_var in ["LIBREOFFICE_PATH", "SOFFICE_PATH"]:
+            val = os.environ.get(env_var)
+            if val and Path(val).exists():
+                return val
+
+        for name in ["soffice", "libreoffice"]:
+            p = shutil.which(name)
+            if p:
+                return p
+
+        # Standard Linux paths (Docker / Render Debian/Ubuntu)
+        for linux_path in [
+            "/usr/bin/soffice",
+            "/usr/bin/libreoffice",
+            "/usr/lib/libreoffice/program/soffice",
+            "/usr/local/bin/soffice",
+            "/usr/local/bin/libreoffice",
+        ]:
+            if Path(linux_path).exists():
+                return linux_path
+
+        # Standard Windows paths
+        for win_path in [
+            r"C:\Program Files\LibreOffice\program\soffice.exe",
+            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+        ]:
+            if Path(win_path).exists():
+                return win_path
+
+        return None
+
+    @classmethod
+    def convert_docx_to_pdf(cls, source_path: Path) -> Optional[Path]:
+        """
+        Converts source.docx to authentic source.pdf using LibreOffice headless.
+        Caches the resulting PDF beside source.docx for fast reuse.
+        """
+        soffice_bin = cls._find_soffice_binary()
+        if not soffice_bin:
+            logger.info("[TIER 2 SKIP] soffice/libreoffice binary not present in environment.")
+            return None
+
+        pdf_path = source_path.with_suffix(".pdf")
+        if pdf_path.exists() and pdf_path.stat().st_size > 0:
+            return pdf_path
+
+        try:
+            cmd = [
+                soffice_bin,
+                "--headless",
+                "--invisible",
+                "--nologo",
+                "--nodefault",
+                "--nofirststartwizard",
+                "--nolockcheck",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(source_path.parent),
+                str(source_path),
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if pdf_path.exists() and pdf_path.stat().st_size > 0:
+                logger.info(f"[TIER 2 CONVERT] DOCX -> PDF: {source_path.name} -> {pdf_path.name} ({pdf_path.stat().st_size} bytes)")
+                return pdf_path
+            else:
+                logger.warning(f"[TIER 2 CONVERT WARN] soffice exit {res.returncode}: {res.stderr.strip()[:200]}")
+        except Exception as e:
+            logger.warning(f"[TIER 2 CONVERT ERROR] {e}")
+
+        return None
+
+    @classmethod
+    def render_pdf_page_to_png(cls, pdf_path: Path, page_number: int, png_path: Path) -> bool:
+        """
+        Renders the requested page of an authentic PDF to a sharp PNG image.
+        Uses pypdfium2 (Google PDFium) first, falling back to PyMuPDF (fitz).
+        Renders the REAL document page with original Word fonts, tables, headers,
+        and spacing without any synthetic reconstruction or annotations.
+        """
+        if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+            return False
+
+        # 1. Preferred: pypdfium2
+        try:
+            import pypdfium2 as pdfium
+            pdf = pdfium.PdfDocument(str(pdf_path))
+            num_pages = len(pdf)
+            if num_pages > 0:
+                target_idx = max(0, min(page_number - 1, num_pages - 1))
+                page = pdf.get_page(target_idx)
+                # scale=2.0 renders at ~144 DPI for crisp document text
+                bitmap = page.render(scale=2.0)
+                pil_img = bitmap.to_pil()
+                png_path.parent.mkdir(parents=True, exist_ok=True)
+                pil_img.save(png_path, format="PNG", optimize=True)
+                logger.info(f"[TIER 2 RENDER SUCCESS] pypdfium2 rendered page {target_idx + 1}/{num_pages} -> {png_path.name} ({png_path.stat().st_size} bytes)")
+                return True
+        except ImportError:
+            pass
+        except Exception as ex:
+            logger.warning(f"[TIER 2 RENDER] pypdfium2 failed ({ex}), trying fitz...")
+
+        # 2. PyMuPDF (fitz) fallback
+        try:
+            import fitz
+            doc = fitz.open(str(pdf_path))
+            if len(doc) > 0:
+                target_idx = max(0, min(page_number - 1, len(doc) - 1))
+                page = doc.load_page(target_idx)
+                pix = page.get_pixmap(dpi=150)
+                png_path.parent.mkdir(parents=True, exist_ok=True)
+                pix.save(str(png_path))
+                logger.info(f"[TIER 2 RENDER SUCCESS] fitz rendered page {target_idx + 1}/{len(doc)} -> {png_path.name}")
+                return True
+        except ImportError:
+            pass
+        except Exception as ex:
+            logger.warning(f"[TIER 2 RENDER] fitz failed: {ex}")
+
+        return False
+
+    @classmethod
+    def render_tier2_docx_pdf(
+        cls,
+        source_path: Path,
+        png_path: Path,
+        page_number: int = 1,
+    ) -> bool:
+        """
+        Tier 2 Genuine Document Rendering:
+        Converts source.docx to authentic source.pdf, then renders the exact
+        requested document page to PNG.
+        Produces visual output identical to the original Word document page.
+        """
+        pdf_path = cls.convert_docx_to_pdf(source_path)
+        if not pdf_path:
+            return False
+        return cls.render_pdf_page_to_png(pdf_path, page_number, png_path)
+
+    # -------------------------------------------------------------------------
+    # Legacy Table Extractor (retained for auxiliary inspection)
     # -------------------------------------------------------------------------
 
     @classmethod
@@ -804,10 +988,51 @@ class DSDSourceSnapshotService:
 
         png_filename = Path(png_filename).name
 
-        # 1. Check existing cache
-        cached = cls.find_cached_snapshot(run_id, png_filename)
+        # Resolve page_number from test case metadata
+        page_number = 1
+        if test_case_id:
+            from app.models.cognos_orm import CognosTestCaseModel
+            tc = (
+                db.query(CognosTestCaseModel)
+                .filter(
+                    CognosTestCaseModel.run_id == run_id,
+                    CognosTestCaseModel.test_case_id == test_case_id,
+                )
+                .first()
+            )
+            if tc:
+                # Check matching evidence references first
+                for ev in (tc.evidence_references or []):
+                    if (
+                        (evidence_id and ev.get("evidence_id") == evidence_id)
+                        or (evidence_scope and ev.get("evidence_scope") == evidence_scope)
+                        or (methodology and ev.get("methodology") == methodology)
+                    ):
+                        if ev.get("page_number"):
+                            try:
+                                page_number = int(ev["page_number"])
+                                break
+                            except (ValueError, TypeError):
+                                pass
+                else:
+                    if tc.source_page and str(tc.source_page).isdigit():
+                        page_number = int(tc.source_page)
+                    elif tc.evidence_references and tc.evidence_references[0].get("page_number"):
+                        try:
+                            page_number = int(tc.evidence_references[0]["page_number"])
+                        except (ValueError, TypeError):
+                            pass
+        elif methodology == "LAYOUT_VALIDATION" or evidence_scope == "FULL_REPORT_LAYOUT":
+            page_number = 10
+        elif methodology == "DB_REPORT_DATA_VALIDATION" or evidence_scope == "REPORT_BODY_MAPPING":
+            page_number = 10
+
+        # 1. Check existing authentic snapshots FIRST
+        cached = cls.find_cached_snapshot(run_id, png_filename, evidence_id=evidence_id, test_case_id=test_case_id)
         if cached:
-            logger.info(f"[SNAPSHOT CACHE HIT] Serving cached snapshot: {cached}")
+            logger.info(
+                f"run={run_id} evidence={evidence_id or Path(png_filename).stem} page={page_number} renderer=cached_authentic status=success path={cached.name}"
+            )
             return cached
 
         # Resolve paths
@@ -832,28 +1057,28 @@ class DSDSourceSnapshotService:
                 test_case_id=test_case_id,
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
+                logger.info(
+                    f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier1_playwright status=success path={png_path.name}"
+                )
                 return png_path
 
-        # 3. Tier 2: Pure-Python DOCX extraction if source.docx exists
+        # 3. Tier 2: Genuine Document Rendering (DOCX -> PDF -> Page image)
         if source_path and source_path.exists():
-            logger.info(f"[SNAPSHOT TIER 2] Rendering via pure-python docx extractor for {png_filename}...")
-            success = cls.render_tier2_docx(
+            success = cls.render_tier2_docx_pdf(
                 source_path=source_path,
                 png_path=png_path,
-                section=section,
-                report_id=str(run.report_id or ""),
-                report_title=str(run.report_title or ""),
-                methodology=methodology,
-                target_field=target_field,
-                evidence_scope=evidence_scope,
-                test_case_id=test_case_id,
-                description=desc,
+                page_number=page_number,
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
+                logger.info(
+                    f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier2_docx_pdf status=success path={png_path.name}"
+                )
                 return png_path
 
-        # 4. Tier 3: Pure-Python Authoritative DB Metadata Snapshot
-        logger.info(f"[SNAPSHOT TIER 3] Rendering via authoritative DB metadata for {png_filename}...")
+        # 4. Tier 3: Pure-Python Authoritative DB Metadata Snapshot (Fallback)
+        logger.warning(
+            f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier3_synthetic status=fallback path={png_path.name}"
+        )
         success = cls.render_tier3_db(
             db=db,
             run_id=run_id,

@@ -65,3 +65,4 @@ sqlglot==25.2.0
 
 # Phase 11.6 - DOCX to PDF snapshot rendering
 pymupdf
+pypdfium2>=5.0.0

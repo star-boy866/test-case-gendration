@@ -10,6 +10,13 @@ RUN pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -r requirements.t
 
 FROM python:3.12-slim
 
+# Install LibreOffice headless & fonts for genuine Tier 2 DOCX->PDF->Page document rendering
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-writer-nogui \
+    fonts-liberation \
+    fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create a non-root user
 RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
