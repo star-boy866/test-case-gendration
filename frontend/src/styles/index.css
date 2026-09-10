@@ -116,6 +116,76 @@
   animation: beamDash 4s linear infinite;
 }
 
+/* ── Ambient Data Flow Background Animations (16s–26s) ── */
+@keyframes flowDashForward {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -320;
+  }
+}
+
+@keyframes flowDashReverse {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: 320;
+  }
+}
+
+@keyframes softGlowPulse {
+  0%, 100% {
+    opacity: 0.08;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.14;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes nodeGlowPulse {
+  0%, 100% {
+    opacity: 0.40;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.22);
+  }
+}
+
+.animate-flow-dash-1 {
+  stroke-dasharray: 10 16;
+  animation: flowDashForward 18s linear infinite;
+}
+
+.animate-flow-dash-2 {
+  stroke-dasharray: 8 14;
+  animation: flowDashReverse 22s linear infinite;
+}
+
+.animate-flow-dash-3 {
+  stroke-dasharray: 12 18;
+  animation: flowDashForward 25s linear infinite;
+}
+
+.animate-flow-dash-4 {
+  stroke-dasharray: 6 12;
+  animation: flowDashReverse 20s linear infinite;
+}
+
+.animate-glow-bloom {
+  animation: softGlowPulse 12s ease-in-out infinite;
+}
+
+.animate-node-pulse {
+  transform-origin: center;
+  animation: nodeGlowPulse 7s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after {
     animation-duration: 0.01ms !important;
@@ -134,8 +204,15 @@
   .particle-drift-5,
   .particle-drift-6,
   .particle-drift-7,
-  .particle-drift-8 {
+  .particle-drift-8,
+  .animate-flow-dash-1,
+  .animate-flow-dash-2,
+  .animate-flow-dash-3,
+  .animate-flow-dash-4,
+  .animate-glow-bloom,
+  .animate-node-pulse {
     animation: none !important;
   }
 }
+
 

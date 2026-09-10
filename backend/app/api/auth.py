@@ -1,83 +1,60 @@
 """
-Auth endpoints — Phase 9.
+Authentication API Endpoints.
 
-Bootstrap story: user creation normally requires 'admin' role (see
-require_role below), which is a chicken-and-egg problem for the very first
-account. Resolved the same way many self-hosted apps do it (Gitea,
-Django's createsuperuser being the notable exception that needs a CLI
-instead) — if the `users` table is completely empty, the next
-registration is automatically granted 'admin' with no auth required.
-Once at least one user exists, every subsequent registration requires an
-authenticated admin (via POST /users instead). This means the window
-where an unauthenticated request can create an admin account is exactly
-"before anyone has ever registered" — normal deployment practice is to do
-this once, immediately after first startup, before exposing the port
-publicly.
-
-Also exposes admin-only visibility into the audit trail
-(GET /audit-log, GET /audit-log/verify) — before this phase, audit log
-rows existed in the database but there was no way to actually view them
-through the API at all, which undermines the Explainability requirement
-in practice even though the rows were being written correctly.
+Implements:
+- 2-Stage secure login with Argon2id and TOTP RFC 6238 MFA
+- First-login forced password change
+- 5-strike account lockout prevention
+- Self-service access request (registration) for Pending users
+- HttpOnly cookie and Bearer token session management
+- Immediate session revocation and "Log out from all devices"
+- Re-authentication for high-security actions
 """
 
 from __future__ import annotations
 
-from typing import List
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any, cast
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Body, Header, Cookie
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
-from app.core.rbac import require_role, get_current_user, CurrentUser
-from app.core.security import hash_password, create_access_token
-from app.core.immutable_audit import verify_audit_chain
-from app.services.user_service import authenticate_user
+from app.core.config import settings
+from app.core.rbac import get_current_user, CurrentUser, require_role
+from app.core.security import (
+    verify_password,
+    hash_password,
+    validate_password_strength,
+    create_access_token,
+    decode_access_token,
+    TokenError,
+)
 from app.db.session import get_db
 from app.models.user import User
+from app.models.rbac import AccessRequest, UserSession
 from app.models.audit import AuditLogEntry
+from app.services.session_service import (
+    create_session,
+    revoke_session,
+    revoke_all_user_sessions,
+    list_user_sessions,
+    touch_session_reauth,
+)
+from app.services.mfa_service import (
+    setup_mfa,
+    confirm_mfa_setup,
+    verify_login_mfa,
+)
+from app.services.user_service import (
+    is_account_locked,
+    handle_failed_login,
+    reset_failed_logins,
+    change_user_password,
+)
+from app.services.approval_service import submit_access_request, ApprovalError
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-_VALID_ROLES = {"tester", "approver", "admin"}
-
-
-class RegisterRequest(BaseModel):
-    username: str
-    password: str
-    role: str = "tester"
-
-    @field_validator("username")
-    @classmethod
-    def username_not_blank(cls, v: str) -> str:
-        v = v.strip()
-        if len(v) < 3:
-            raise ValueError("username must be at least 3 characters")
-        return v
-
-    @field_validator("password")
-    @classmethod
-    def password_minimum_length(cls, v: str) -> str:
-        # 12 chars, not full NIST 800-63B entropy scoring — enterprise
-        # deployments should layer on their own SSO/password policy in
-        # front of this if stronger requirements are needed.
-        if len(v) < 12:
-            raise ValueError("password must be at least 12 characters")
-        return v
-
-    @field_validator("role")
-    @classmethod
-    def role_must_be_known(cls, v: str) -> str:
-        if v not in _VALID_ROLES:
-            raise ValueError(f"role must be one of {sorted(_VALID_ROLES)}")
-        return v
-
-
-class UserResponse(BaseModel):
-    id: int
-    username: str
-    role: str
-    is_active: bool
 
 
 class LoginRequest(BaseModel):
@@ -85,150 +62,578 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class LoginResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    role: str
+class MfaVerifyRequest(BaseModel):
+    mfa_ticket: Optional[str] = None
+    temp_token: Optional[str] = None
+    code: str  # 6-digit TOTP code or 9-char backup recovery code
 
 
-@router.post("/register", response_model=UserResponse)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)):
-    """
-    Unauthenticated ONLY while the users table is empty (bootstrap). Once
-    any user exists, this always refuses — subsequent accounts are created
-    via the authenticated POST /users below instead.
-    """
-    if db.query(User).count() > 0:
-        raise HTTPException(
-            status_code=403,
-            detail="Registration is closed — an account already exists. "
-                   "An admin must create additional accounts via POST /api/auth/users.",
-        )
+class MfaConfirmRequest(BaseModel):
+    code: str
 
-    user = User(
-        username=payload.username,
-        hashed_password=hash_password(payload.password),
-        role="admin",  # the bootstrap account is always admin, regardless of the requested role
-        is_active=True,
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+    username: Optional[str] = None
+    temp_token: Optional[str] = None
+
+
+class AccessRegistrationRequest(BaseModel):
+    username: str
+    password: str
+    requested_role: str = "tester"  # tester | admin
+    reason: str
+
+    @field_validator("username")
+    @classmethod
+    def username_valid(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("Username must be at least 3 characters.")
+        return v
+
+    @field_validator("requested_role")
+    @classmethod
+    def role_valid(cls, v: str) -> str:
+        v = v.lower().strip()
+        if v not in ("tester", "admin"):
+            raise ValueError("Requested role must be 'tester' or 'admin'.")
+        return v
+
+
+class ReauthRequest(BaseModel):
+    password: str
+
+
+def _set_session_cookie(response: Response, session_token: str) -> None:
+    """Sets a secure, HttpOnly, SameSite cookie containing the session token."""
+    response.set_cookie(
+        key="session_id",
+        value=session_token,
+        httponly=True,
+        samesite="lax",
+        secure=False,  # Set to True in HTTPS/production deployments
+        max_age=settings.SESSION_LIFETIME_TESTER_SECONDS,
+        path="/",
     )
-    db.add(user)
-    db.flush()
-
-    db.add(AuditLogEntry(
-        user_id=payload.username,
-        event_type="USER_CREATED",
-        detail=f'{{"username": "{payload.username}", "role": "admin", "bootstrap": true}}',
-    ))
-    db.commit()
-    db.refresh(user)
-
-    return UserResponse(id=user.id, username=user.username, role=user.role, is_active=user.is_active)
 
 
-@router.post("/users", response_model=UserResponse)
-def create_user(
-    payload: RegisterRequest,
-    db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(require_role("admin")),
-):
-    """Admin-only account creation, once the bootstrap account exists."""
-    if db.query(User).filter(User.username == payload.username).first() is not None:
-        raise HTTPException(status_code=409, detail=f"Username '{payload.username}' already exists.")
-
-    user = User(
-        username=payload.username,
-        hashed_password=hash_password(payload.password),
-        role=payload.role,
-        is_active=True,
-    )
-    db.add(user)
-    db.flush()
-
-    db.add(AuditLogEntry(
-        user_id=current_user.username,
-        event_type="USER_CREATED",
-        detail=f'{{"username": "{payload.username}", "role": "{payload.role}", "created_by": "{current_user.username}"}}',
-    ))
-    db.commit()
-    db.refresh(user)
-
-    return UserResponse(id=user.id, username=user.username, role=user.role, is_active=user.is_active)
+def _clear_session_cookie(response: Response) -> None:
+    """Clears the session cookie."""
+    response.delete_cookie(key="session_id", path="/")
 
 
-@router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    # Deliberately identical error for "no such user" and "wrong password" —
-    # distinguishing them lets an attacker enumerate valid usernames.
-    # authenticate_user() itself already preserves that property; this
-    # endpoint just adds the audit trail on top.
-    invalid_credentials = HTTPException(status_code=401, detail="Invalid username or password.")
+@router.post("/login")
+def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    """
+    Step 1 of login:
+    - Verifies credentials
+    - Checks for lockout
+    - Routes to MUST_CHANGE_PASSWORD, MFA_REQUIRED, MFA_SETUP_REQUIRED, or SUCCESS
+    """
+    generic_error = HTTPException(status_code=401, detail="Invalid username or password.")
 
-    user = authenticate_user(db, username=payload.username, password=payload.password)
-    if user is None:
+    user = db.query(User).filter(User.username == payload.username.strip()).first()
+    if not user:
+        # Record failed attempt to audit log
         db.add(AuditLogEntry(user_id=payload.username, event_type="LOGIN_FAILED", detail=None))
         db.commit()
-        raise invalid_credentials
+        raise generic_error
 
-    token = create_access_token(subject=user.username, role=user.role)
+    # Check account lockout
+    locked, remaining_minutes = is_account_locked(user)
+    if locked:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Account is temporarily locked due to repeated failed login attempts. Please try again in {remaining_minutes} minute(s).",
+        )
+
+    # Verify password
+    if not verify_password(payload.password, str(user.hashed_password)):
+        is_locked_now = handle_failed_login(db, user)
+        db.add(AuditLogEntry(user_id=user.username, event_type="LOGIN_FAILED", detail=None))
+        db.commit()
+        if is_locked_now:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Account has been locked for {settings.ACCOUNT_LOCKOUT_MINUTES} minutes due to repeated failed login attempts.",
+            )
+        raise generic_error
+
+    # Credentials valid -> reset failed attempts
+    reset_failed_logins(db, user)
+
+    # Check status
+    if not user.is_active or user.status == "SUSPENDED":
+        raise HTTPException(status_code=403, detail="Account has been suspended. Please contact an administrator.")
+    if user.status == "REVOKED":
+        raise HTTPException(status_code=403, detail="Account has been revoked.")
+
+    user_info = {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "status": user.status,
+        "must_change_password": user.must_change_password,
+        "mfa_enabled": user.mfa_enabled,
+    }
+
+    # Case 1: First login password change required
+    if user.must_change_password:
+        temp_token = create_access_token(
+            subject=str(user.username),
+            role=str(user.role),
+            expires_seconds=900,  # 15 minutes to change password
+        )
+        return {
+            "status": "MUST_CHANGE_PASSWORD",
+            "temp_token": temp_token,
+            "message": "Password change required before accessing the application.",
+            "user": user_info,
+        }
+
+    # Case 2: Pending access approval
+    if user.status == "PENDING" or user.role == "pending":
+        temp_token = create_access_token(
+            subject=str(user.username),
+            role="pending",
+            expires_seconds=7200,
+        )
+        return {
+            "status": "PENDING_APPROVAL",
+            "temp_token": temp_token,
+            "message": "Your access request is currently pending administrative approval.",
+            "user": user_info,
+        }
+
+    # Case 3: MFA is enabled -> require 6-digit TOTP code
+    if settings.MFA_ENABLED and user.mfa_enabled:
+        mfa_ticket = create_access_token(
+            subject=str(user.username),
+            role="mfa_pending",
+            expires_seconds=300,  # 5 minutes to submit code
+        )
+        return {
+            "status": "MFA_REQUIRED",
+            "mfa_ticket": mfa_ticket,
+            "temp_token": mfa_ticket,
+            "message": "Please enter the 6-digit verification code from your authenticator app.",
+            "user": {"username": user.username},
+        }
+
+    # Case 4: Admin account without MFA -> require MFA setup
+    if settings.MFA_ENABLED and user.role in ("standard_admin", "admin") and not user.mfa_enabled:
+        mfa_ticket = create_access_token(
+            subject=str(user.username),
+            role="mfa_pending",
+            expires_seconds=600,
+        )
+        return {
+            "status": "MFA_SETUP_REQUIRED",
+            "mfa_ticket": mfa_ticket,
+            "temp_token": mfa_ticket,
+            "message": "Multi-factor authentication is mandatory for administrative accounts. Please configure MFA.",
+            "user": {"username": user.username},
+        }
+
+    # Case 5: Standard login success -> create session
+    ip = request.client.host if request.client else "127.0.0.1"
+    ua = request.headers.get("user-agent", "Unknown")
+    session = create_session(db, user, ip_address=ip, user_agent=ua)
+    _set_session_cookie(response, str(session.session_id))
+
     db.add(AuditLogEntry(user_id=user.username, event_type="LOGIN_SUCCEEDED", detail=None))
     db.commit()
 
-    return LoginResponse(access_token=token, role=user.role)
+    return {
+        "status": "SUCCESS",
+        "access_token": session.session_id,
+        "token_type": "bearer",
+        "role": user.role,
+        "user": user_info,
+    }
 
 
-@router.get("/me", response_model=UserResponse)
-def me(current_user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == current_user.username).first()
-    return UserResponse(id=user.id, username=user.username, role=user.role, is_active=user.is_active)
+def _resolve_target_user(
+    db: Session,
+    request: Optional[Request] = None,
+    mfa_ticket: Optional[str] = None,
+    authorization: Optional[str] = None,
+    session_id: Optional[str] = None,
+    username: Optional[str] = None,
+    temp_token: Optional[str] = None,
+) -> User:
+    """Resolves target user from ticket, Bearer token (JWT or session), session cookie, or username/temp_token."""
+    raw_token = temp_token or mfa_ticket
+    if raw_token:
+        try:
+            payload = decode_access_token(raw_token)
+            u = db.query(User).filter(User.username == payload.get("sub")).first()
+            if u:
+                return u
+        except TokenError:
+            pass
+
+    auth = authorization or (request.headers.get("authorization") if request else None)
+    if auth and auth.startswith("Bearer "):
+        token = auth[len("Bearer ") :].strip()
+        try:
+            payload = decode_access_token(token)
+            u = db.query(User).filter(User.username == payload.get("sub")).first()
+            if u:
+                return u
+        except TokenError:
+            pass
+        active_sess = db.query(UserSession).filter(UserSession.session_id == token, UserSession.is_active == True).first()  # noqa: E712
+        if active_sess:
+            u = db.query(User).filter(User.id == active_sess.user_id).first()
+            if u:
+                return u
+
+    s_id = session_id or (request.cookies.get("session_id") if request else None)
+    if s_id:
+        active_sess = db.query(UserSession).filter(UserSession.session_id == s_id, UserSession.is_active == True).first()  # noqa: E712
+        if active_sess:
+            u = db.query(User).filter(User.id == active_sess.user_id).first()
+            if u:
+                return u
+
+    if username:
+        u = db.query(User).filter(User.username == username.strip()).first()
+        if u:
+            return u
+
+    raise HTTPException(status_code=401, detail="Authentication required. Please log in again.")
 
 
-@router.get("/users", response_model=List[UserResponse])
-def list_users(
+@router.post("/mfa/verify")
+@router.post("/verify-mfa")
+def verify_mfa(payload: MfaVerifyRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    """Validates 6-digit TOTP code or single-use recovery code and creates session."""
+    raw_ticket = payload.temp_token or payload.mfa_ticket
+    if not raw_ticket:
+        raise HTTPException(status_code=400, detail="MFA verification ticket is required.")
+
+    try:
+        token_data = decode_access_token(raw_ticket)
+    except TokenError:
+        raise HTTPException(status_code=401, detail="Verification session expired. Please log in again.")
+
+    username = token_data.get("sub")
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User account not found.")
+
+    if not verify_login_mfa(db, user, payload.code):
+        db.add(AuditLogEntry(user_id=user.username, event_type="MFA_VERIFY_FAILED", detail=None))
+        db.commit()
+        raise HTTPException(status_code=401, detail="Invalid verification code or backup code.")
+
+    ip = request.client.host if request.client else "127.0.0.1"
+    ua = request.headers.get("user-agent", "Unknown")
+    session = create_session(db, user, ip_address=ip, user_agent=ua)
+    _set_session_cookie(response, str(session.session_id))
+
+    db.add(AuditLogEntry(user_id=user.username, event_type="MFA_VERIFY_SUCCEEDED", detail=None))
+    db.commit()
+
+    return {
+        "status": "SUCCESS",
+        "access_token": session.session_id,
+        "token_type": "bearer",
+        "role": user.role,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "status": user.status,
+            "must_change_password": user.must_change_password,
+            "mfa_enabled": user.mfa_enabled,
+        },
+    }
+
+
+@router.post("/mfa/setup")
+def initiate_mfa(
+    request: Request,
+    mfa_ticket: Optional[str] = Header(None, alias="X-MFA-Ticket"),
+    authorization: Optional[str] = Header(None),
+    session_id: Optional[str] = Cookie(None),
     db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(require_role("admin")),
 ):
-    users = db.query(User).order_by(User.id.asc()).all()
-    return [UserResponse(id=u.id, username=u.username, role=u.role, is_active=u.is_active) for u in users]
+    """Generates a new TOTP secret, otpauth URI, and emergency backup codes."""
+    target_user = _resolve_target_user(db, request, mfa_ticket, authorization, session_id)
+    return setup_mfa(db, target_user)
 
 
-@router.get("/audit-log")
-def get_audit_log(
-    limit: int = 100,
+@router.post("/mfa/confirm")
+def confirm_mfa(
+    payload: MfaConfirmRequest,
+    request: Request,
+    response: Response,
+    mfa_ticket: Optional[str] = Header(None, alias="X-MFA-Ticket"),
+    authorization: Optional[str] = Header(None),
+    session_id: Optional[str] = Cookie(None),
     db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(require_role("admin")),
 ):
-    """Admin-only. Most recent `limit` audit entries, newest first."""
-    rows = (
-        db.query(AuditLogEntry)
-        .order_by(AuditLogEntry.id.desc())
-        .limit(min(limit, 1000))
-        .all()
+    """Validates the first code to formally activate MFA on the account."""
+    target_user = _resolve_target_user(db, request, mfa_ticket, authorization, session_id)
+
+    if not confirm_mfa_setup(db, target_user, payload.code):
+        raise HTTPException(status_code=400, detail="Invalid verification code. Please check your authenticator clock.")
+
+    # Create active session
+    ip = request.client.host if request.client else "127.0.0.1"
+    ua = request.headers.get("user-agent", "Unknown")
+    session = create_session(db, target_user, ip_address=ip, user_agent=ua)
+    _set_session_cookie(response, str(session.session_id))
+
+    db.add(AuditLogEntry(user_id=target_user.username, event_type="MFA_ACTIVATED", detail=None))
+    db.commit()
+
+    return {
+        "status": "SUCCESS",
+        "message": "Multi-factor authentication activated successfully.",
+        "access_token": session.session_id,
+        "token_type": "bearer",
+        "role": target_user.role,
+        "user": {
+            "id": target_user.id,
+            "username": target_user.username,
+            "role": target_user.role,
+            "status": target_user.status,
+            "must_change_password": target_user.must_change_password,
+            "mfa_enabled": target_user.mfa_enabled,
+        },
+    }
+
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    response: Response,
+    authorization: Optional[str] = Header(None),
+    session_id: Optional[str] = Cookie(None),
+    db: Session = Depends(get_db),
+):
+    """Changes password, clears first-login flag, revokes previous sessions, and issues a fresh session."""
+    user = _resolve_target_user(
+        db=db,
+        request=request,
+        mfa_ticket=None,
+        authorization=authorization,
+        session_id=session_id,
+        username=payload.username,
+        temp_token=payload.temp_token,
     )
-    return [
-        {
-            "id": r.id,
-            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
-            "user_id": r.user_id,
-            "session_id": r.session_id,
-            "event_type": r.event_type,
-            "detail": r.detail,
-            "file_sha256": r.file_sha256,
-            "chain_hash": r.chain_hash,
-        }
-        for r in rows
-    ]
+
+    try:
+        change_user_password(db, user, payload.current_password, payload.new_password)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Issue fresh active session
+    ip = request.client.host if request and request.client else "127.0.0.1"
+    ua = request.headers.get("user-agent", "Unknown") if request else "Unknown"
+    new_session = create_session(db, user, ip_address=ip, user_agent=ua)
+    _set_session_cookie(response, str(new_session.session_id))
+
+    return {
+        "status": "SUCCESS",
+        "message": "Password changed successfully.",
+        "access_token": new_session.session_id,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "status": user.status,
+            "must_change_password": user.must_change_password,
+            "mfa_enabled": user.mfa_enabled,
+        },
+    }
 
 
-@router.get("/audit-log/verify")
-def verify_audit_log(
+@router.post("/access-request")
+def request_access(payload: AccessRegistrationRequest, db: Session = Depends(get_db)):
+    """Self-service registration: creates an account in PENDING status and logs access request."""
+    # Check if username exists
+    existing = db.query(User).filter(User.username == payload.username).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Username '{payload.username}' is already taken.")
+
+    # Validate password strength
+    is_strong, err = validate_password_strength(payload.password, payload.username)
+    if not is_strong:
+        raise HTTPException(status_code=400, detail=err)
+
+    now = datetime.now(timezone.utc)
+    new_user = User(
+        username=payload.username,
+        hashed_password=hash_password(payload.password),
+        role="pending",
+        status="PENDING",
+        is_active=True,
+        must_change_password=False,
+        mfa_enabled=False,
+        failed_login_attempts=0,
+        created_at=now,
+    )
+    db.add(new_user)
+    db.flush()
+
+    try:
+        req = submit_access_request(
+            db=db,
+            user_id=cast(int, new_user.id),
+            requested_role=payload.requested_role,
+            reason=payload.reason,
+        )
+    except ApprovalError as ae:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(ae))
+
+    return {
+        "status": "PENDING",
+        "request_id": req.id,
+        "username": new_user.username,
+        "requested_role": req.requested_role,
+        "message": f"Your request for '{req.requested_role}' access has been submitted for administrative review.",
+    }
+
+
+@router.get("/access-request/status")
+def get_request_status(
+    username: Optional[str] = None,
+    current_user: CurrentUser = Depends(get_current_user),
     db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(require_role("admin")),
 ):
-    """
-    Admin-only. Walks the entire hash chain (see core/immutable_audit.py)
-    and reports whether it's intact, and exactly where it breaks if not —
-    a concrete, checkable demonstration of the tamper-evidence guarantee,
-    not just a claim in a docstring.
-    """
-    is_intact, problems = verify_audit_chain(db)
-    return {"is_intact": is_intact, "problems": problems}
+    """Returns access request status for the logged-in user."""
+    lookup_name = username if (current_user.is_admin_or_higher and username) else current_user.username
+    user = db.query(User).filter(User.username == lookup_name).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    req = (
+        db.query(AccessRequest)
+        .filter(AccessRequest.user_id == user.id)
+        .order_by(AccessRequest.created_at.desc())
+        .first()
+    )
+    if not req:
+        return {"has_request": False, "status": user.status, "role": user.role}
+
+    return {
+        "has_request": True,
+        "request_id": req.id,
+        "requested_role": req.requested_role,
+        "status": req.status,
+        "reason": req.request_reason,
+        "created_at": req.created_at.isoformat() if req.created_at else None,
+        "review_reason": req.review_reason,
+        "reviewed_at": req.reviewed_at.isoformat() if req.reviewed_at else None,
+    }
+
+
+@router.post("/logout")
+def logout(
+    response: Response,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Revokes the active server-side session and clears the session cookie."""
+    if current_user.session_id:
+        revoke_session(db, current_user.session_id, reason="LOGOUT")
+    _clear_session_cookie(response)
+
+    db.add(AuditLogEntry(user_id=current_user.username, event_type="LOGOUT", detail=None))
+    db.commit()
+
+    return {"status": "SUCCESS", "message": "Successfully logged out."}
+
+
+@router.post("/logout-all")
+def logout_all(
+    response: Response,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Revokes all active sessions for the caller across all devices."""
+    count = revoke_all_user_sessions(db, current_user.id, reason="LOGOUT_ALL")
+    _clear_session_cookie(response)
+
+    db.add(AuditLogEntry(
+        user_id=current_user.username,
+        event_type="LOGOUT_ALL_DEVICES",
+        detail=f'{{"revoked_sessions_count": {count}}}',
+    ))
+    db.commit()
+
+    return {"status": "SUCCESS", "revoked_count": count, "message": "All devices logged out."}
+
+
+@router.get("/sessions")
+def get_sessions(
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Lists active and recent sessions for the current caller."""
+    return list_user_sessions(db, current_user.id, current_session_id=current_user.session_id)
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(
+    session_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Revokes a specific session belonging to the caller."""
+    session = db.query(UserSession).filter(UserSession.session_id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    if session.user_id != current_user.id and not current_user.is_admin_or_higher:
+        raise HTTPException(status_code=403, detail="Cannot revoke another user's session.")
+
+    revoke_session(db, session_id, reason="MANUAL_REVOCATION")
+    return {"status": "SUCCESS", "message": "Session terminated."}
+
+
+@router.post("/reauthenticate")
+def reauthenticate(
+    payload: ReauthRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Verifies password to refresh last_authenticated_at timestamp for sensitive operations."""
+    user = db.query(User).filter(User.id == current_user.id).first()
+    if not user or not verify_password(payload.password, str(user.hashed_password)):
+        raise HTTPException(status_code=401, detail="Invalid password.")
+
+    if current_user.session_id:
+        touch_session_reauth(db, current_user.session_id)
+
+    db.add(AuditLogEntry(user_id=current_user.username, event_type="REAUTHENTICATION_SUCCEEDED", detail=None))
+    db.commit()
+
+    return {"status": "SUCCESS", "message": "Identity re-verified successfully."}
+
+
+@router.get("/me")
+def me(current_user: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Returns profile and permission details for the current user."""
+    user = db.query(User).filter(User.id == current_user.id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User account not found.")
+
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "status": user.status,
+        "is_active": user.is_active,
+        "must_change_password": user.must_change_password,
+        "mfa_enabled": user.mfa_enabled,
+        "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+    }

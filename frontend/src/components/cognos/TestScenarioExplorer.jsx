@@ -26,6 +26,7 @@ import {
   AddMissingScenarioModal,
   DuplicateScenarioModal
 } from "./HitlModals";
+import { useAuth } from "../../context/AuthContext";
 
 // ─── Error Boundary ───────────────────────────────────────────────────────────
 
@@ -570,6 +571,10 @@ function ScenarioWorkspaceDetail({
   onUpdateScenarioSql,
   isActionLoading,
 }) {
+  const { user } = useAuth();
+  const isTester = user?.role === "tester";
+  const visibleWorkspaceTabs = WORKSPACE_TABS;
+
   const steps = useMemo(() => parseSteps(tc?.test_steps), [tc?.test_steps]);
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [activeTab, setActiveTab] = useState("steps");
@@ -761,7 +766,7 @@ function ScenarioWorkspaceDetail({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           
           <div className="space-y-1 min-w-0 flex-1">
-            <h1 className="text-xl font-bold text-slate-900 tracking-tight leading-snug">
+            <h1 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight leading-snug">
               {getBusinessScenarioTitle(tc)}
             </h1>
 
@@ -802,8 +807,8 @@ function ScenarioWorkspaceDetail({
 
       {/* ── 2. Workspace Horizontal Tabs (Clean Underline Style) ─────────────── */}
       <div className="border-b border-slate-200">
-        <div className="flex items-center gap-6 overflow-x-auto no-scrollbar">
-          {WORKSPACE_TABS.map((tab) => {
+        <div className="flex items-center gap-3 sm:gap-6 overflow-x-auto no-scrollbar">
+          {visibleWorkspaceTabs.map((tab) => {
             const Icon = tab.icon;
             const isTabActive = activeTab === tab.id;
             let countBadge = null;
@@ -844,7 +849,7 @@ function ScenarioWorkspaceDetail({
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
             
             {/* Left Column: Vertical Step Navigator (Primary Step Selector) */}
-            <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-3 space-y-1.5 shadow-2xs">
+            <div className="lg:col-span-5 min-w-0 bg-white border border-slate-200 rounded-xl p-3 space-y-1.5 shadow-2xs">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100 px-1">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                   Step Navigator
@@ -853,7 +858,7 @@ function ScenarioWorkspaceDetail({
                   {steps.length} Steps
                 </span>
               </div>
-              <div className="space-y-1.5 max-h-[560px] overflow-y-auto pr-1">
+              <div className="space-y-1.5 max-h-[280px] sm:max-h-[360px] lg:max-h-[560px] overflow-y-auto pr-1">
                 {steps.map((step, idx) => {
                   const isCurrent = idx === selectedStepIndex;
                   const stepMatch = typeof step === "string" ? step.match(/^(\d+)\.\s*(.*)/) : null;
@@ -908,7 +913,7 @@ function ScenarioWorkspaceDetail({
             </div>
 
             {/* Right Column: Clean Scenario Workspace per Requirement 4 */}
-            <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-5 space-y-5 shadow-2xs">
+            <div className="lg:col-span-7 min-w-0 w-full bg-white border border-slate-200 rounded-xl p-5 space-y-5 shadow-2xs">
               
               {/* 1. SCENARIO OBJECTIVE */}
               <div className="space-y-1.5">
@@ -923,13 +928,13 @@ function ScenarioWorkspaceDetail({
               <div className="border-t border-slate-100" />
 
               {/* 2. HITL REVIEW */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                    <Shield className="h-3.5 w-3.5 text-blue-600" />
-                    HITL Review
+              <div className="space-y-3 w-full min-w-0">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5 shrink-0">
+                    <Shield className="h-3.5 w-3.5 text-blue-600 shrink-0" />
+                    <span>HITL Review</span>
                   </h3>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
                     <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
                       v{tc?.version || 1}
                     </span>
@@ -1039,89 +1044,93 @@ function ScenarioWorkspaceDetail({
                   </div>
                 )}
 
-                {/* Action Buttons */}
-                <div className="flex items-center flex-wrap gap-2 pt-1">
-                  {!isApproved ? (
-                    <>
+                {/* Action Buttons: Responsive Review & Approval Groups */}
+                <div className="flex flex-col gap-2.5 pt-1 w-full min-w-0">
+                  {/* Group 1: Review Actions */}
+                  {!isApproved && (
+                    <div className="flex items-center flex-wrap gap-2">
                       <button
                         type="button"
                         onClick={onFlagIssue}
                         disabled={isActionLoading}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50/80 hover:bg-amber-100 text-amber-900 text-xs font-semibold shadow-2xs transition-colors"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50/80 hover:bg-amber-100 text-amber-900 text-xs font-semibold shadow-2xs transition-colors whitespace-nowrap shrink-0"
                       >
-                        <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
-                        Flag Issue
+                        <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                        <span>Flag Issue</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={onSuggestCorrection}
                         disabled={isActionLoading}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50/80 hover:bg-blue-100 text-blue-900 text-xs font-semibold shadow-2xs transition-colors"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50/80 hover:bg-blue-100 text-blue-900 text-xs font-semibold shadow-2xs transition-colors whitespace-nowrap shrink-0"
                       >
-                        <Sparkles className="h-3.5 w-3.5 text-blue-600" />
-                        Suggest Correction
+                        <Sparkles className="h-3.5 w-3.5 text-blue-600 shrink-0" />
+                        <span>Suggest Correction</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={onEditScenario}
                         disabled={isActionLoading}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold shadow-2xs transition-colors"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold shadow-2xs transition-colors whitespace-nowrap shrink-0"
                       >
-                        <Edit3 className="h-3.5 w-3.5 text-slate-600" />
-                        Edit Scenario
+                        <Edit3 className="h-3.5 w-3.5 text-slate-600 shrink-0" />
+                        <span>Edit Scenario</span>
                       </button>
+                    </div>
+                  )}
 
+                  {/* Group 2: Approval & Lifecycle Actions */}
+                  <div className="flex items-center flex-wrap gap-2">
+                    {!isApproved ? (
                       <button
                         type="button"
                         onClick={onApproveScenario}
                         disabled={isActionLoading}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-colors ml-auto"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-colors whitespace-nowrap shrink-0"
                       >
-                        <Check className="h-3.5 w-3.5" />
-                        Approve Scenario
+                        <Check className="h-3.5 w-3.5 shrink-0" />
+                        <span>Approve Scenario</span>
                       </button>
-                    </>
-                  ) : (
-                    <>
+                    ) : (
                       <button
                         type="button"
                         onClick={onCreateRevision}
                         disabled={isActionLoading}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold shadow-xs transition-colors"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold shadow-xs transition-colors whitespace-nowrap shrink-0"
                       >
-                        <Unlock className="h-3.5 w-3.5" />
-                        Create Revision
+                        <Unlock className="h-3.5 w-3.5 shrink-0" />
+                        <span>Create Revision</span>
                       </button>
-                    </>
-                  )}
+                    )}
 
-                  <button
-                    type="button"
-                    onClick={onViewHistory}
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 transition-colors ml-1"
-                  >
-                    <History className="h-3.5 w-3.5 text-slate-500" />
-                    Version History
-                  </button>
-
-                  {!isApproved && (
                     <button
                       type="button"
-                      onClick={onMarkDuplicate}
-                      className="text-xs text-rose-600 hover:text-rose-800 px-2 py-1 hover:underline"
+                      onClick={onViewHistory}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900 px-2.5 py-1.5 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
                     >
-                      Duplicate / Reject
+                      <History className="h-3.5 w-3.5 text-slate-500 shrink-0" />
+                      <span>Version History</span>
                     </button>
-                  )}
+
+                    {!isApproved && (
+                      <button
+                        type="button"
+                        onClick={onMarkDuplicate}
+                        className="text-xs text-rose-600 hover:text-rose-800 px-2.5 py-1.5 hover:underline whitespace-nowrap shrink-0 font-medium"
+                      >
+                        Duplicate / Reject
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 
               <div className="border-t border-slate-100" />
 
               {/* 3. EXECUTION COMMENTS */}
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 w-full min-w-0">
                 <label className="text-xs font-bold uppercase tracking-wider text-slate-700 block">
                   Execution Comments
                 </label>
@@ -1131,7 +1140,7 @@ function ScenarioWorkspaceDetail({
                   value={commentDraft}
                   onChange={(e) => setCommentDraft(e.target.value)}
                   onBlur={handleCommentBlur}
-                  className="w-full text-xs rounded-lg border border-slate-200 bg-slate-50 p-3 text-slate-800 placeholder:text-slate-400 focus:bg-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all leading-relaxed"
+                  className="w-full max-w-full box-border text-xs rounded-lg border border-slate-200 bg-slate-50 p-3 text-slate-800 placeholder:text-slate-400 focus:bg-white focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-all leading-relaxed"
                 />
               </div>
 
@@ -1222,15 +1231,15 @@ function ScenarioWorkspaceDetail({
           {/* Validation SQL Area */}
           {isSqlEditing ? (
             <div className="border border-blue-300 bg-slate-900 rounded-xl overflow-hidden shadow-lg ring-2 ring-blue-500/20">
-              <div className="flex items-center justify-between px-3.5 py-2.5 bg-slate-800 border-b border-slate-700 text-xs">
-                <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 bg-slate-800 border-b border-slate-700 text-xs">
+                <div className="flex items-center gap-2 flex-wrap">
                   <Code className="h-4 w-4 text-blue-400" />
                   <span className="font-semibold text-slate-100">Inline SQL Editor</span>
                   <span className="text-[10px] font-semibold text-amber-300 bg-amber-900/60 px-2 py-0.5 rounded border border-amber-600/40">
                     {isDirtySql ? "Unsaved Changes" : "Draft"}
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
                   <button 
                     type="button"
                     onClick={handleCopySql}
@@ -1277,7 +1286,7 @@ function ScenarioWorkspaceDetail({
                 onKeyDown={handleSqlKeyDown}
                 spellCheck={false}
                 rows={Math.min(22, Math.max(8, (sqlDraft || "").split("\n").length + 2))}
-                className="w-full p-4 bg-slate-900 text-slate-100 font-mono text-xs leading-relaxed focus:outline-none resize-y border-0 min-h-[220px]"
+                className="w-full p-3 sm:p-4 bg-slate-900 text-slate-100 font-mono text-xs leading-relaxed focus:outline-none resize-y border-0 min-h-[180px] sm:min-h-[220px]"
                 placeholder="SELECT ... FROM ... WHERE ..."
               />
 
@@ -1328,11 +1337,11 @@ function ScenarioWorkspaceDetail({
               </div>
               {sql && (
                 <div>
-                  <div className="flex items-center justify-between mb-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
                     <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-800 flex items-center gap-1.5">
                       <Code className="h-3.5 w-3.5 text-amber-700" /> Validation SQL Draft
                     </h4>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <button
                         type="button"
                         onClick={handleStartEditSql}
@@ -1361,8 +1370,8 @@ function ScenarioWorkspaceDetail({
             </div>
           ) : sql ? (
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                     <Code className="h-3.5 w-3.5 text-blue-600" />
                     Validation SQL Query
@@ -1378,7 +1387,7 @@ function ScenarioWorkspaceDetail({
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
                   <button
                     type="button"
                     onClick={handleStartEditSql}
@@ -1425,57 +1434,61 @@ function ScenarioWorkspaceDetail({
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">Source Mappings</h3>
                 <span className="text-[11px] font-mono text-slate-500">{tc.source_mappings.length} Fields</span>
               </div>
-              <table className="min-w-full divide-y divide-slate-200 text-xs">
-                <thead>
-                  <tr className="bg-slate-50/80 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    <th className="px-4 py-2.5">Business Label</th>
-                    <th className="px-4 py-2.5">Source Table</th>
-                    <th className="px-4 py-2.5">Source Column</th>
-                    <th className="px-4 py-2.5">Processing Rule</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 font-normal">
-                  {tc.source_mappings.map((m, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
-                      <td className="px-4 py-2.5 font-semibold text-slate-900">{m.field}</td>
-                      <td className="px-4 py-2.5 font-mono text-slate-600">{m.table || tc.source_table || "P_RPT_CLDI_TERM_TB"}</td>
-                      <td className="px-4 py-2.5 font-mono font-medium text-blue-700">
-                        {m.column === "Not resolved from DSD" ? (
-                          <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">Not resolved</span>
-                        ) : (
-                          m.column
-                        )}
-                      </td>
-                      <td className="px-4 py-2.5 text-slate-600">{m.rule || tc.processing_rule || "Direct mapping from source table"}</td>
+              <div className="overflow-x-auto w-full max-w-full">
+                <table className="min-w-full divide-y divide-slate-200 text-xs">
+                  <thead>
+                    <tr className="bg-slate-50/80 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      <th className="px-4 py-2.5">Business Label</th>
+                      <th className="px-4 py-2.5">Source Table</th>
+                      <th className="px-4 py-2.5">Source Column</th>
+                      <th className="px-4 py-2.5">Processing Rule</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-normal">
+                    {tc.source_mappings.map((m, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50/60 transition-colors">
+                        <td className="px-4 py-2.5 font-semibold text-slate-900">{m.field}</td>
+                        <td className="px-4 py-2.5 font-mono text-slate-600">{m.table || tc.source_table || "P_RPT_CLDI_TERM_TB"}</td>
+                        <td className="px-4 py-2.5 font-mono font-medium text-blue-700">
+                          {m.column === "Not resolved from DSD" ? (
+                            <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">Not resolved</span>
+                          ) : (
+                            m.column
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-slate-600">{m.rule || tc.processing_rule || "Direct mapping from source table"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           ) : (tc?.source_table || tc?.source_column || tc?.source_columns || tc?.sort_field) && (
             <div className="bg-white border border-slate-200 rounded-lg overflow-hidden shadow-2xs">
-              <table className="min-w-full divide-y divide-slate-200 text-xs">
-                <tbody className="divide-y divide-slate-100">
-                  {tc?.sort_field && (
-                    <tr>
-                      <td className="px-3.5 py-2 font-medium text-slate-500 bg-slate-50 w-1/3">Sort Field</td>
-                      <td className="px-3.5 py-2 text-slate-900 font-semibold">{tc.sort_field}</td>
-                    </tr>
-                  )}
-                  {tc?.source_table && (
-                    <tr>
-                      <td className="px-3.5 py-2 font-medium text-slate-500 bg-slate-50 w-1/3">Source Table</td>
-                      <td className="px-3.5 py-2 text-slate-900 font-mono text-xs">{tc.source_table}</td>
-                    </tr>
-                  )}
-                  {tc?.source_column && (
-                    <tr>
-                      <td className="px-3.5 py-2 font-medium text-slate-500 bg-slate-50 w-1/3">Source Column</td>
-                      <td className="px-3.5 py-2 text-slate-900 font-mono text-xs">{tc.source_column}</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+              <div className="overflow-x-auto w-full max-w-full">
+                <table className="min-w-full divide-y divide-slate-200 text-xs">
+                  <tbody className="divide-y divide-slate-100">
+                    {tc?.sort_field && (
+                      <tr>
+                        <td className="px-3.5 py-2 font-medium text-slate-500 bg-slate-50 w-1/3">Sort Field</td>
+                        <td className="px-3.5 py-2 text-slate-900 font-semibold">{tc.sort_field}</td>
+                      </tr>
+                    )}
+                    {tc?.source_table && (
+                      <tr>
+                        <td className="px-3.5 py-2 font-medium text-slate-500 bg-slate-50 w-1/3">Source Table</td>
+                        <td className="px-3.5 py-2 text-slate-900 font-mono text-xs">{tc.source_table}</td>
+                      </tr>
+                    )}
+                    {tc?.source_column && (
+                      <tr>
+                        <td className="px-3.5 py-2 font-medium text-slate-500 bg-slate-50 w-1/3">Source Column</td>
+                        <td className="px-3.5 py-2 text-slate-900 font-mono text-xs">{tc.source_column}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
@@ -1512,17 +1525,41 @@ function ScenarioWorkspaceDetail({
 // ─── Main 3-Zone Workspace Component ──────────────────────────────────────────
 
 export default function TestScenarioExplorer({ result, projectContext }) {
-  // Resolve project context from prop or localStorage
+  // Resolve project context prioritizing current result and validating matching run_id
   const activeContext = useMemo(() => {
-    if (projectContext && (projectContext.work_item_id || projectContext.work_item_title)) {
-      return projectContext;
+    // 1. If projectContext prop has valid info matching this run
+    if (projectContext && (projectContext.work_item_id || projectContext.work_item_title || projectContext.report_id)) {
+      if (!projectContext.run_id || !result?.run_id || String(projectContext.run_id) === String(result.run_id)) {
+        return projectContext;
+      }
     }
+    // 2. Derive directly from loaded result
+    if (result) {
+      const repId = result.report_id || result.report_definition?.metadata?.report_id;
+      const repTitle = result.report_title || result.report_definition?.metadata?.report_title;
+      if (repId || repTitle || result.work_item_title) {
+        return {
+          run_id: result.run_id,
+          work_type: result.work_type || "CR",
+          work_item_id: result.work_item_id || "",
+          work_item_title: result.work_item_title || repTitle || "",
+          report_id: repId || "",
+          report_title: repTitle || "",
+        };
+      }
+    }
+    // 3. Fallback to localStorage ONLY if matching current run_id
     try {
       const raw = localStorage.getItem("cognos_project_context");
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (!parsed.run_id || !result?.run_id || String(parsed.run_id) === String(result.run_id)) {
+          return parsed;
+        }
+      }
     } catch {}
     return null;
-  }, [projectContext]);
+  }, [result, projectContext]);
 
   // Local scenario list to support interactive HITL updates
   const [scenariosList, setScenariosList] = useState([]);
@@ -1613,7 +1650,7 @@ export default function TestScenarioExplorer({ result, projectContext }) {
             consolidated.push({
               ...primary,
               test_case_id: primary.test_case_id.replace(/-DBRE-\d+/, "-DBRV-01").replace(/-DBRV-\d+/, "-DBRV-01"),
-              test_case_title: "Verify all report data mappings for PRV-INT-027 against the source database",
+              test_case_title: `Verify all report data mappings for ${primary.report_id || result?.report_id || "the report"} against the source database`,
               category: "DB Report Data Validation",
               source_mappings: allMappings.length > 0 ? allMappings : primary.source_mappings,
               priority: "High",
@@ -1648,7 +1685,7 @@ export default function TestScenarioExplorer({ result, projectContext }) {
         if (!outpHandled) {
           outpHandled = true;
           const primary = outpScenarios[0] || tc;
-          const repId = primary.report_id || result?.report_id || "PRV-INT-027";
+          const repId = primary.report_id || result?.report_id || "Report";
           consolidated.push({
             ...primary,
             test_case_id: primary.test_case_id.replace(/-OUTP-\d+/, "-OUTP-01"),
@@ -1848,8 +1885,8 @@ export default function TestScenarioExplorer({ result, projectContext }) {
           reason: "Scheduled execution for NH must execute via IWA and deliver to SDR (20-minute SLA).",
           suggested: {
             execution_tool: "IWA",
-            report_id: `RPT-${tc.report_id || 'PRV-INT-027'}`,
-            test_steps: "1. Login to IWA.\n2. Search for RPT-" + (tc.report_id || 'PRV-INT-027') + ".\n3. Run the report.\n4. Output delivers to SDR (~20 min).",
+            report_id: `RPT-${tc.report_id || result?.report_id || 'REPORT'}`,
+            test_steps: "1. Login to IWA.\n2. Search for RPT-" + (tc.report_id || result?.report_id || 'REPORT') + ".\n3. Run the report.\n4. Output delivers to SDR (~20 min).",
           }
         });
       }
@@ -2170,14 +2207,14 @@ export default function TestScenarioExplorer({ result, projectContext }) {
         {/* ================================================================ */}
         {/* CENTER / ZONE 2: SCENARIO SIDEBAR (340px–390px)                  */}
         {/* ================================================================ */}
-        <div className={`w-full md:w-[350px] lg:w-[370px] xl:w-[380px] shrink-0 flex flex-col bg-white border-r border-slate-200 min-h-0 overflow-hidden relative z-10 ${
+        <div className={`w-full md:w-[280px] lg:w-[320px] xl:w-[360px] shrink-0 flex flex-col bg-white border-r border-slate-200 min-h-0 overflow-hidden relative z-10 ${
           mobileDetailOpen ? "hidden md:flex" : "flex"
         }`}>
           
           {/* Top Navigator Header */}
           <div className="p-3 border-b border-slate-100 space-y-2 bg-white shrink-0">
             {/* Project Context Box in Sidebar (Phase 16 - Optional) */}
-            {activeContext && (activeContext.work_item_id || activeContext.work_item_title || activeContext.work_type) && (
+            {activeContext && (activeContext.work_item_id || activeContext.work_item_title || activeContext.work_type || activeContext.report_id) && (
               <div className="p-2.5 bg-slate-50 border border-slate-200/80 rounded-xl space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
@@ -2192,8 +2229,13 @@ export default function TestScenarioExplorer({ result, projectContext }) {
                     </span>
                   )}
                 </div>
-                {activeContext.work_item_id && (
+                {activeContext.report_id && (
                   <div className="text-xs font-bold text-slate-900 font-mono">
+                    {activeContext.report_id}
+                  </div>
+                )}
+                {activeContext.work_item_id && activeContext.work_item_id !== activeContext.report_id && (
+                  <div className="text-[10px] font-mono text-slate-500">
                     {activeContext.work_item_id}
                   </div>
                 )}

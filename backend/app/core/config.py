@@ -6,17 +6,32 @@ or environment-specific values are ever hardcoded. See .env.example at the
 repo root of /backend for the full list of expected variables.
 """
 
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import model_validator
 
+BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+_ENV_FILES = [
+    str(BACKEND_DIR / ".env"),
+    str(BACKEND_DIR.parent / ".env"),
+    ".env",
+]
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_ENV_FILES, env_file_encoding="utf-8", extra="ignore")
 
     @model_validator(mode="after")
-    def validate_production_safety(self) -> "Settings":
+    def validate_and_resolve_paths(self) -> "Settings":
+        for attr in ("SQLITE_DB_PATH", "AUDIT_LOG_PATH", "FAISS_INDEX_PATH", "UPLOAD_DIR", "EXPORT_DIR"):
+            val = getattr(self, attr, None)
+            if val and isinstance(val, str):
+                p = Path(val)
+                if not p.is_absolute():
+                    setattr(self, attr, (BACKEND_DIR / p).resolve().as_posix())
+
         if self.APP_ENV.lower() == "production":
-            if self.SECRET_KEY == "dev-only-change-me":
+            if self.SECRET_KEY.startswith("dev-only-change-me"):
                 raise ValueError("PRODUCTION SAFETY: Default SECRET_KEY is not allowed in production.")
             if not self.DATABASE_URL or "sqlite" in self.DATABASE_URL.lower():
                 raise ValueError("PRODUCTION SAFETY: A real PostgreSQL DATABASE_URL is required in production.")
@@ -125,7 +140,7 @@ class Settings(BaseSettings):
     EMAIL_TIMEOUT_SECONDS: int = 20
 
     # --- Security (Phase 9) ---
-    SECRET_KEY: str = "dev-only-change-me"
+    SECRET_KEY: str = "dev-only-change-me-32-byte-minimum-secure-jwt-key"
     AUDIT_LOG_PATH: str = "./database/audit_log.db"
     ACCESS_TOKEN_EXPIRES_SECONDS: int = 8 * 3600
     # Base64-encoded 32-byte key for AES-256-GCM (app/core/encryption.py).
@@ -135,11 +150,20 @@ class Settings(BaseSettings):
     #   python -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
     ENCRYPTION_KEY: str = ""
 
+    # --- RBAC & Bootstrap Admin ---
+    INITIAL_ADMIN_USERNAME: str = "obuli"
+    INITIAL_ADMIN_TEMP_PASSWORD: str = "Obuli#Secure2026!Temp"
+    INITIAL_ADMIN_PASSWORD: str = ""
+    SESSION_IDLE_TIMEOUT_ADMIN_SECONDS: int = 15 * 60      # 15 mins for Admin/Standard Admin
+    SESSION_IDLE_TIMEOUT_TESTER_SECONDS: int = 30 * 60     # 30 mins for Tester
+    SESSION_LIFETIME_ADMIN_SECONDS: int = 2 * 3600         # 2 hours absolute for Admin
+    SESSION_LIFETIME_TESTER_SECONDS: int = 8 * 3600        # 8 hours absolute for Tester
+    MAX_FAILED_LOGIN_ATTEMPTS: int = 5
+    ACCOUNT_LOCKOUT_MINUTES: int = 15
+    RECENT_AUTH_WINDOW_SECONDS: int = 300                 # 5 minutes for high-privilege re-auth
+    MFA_ENABLED: bool = False                             # Set to True when ready to enforce RFC 6238 TOTP MFA
+
     # --- Malware scanning (Phase 9) ---
-    # ClamAV (clamd) is optional — app/services/malware_scan.py's structural
-    # validation tier always runs regardless. Leave CLAMD_HOST empty to skip
-    # the ClamAV tier entirely (e.g. in this dev sandbox, which has no clamd
-    # daemon and no network to reach one).
     CLAMD_HOST: str = ""
     CLAMD_PORT: int = 3310
     CLAMD_TIMEOUT_SECONDS: int = 10

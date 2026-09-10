@@ -127,9 +127,9 @@ def main():
 
     # Step 2: Prepare environments
     backend_env = os.environ.copy()
-
     frontend_env = os.environ.copy()
     if node_dir.is_dir():
+        backend_env["PATH"] = str(node_dir) + os.pathsep + backend_env.get("PATH", "")
         frontend_env["PATH"] = str(node_dir) + os.pathsep + frontend_env.get("PATH", "")
 
     # Step 3: Start Backend Process

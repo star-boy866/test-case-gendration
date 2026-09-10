@@ -65,14 +65,16 @@ export default function EvidenceLibrary({ result }) {
       if (tc.evidence_references) {
         tc.evidence_references.forEach(ev => {
           if (ev?.evidence_type === "DSD_SEMANTIC_PROOF") return;
-          if (ev.snapshot_url) {
-            if (!evidenceMap.has(ev.snapshot_url)) {
-              evidenceMap.set(ev.snapshot_url, {
-                ...ev,
+          const snapUrl = ev.snapshot_url || (result?.run_id ? `/api/cognos/runs/${result.run_id}/source-snapshot?evidence_id=${encodeURIComponent(ev.evidence_id || '')}&section=${encodeURIComponent(ev.section || '')}&methodology=${encodeURIComponent(ev.methodology || '')}&target_field=${encodeURIComponent(ev.target_field || '')}&evidence_scope=${encodeURIComponent(ev.evidence_scope || '')}&test_case_id=${encodeURIComponent(tc.test_case_id || '')}` : null);
+          if (snapUrl) {
+            const evWithUrl = { ...ev, snapshot_url: snapUrl };
+            if (!evidenceMap.has(snapUrl)) {
+              evidenceMap.set(snapUrl, {
+                ...evWithUrl,
                 linkedTests: [tc.test_case_id]
               });
             } else {
-              const existing = evidenceMap.get(ev.snapshot_url);
+              const existing = evidenceMap.get(snapUrl);
               if (!existing.linkedTests.includes(tc.test_case_id)) {
                 existing.linkedTests.push(tc.test_case_id);
               }
@@ -104,18 +106,18 @@ export default function EvidenceLibrary({ result }) {
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col h-full overflow-hidden">
-      <div className="border-b border-slate-200 bg-white px-5 py-4">
-        <div className="flex justify-between items-center mb-4">
+      <div className="border-b border-slate-200 bg-white px-4 py-3 sm:px-5 sm:py-4">
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-4">
           <div>
-            <h2 className="text-lg font-bold text-slate-900">Evidence Library</h2>
-            <p className="text-sm text-slate-500 font-normal mt-0.5">Centralized gallery of authoritative Source DSD Snapshots</p>
+            <h2 className="text-base sm:text-lg font-bold text-slate-900">Evidence Library</h2>
+            <p className="text-xs sm:text-sm text-slate-500 font-normal mt-0.5">Centralized gallery of authoritative Source DSD Snapshots</p>
           </div>
-          <span className="inline-flex items-center rounded-md bg-purple-50 px-3 py-1 text-sm font-medium text-purple-700 border border-purple-200 shadow-sm">
+          <span className="self-start sm:self-auto inline-flex items-center rounded-md bg-purple-50 px-2.5 py-1 text-xs sm:text-sm font-medium text-purple-700 border border-purple-200 shadow-sm">
             Total Unique Images: {allEvidence.length}
           </span>
         </div>
         
-        <div className="relative max-w-md">
+        <div className="relative w-full sm:max-w-md">
           <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
             <Search className="h-4 w-4 text-slate-400" />
           </div>
@@ -129,8 +131,8 @@ export default function EvidenceLibrary({ result }) {
         </div>
       </div>
       
-      <div className="flex-1 overflow-auto bg-slate-50/50 p-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+      <div className="flex-1 overflow-auto bg-slate-50/50 p-3 sm:p-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-6">
           {filteredEvidence.map((ev, idx) => (
             <div key={idx} className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden flex flex-col">
               <div className="p-2 border-b border-slate-100 bg-slate-50 flex items-center justify-between">

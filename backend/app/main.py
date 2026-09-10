@@ -2,22 +2,31 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.db.session import Base, engine
+from app.db.session import Base, engine, SessionLocal
 from app import models  # noqa: F401  ensures all ORM tables register before create_all
+from app.db.migrations import ensure_rbac_schema
+from app.services.user_service import bootstrap_standard_admin, ensure_tester_account
 from app.core.immutable_audit import register_immutability_guards
-from app.api import health, ingestion, gatekeeper, generation, export, refinement, auth, cognos_api, jobs
+from app.api import (
+    health, ingestion, gatekeeper, generation,
+    export, refinement, auth, cognos_api, jobs, admin_rbac
+)
 
-# Create SQLite tables on startup (Phase 0/1: simple create_all; Phase 9 adds
-# proper migrations via Alembic).
+# Create SQLite tables and perform lightweight schema upgrades on startup
 Base.metadata.create_all(bind=engine)
+ensure_rbac_schema(engine)
 
-# Phase 9: must run before any AuditLogEntry is ever inserted/updated/deleted
-# — this is what actually activates the ORM-level immutability guards and
-# hash-chaining described in app/core/immutable_audit.py. Registering it
-# here, once, at import time (not per-request) is deliberate: SQLAlchemy
-# event listeners are process-global, so registering per-request would just
-# re-register the same no-op every time (register_immutability_guards() is
-# idempotent) while adding needless overhead.
+# Bootstrap the initial Standard Administrator account ('obuli') and Tester account
+_init_db = SessionLocal()
+try:
+    bootstrap_standard_admin(_init_db)
+    ensure_tester_account(_init_db)
+finally:
+    _init_db.close()
+
+# Phase 9: register immutable audit listeners
+register_immutability_guards()
+
 # Production security check
 if settings.APP_ENV != "development" and settings.SECRET_KEY == "dev-only-change-me":
     raise RuntimeError(
@@ -55,6 +64,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(admin_rbac.router)
 app.include_router(ingestion.router)
 app.include_router(gatekeeper.router)
 app.include_router(generation.router)
@@ -62,6 +72,20 @@ app.include_router(export.router)
 app.include_router(refinement.router)
 app.include_router(cognos_api.router)
 app.include_router(jobs.router)
+
+
+@app.middleware("http")
+async def add_security_and_cache_headers(request, call_next):
+    response = await call_next(request)
+    # Prevent browser caching of protected healthcare and RBAC endpoints
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    return response
+
 
 @app.get("/")
 def root():

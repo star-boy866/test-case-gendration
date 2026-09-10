@@ -868,22 +868,22 @@ export default function InteractiveEvidenceViewer({
     <div className="fixed inset-0 z-[200] flex flex-col bg-slate-950/95 backdrop-blur-md text-slate-100 select-none overflow-hidden animate-in fade-in duration-200">
       
       {/* ── TOP HEADER ──────────────────────────────────────────────────────── */}
-      <header className="h-14 px-5 bg-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0 z-20 shadow-md">
-        <div className="flex items-center gap-3">
+      <header className="h-auto min-h-12 py-2 px-3 sm:px-5 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0 z-20 shadow-md">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap min-w-0">
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/60 font-semibold text-xs tracking-wider uppercase">
             <Sparkles className="w-3.5 h-3.5" />
             {evidence?.evidence_type?.replace(/_/g, ' ') || 'Source DSD Snapshot'}
           </span>
-          <div className="h-4 w-px bg-slate-700 mx-1" />
-          <h2 className="text-sm font-semibold text-white truncate flex items-center gap-2">
+          <div className="hidden sm:block h-4 w-px bg-slate-700 mx-1" />
+          <h2 className="text-xs sm:text-sm font-semibold text-white truncate flex items-center gap-2">
             <span>{pageLabel} • {sectionLabel}</span>
             {scopeLabel && scopeLabel !== sectionLabel && (
               <span className="text-slate-400 font-normal text-xs">• {scopeLabel}</span>
             )}
           </h2>
           {isAnnotatedView && (
-            <span className="ml-2 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-medium flex items-center gap-1">
-              <Layers className="w-3 h-3" /> User Annotated View (Auto-saved)
+            <span className="hidden md:inline-flex ml-2 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-medium items-center gap-1">
+              <Layers className="w-3 h-3" /> Annotated View
             </span>
           )}
           {appliedCrop && (
@@ -898,30 +898,30 @@ export default function InteractiveEvidenceViewer({
           )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           {/* Copy Image Button */}
           <button
             type="button"
             onClick={handleCopyImageToClipboard}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-blue-600/90 hover:bg-blue-500 text-white font-medium text-xs transition-colors shadow-sm cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md bg-blue-600/90 hover:bg-blue-500 text-white font-medium text-xs transition-colors shadow-sm cursor-pointer"
             title="Copy annotated image to clipboard (Ctrl+C)"
           >
             <Copy className="w-3.5 h-3.5" />
-            <span>Copy Image</span>
+            <span className="hidden xs:inline">Copy</span>
           </button>
 
           {/* Export Derived Image */}
           <button
             type="button"
             onClick={handleExportAnnotatedImage}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-emerald-800/80 hover:bg-emerald-700 text-emerald-100 border border-emerald-700 text-xs font-medium transition-colors shadow-sm cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-md bg-emerald-800/80 hover:bg-emerald-700 text-emerald-100 border border-emerald-700 text-xs font-medium transition-colors shadow-sm cursor-pointer"
             title="Export derived annotated PNG image"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Export Image</span>
+            <span className="hidden xs:inline">Export</span>
           </button>
 
-          <div className="h-5 w-px bg-slate-700 mx-1" />
+          <div className="h-5 w-px bg-slate-700 mx-0.5 sm:mx-1" />
 
           {/* Close */}
           <button
@@ -936,7 +936,7 @@ export default function InteractiveEvidenceViewer({
       </header>
 
       {/* ── INTERACTIVE SNIPPING TOOLBAR ───────────────────────────────────── */}
-      <div className="h-12 px-5 bg-slate-900/90 border-b border-slate-800/80 flex items-center justify-between shrink-0 z-20 text-xs overflow-x-auto gap-4">
+      <div className="h-12 px-3 sm:px-5 bg-slate-900/90 border-b border-slate-800/80 flex items-center justify-between shrink-0 z-20 text-xs overflow-x-auto no-scrollbar gap-2 sm:gap-4">
         
         {/* Navigation & Zoom Tools */}
         <div className="flex items-center gap-1">
@@ -1700,18 +1700,6 @@ export default function InteractiveEvidenceViewer({
             </button>
           </div>
         )}
-
-        {/* Diagnostic Telemetry Overlay HUD (Phase 13C.7) */}
-        <div className="absolute top-4 left-4 z-40 bg-slate-900/90 border border-slate-700/80 rounded-lg p-2.5 text-[10px] font-mono text-slate-300 shadow-xl pointer-events-none select-none backdrop-blur-sm max-w-xs space-y-1">
-          <div><span className="text-slate-500 font-bold">SOURCE IMAGE:</span></div>
-          <div className="pl-2">width: <span className="text-emerald-400 font-semibold">{naturalSize.width}px</span></div>
-          <div className="pl-2">height: <span className="text-emerald-400 font-semibold">{naturalSize.height}px</span></div>
-          <div className="pl-2 truncate" title={imageUrl}>src: <span className="text-blue-300">{imageUrl?.slice(0, 30)}...</span></div>
-          <div className="pt-1"><span className="text-slate-500 font-bold">CURRENT VIEW:</span></div>
-          <div className="pl-2">zoom: <span className="text-amber-300 font-semibold">{Math.round(zoom * 100)}%</span></div>
-          <div className="pl-2">panX: <span className="text-slate-300">{Math.round(pan.x)}</span>, panY: <span className="text-slate-300">{Math.round(pan.y)}</span></div>
-          <div className="pt-1"><span className="text-slate-500 font-bold">CROP:</span> <span className="text-slate-400">{appliedCrop ? `${appliedCrop.width}x${appliedCrop.height}` : 'none'}</span></div>
-        </div>
 
       </div>
 

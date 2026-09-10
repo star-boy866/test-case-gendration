@@ -26,15 +26,15 @@ export default function DSDIntelligenceSummary({ result }) {
   const methodologiesGenerated = coverage.methodology_patterns_generated || result?.methodology_applicability?.generated?.length || 0;
 
   return (
-    <div className="h-full w-full flex flex-col justify-between gap-3 sm:gap-3.5 max-w-7xl mx-auto min-h-0">
+    <div className="h-full w-full overflow-y-auto flex flex-col justify-between gap-3 sm:gap-3.5 max-w-7xl mx-auto min-h-0 p-1 sm:p-1.5">
       {/* ── 1. Top Report Intelligence Header Card ────────────────────────── */}
       <div className="rounded-xl border border-slate-200 bg-white p-3.5 sm:p-4 shadow-2xs flex items-center justify-between relative overflow-hidden shrink-0">
         <div className="absolute top-0 right-0 w-48 h-48 bg-blue-50/60 rounded-full blur-2xl pointer-events-none" />
         
-        <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between w-full gap-2">
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/80">
+        <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between w-full gap-2.5">
+          <div className="space-y-0.5 min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/80">
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
                 Pipeline Completed
               </span>
@@ -45,17 +45,17 @@ export default function DSDIntelligenceSummary({ result }) {
               </span>
             </div>
             
-            <div className="flex items-baseline gap-2.5 pt-0.5">
-              <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight font-mono">
+            <div className="flex flex-wrap items-baseline gap-2 pt-0.5 min-w-0">
+              <h2 className="text-lg sm:text-xl md:text-2xl font-extrabold text-slate-900 tracking-tight font-mono truncate">
                 {result.report_id || "Report ID Not Found"}
               </h2>
-              <span className="text-sm sm:text-base text-slate-600 font-medium truncate">
-                {result.report_definition?.metadata?.report_title || "Invoice for County Jail Claims"}
+              <span className="text-xs sm:text-sm md:text-base text-slate-600 font-medium truncate max-w-full">
+                {result.report_title || result.report_definition?.metadata?.report_title || result.report_id || "Cognos Report"}
               </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 text-xs font-medium text-slate-500 shrink-0 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200/80">
+          <div className="flex items-center gap-2 text-xs font-medium text-slate-500 shrink-0 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200/80 self-start sm:self-auto">
             <span>Gen Time:</span>
             <span className="font-mono font-bold text-slate-800">{(summary.execution_time_seconds || 0).toFixed(1)}s</span>
           </div>
@@ -63,7 +63,7 @@ export default function DSDIntelligenceSummary({ result }) {
       </div>
 
       {/* ── 2. KPI 4-Card Row ────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3 shrink-0">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3 shrink-0">
         <KpiCard 
           title="Total Requirements" 
           value={result.requirement_count ?? 0}

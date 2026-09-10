@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import {
   AlertTriangle,
   Lock,
@@ -17,45 +17,59 @@ import {
   CheckCircle2,
   Cpu,
   Layers,
+  UserPlus,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 
 export default function LoginPage() {
-  const { login, registerFirstAdmin } = useAuth();
+  const { user, login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
-  const [mode, setMode] = useState("login"); // "login" | "bootstrap"
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (searchParams.get("changed") === "true") {
+      setNotice("Password updated successfully. Please sign in with your permanent password.");
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (user && user.status === "ACTIVE") {
+      navigate("/cognos", { replace: true });
+    }
+  }, [user, navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError(null);
+    setNotice(null);
     setSubmitting(true);
     try {
-      if (mode === "bootstrap") {
-        await registerFirstAdmin(username, password);
-      } else {
-        await login(username, password);
+      try {
+        localStorage.setItem("healthcare_nl_testgen_last_user", username.trim());
+      } catch {}
+      const res = await login(username, password);
+      if (res.status === "MUST_CHANGE_PASSWORD") {
+        navigate("/change-password");
+      } else if (res.status === "MFA_REQUIRED") {
+        navigate("/mfa-verify");
+      } else if (res.status === "PENDING_APPROVAL") {
+        navigate(`/pending-approval?username=${encodeURIComponent(username)}`);
+      } else if (res.status === "SUCCESS") {
+        navigate("/cognos", { replace: true });
       }
-      navigate("/cognos");
     } catch (err) {
-      if (import.meta.env.DEV) {
-        console.error("Login failed:", {
-          status: err.response?.status,
-          endpoint: err.config?.url,
-          response: err.response?.data,
-          error: err.message,
-        });
-      }
       const detail = err.response?.data?.detail;
       setError(
         Array.isArray(detail)
           ? detail.map((d) => d.msg).join("; ")
-          : detail || (err.message === "Network Error" ? "Network error: unable to reach the authentication server." : "Something went wrong. Please try again.")
+          : detail || (err.message === "Network Error" ? "Network error: unable to reach the authentication server." : "Invalid username or password.")
       );
     } finally {
       setSubmitting(false);
@@ -97,7 +111,7 @@ export default function LoginPage() {
   ];
 
   return (
-    <div className="relative h-screen max-h-screen min-h-0 w-full overflow-hidden bg-gradient-to-br from-slate-50 via-[#f0f6ff] to-[#eaf2ff] text-slate-900 selection:bg-blue-500 selection:text-white max-md:h-auto max-md:min-h-screen max-md:overflow-y-auto">
+    <div className="relative min-h-screen w-full overflow-y-auto lg:overflow-hidden lg:h-screen lg:max-h-screen bg-gradient-to-br from-slate-50 via-[#f0f6ff] to-[#eaf2ff] text-slate-900 selection:bg-blue-500 selection:text-white flex flex-col justify-between">
       {/* Decorative ambient lighting elements (contained absolutely so zero scroll is created) */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
         <div className="absolute -top-24 left-1/4 h-80 w-80 rounded-full bg-blue-400/15 blur-3xl animate-float-slow" />
@@ -107,7 +121,7 @@ export default function LoginPage() {
       </div>
 
       {/* Viewport content shell */}
-      <div className="relative z-10 flex h-full flex-col justify-between px-4 py-3 sm:px-6 sm:py-4 md:px-8 md:py-4 lg:px-10 xl:px-14 min-h-0">
+      <div className="relative z-10 flex flex-1 flex-col justify-between px-3 py-4 sm:px-6 sm:py-6 md:px-8 lg:px-10 xl:px-14 min-h-0">
         
         {/* Main Grid Content Area */}
         <div className="mx-auto my-auto grid w-full max-w-7xl items-center gap-6 lg:grid-cols-12 lg:gap-8 xl:gap-12 min-h-0">
@@ -257,15 +271,24 @@ export default function LoginPage() {
                 <div className="mx-auto mb-2 flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-blue-500 text-white shadow-md shadow-blue-500/25">
                   <Activity className="h-5 w-5" />
                 </div>
-                <h2 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">
-                  {mode === "login" ? "Welcome Back!" : "Initial Admin Setup"}
+                <h2 className="text-xl font-bold tracking-tight text-slate-900">
+                  Account Sign In
                 </h2>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  {mode === "login"
-                    ? "Sign in to continue to your dashboard"
-                    : "Create the primary administrator account"}
+                  Sign in to continue to your secure workspace
                 </p>
               </div>
+
+              {/* Success / Info Notice */}
+              {notice && (
+                <div
+                  role="status"
+                  className="mb-3.5 flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50/90 p-2.5 text-xs text-emerald-800 shadow-2xs"
+                >
+                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                  <span className="font-medium">{notice}</span>
+                </div>
+              )}
 
               {/* Error State Banner */}
               {error && (
@@ -278,7 +301,7 @@ export default function LoginPage() {
                 </div>
               )}
 
-              {/* Login / Bootstrap Form */}
+              {/* Login Form */}
               <form onSubmit={handleSubmit} className="space-y-3">
                 
                 {/* Username Input Field */}
@@ -329,8 +352,7 @@ export default function LoginPage() {
                       placeholder="Enter your password"
                       className="block w-full rounded-lg border border-slate-200 bg-slate-50/50 py-2 pl-9 pr-9 text-sm text-slate-900 placeholder:text-slate-400 transition-all focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-3 focus:ring-blue-500/10"
                       required
-                      minLength={mode === "bootstrap" ? 12 : undefined}
-                      autoComplete={mode === "bootstrap" ? "new-password" : "current-password"}
+                      autoComplete="current-password"
                     />
                     <button
                       type="button"
@@ -345,12 +367,6 @@ export default function LoginPage() {
                       )}
                     </button>
                   </div>
-
-                  {mode === "bootstrap" && (
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      Password must be at least 12 characters.
-                    </p>
-                  )}
                 </div>
 
                 {/* Submit Button */}
@@ -367,7 +383,7 @@ export default function LoginPage() {
                       </>
                     ) : (
                       <>
-                        <span>{mode === "login" ? "Sign in" : "Create admin account"}</span>
+                        <span>Sign in</span>
                         <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-1" />
                       </>
                     )}
@@ -375,32 +391,25 @@ export default function LoginPage() {
                 </div>
               </form>
 
-              {/* Mode Toggle Link */}
-              <div className="mt-4 border-t border-slate-100 pt-3 text-center">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMode(mode === "login" ? "bootstrap" : "login");
-                    setError(null);
-                  }}
-                  className="text-xs font-medium text-blue-600 hover:text-indigo-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500/20 rounded-md p-0.5"
+              {/* Access Request / Registration Link */}
+              <div className="mt-4 border-t border-slate-100 pt-3 text-center space-y-2">
+                <Link
+                  to="/request-access"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-indigo-700 hover:underline"
                 >
-                  {mode === "login"
-                    ? "First time setting this up? Create initial admin"
-                    : "Already have an account? Sign in instead"}
-                </button>
+                  <UserPlus className="h-3.5 w-3.5" />
+                  <span>Don't have an account? Request Access Here</span>
+                </Link>
 
-                {mode === "bootstrap" && (
-                  <p className="mt-2 rounded-lg bg-slate-50 p-2 text-left text-[11px] text-slate-500 leading-relaxed border border-slate-200/60">
-                    <span className="font-semibold text-slate-700">Notice:</span> This only works once while no accounts exist. Subsequent accounts are provisioned in the Users panel.
-                  </p>
-                )}
+                <p className="text-[11px] text-slate-400">
+                  New users start in Pending status and require administrator approval.
+                </p>
               </div>
 
               {/* Security Footnote */}
               <div className="mt-3 flex items-center justify-center gap-1.5 text-[10px] text-slate-400">
                 <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
-                <span>Protected by HIPAA-compliant role-based access control</span>
+                <span>Protected by Argon2id & Role-Based Access Control</span>
               </div>
 
             </div>

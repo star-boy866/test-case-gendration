@@ -58,17 +58,17 @@ export default function CoverageMatrix({ result }) {
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col h-full overflow-hidden">
-      <div className="border-b border-slate-200 bg-white px-5 py-4">
-        <div className="flex justify-between items-end mb-4">
+      <div className="border-b border-slate-200 bg-white px-4 py-3 sm:px-5 sm:py-4">
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-3 mb-4">
           <div>
-            <h2 className="text-lg font-bold text-slate-900">Traceability Matrix</h2>
-            <p className="text-sm text-slate-500 font-normal mt-0.5">End-to-end mapping from DSD requirements to Developer UTs</p>
+            <h2 className="text-base sm:text-lg font-bold text-slate-900">Traceability Matrix</h2>
+            <p className="text-xs sm:text-sm text-slate-500 font-normal mt-0.5">End-to-end mapping from DSD requirements to Developer UTs</p>
           </div>
           
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-1.5 sm:gap-2">
             <button 
               onClick={() => setFilter("ALL")}
-              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${filter === "ALL" ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+              className={`px-2.5 py-1 sm:px-3 rounded-md text-xs font-medium transition-colors ${filter === "ALL" ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
             >
               All ({coverageStats.total})
             </button>
@@ -111,7 +111,7 @@ export default function CoverageMatrix({ result }) {
       </div>
       
       <div className="flex-1 overflow-auto bg-slate-50/30">
-        <table className="min-w-full divide-y divide-slate-200 text-sm text-left relative">
+        <table className="min-w-[650px] divide-y divide-slate-200 text-sm text-left relative">
           <thead className="bg-white sticky top-0 z-10 shadow-sm">
             <tr>
               <th className="px-4 py-3 font-semibold text-slate-600 w-32 bg-slate-50/95 backdrop-blur">Status</th>

@@ -63,9 +63,9 @@ export default function UsersPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-6xl mx-auto p-4 sm:p-6">
       <div>
-        <h2 className="text-xl font-semibold">User Management</h2>
+        <h2 className="text-xl font-semibold text-slate-900">User Management</h2>
         <p className="text-sm text-slate-500">
           Admin-only. Create accounts for testers/approvers/admins — see
           core/rbac.py for what each role can do.
@@ -77,7 +77,7 @@ export default function UsersPage() {
           <UserPlus className="h-4 w-4" />
           Create account
         </h3>
-        <form onSubmit={handleCreate} className="grid gap-3 sm:grid-cols-4 sm:items-end">
+        <form onSubmit={handleCreate} className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 items-end">
           <label className="block text-sm">
             <span className="mb-1 block font-medium text-slate-700">Username</span>
             <input
@@ -146,35 +146,37 @@ export default function UsersPage() {
         )}
 
         {!loading && !loadError && (
-          <table className="w-full text-left text-sm">
-            <thead className="text-slate-500">
-              <tr>
-                <th className="pb-2 font-medium">Username</th>
-                <th className="pb-2 font-medium">Role</th>
-                <th className="pb-2 font-medium">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) => (
-                <tr key={u.id} className="border-t border-slate-100">
-                  <td className="py-2">
-                    {u.username}
-                    {u.username === user?.username && (
-                      <span className="ml-2 text-xs text-slate-400">(you)</span>
-                    )}
-                  </td>
-                  <td className="py-2 uppercase text-xs text-slate-500">{u.role}</td>
-                  <td className="py-2">
-                    {u.is_active ? (
-                      <span className="text-emerald-600">Active</span>
-                    ) : (
-                      <span className="text-slate-400">Inactive</span>
-                    )}
-                  </td>
+          <div className="overflow-x-auto w-full">
+            <table className="w-full text-left text-sm">
+              <thead className="text-slate-500">
+                <tr>
+                  <th className="pb-2 font-medium">Username</th>
+                  <th className="pb-2 font-medium">Role</th>
+                  <th className="pb-2 font-medium">Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr key={u.id} className="border-t border-slate-100">
+                    <td className="py-2 font-medium">
+                      {u.username}
+                      {u.username === user?.username && (
+                        <span className="ml-2 text-xs text-slate-400 font-normal">(you)</span>
+                      )}
+                    </td>
+                    <td className="py-2 uppercase text-xs text-slate-500 font-mono">{u.role}</td>
+                    <td className="py-2">
+                      {u.is_active ? (
+                        <span className="text-emerald-600 font-medium">Active</span>
+                      ) : (
+                        <span className="text-slate-400">Inactive</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

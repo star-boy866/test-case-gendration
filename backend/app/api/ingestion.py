@@ -48,7 +48,7 @@ async def upload_document(
     report_id: str = Form(...),
     cr_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(require_role("tester")),
+    current_user: CurrentUser = Depends(require_role("admin")),
 ):
     ext = Path(file.filename).suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
@@ -143,7 +143,7 @@ async def upload_document(
 def view_knowledge_base(
     report_id: str,
     db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(require_role("tester")),
+    current_user: CurrentUser = Depends(require_role("admin")),
 ):
     """
     Full listing of everything extracted for a report_id so far. Powers the

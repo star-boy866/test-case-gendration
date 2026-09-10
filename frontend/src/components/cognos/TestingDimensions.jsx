@@ -56,17 +56,17 @@ export default function TestingDimensions({ result }) {
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden flex flex-col h-full">
-      <div className="border-b border-slate-200 bg-white px-6 py-5">
-        <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-          <GitMerge className="h-5 w-5 text-brand-600" />
+      <div className="border-b border-slate-200 bg-white px-4 py-4 sm:px-6 sm:py-5">
+        <h2 className="text-base sm:text-lg font-bold text-slate-900 flex items-center gap-2">
+          <GitMerge className="h-4 sm:h-5 w-4 sm:w-5 text-blue-600" />
           Methodology Applicability
         </h2>
-        <p className="text-sm text-slate-500 font-normal mt-1">
+        <p className="text-xs sm:text-sm text-slate-500 font-normal mt-1">
           Golden methodology patterns automatically evaluated against DSD evidence.
         </p>
       </div>
       
-      <div className="flex-1 overflow-auto bg-slate-50/50 p-6">
+      <div className="flex-1 overflow-auto bg-slate-50/50 p-3.5 sm:p-6">
         <div className="space-y-8">
           
           <div>

@@ -55,7 +55,7 @@ class GatekeeperConfirmResponse(BaseModel):
 def scope_summary(
     report_id: str,
     db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(require_role("admin")),
 ):
     return get_scope_summary(db, report_id)
 

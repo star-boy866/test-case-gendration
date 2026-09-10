@@ -6,28 +6,54 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
 export const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 60000, // generation calls can involve a local LLM, allow more time
+  withCredentials: true, // Send httpOnly cookies alongside Bearer token
 });
 
-// --- Auth token storage (Phase 9) -----------------------------------------
-// This is a real, separately-deployed SPA (not a claude.ai artifact), so
-// localStorage is the standard place for this — the usual XSS-vs-httpOnly-
-// cookie tradeoff applies same as it would for any React app; a future
-// hardening pass could move to an httpOnly cookie + CSRF token instead.
+// --- Auth token storage ---------------------------------------------------
 const TOKEN_KEY = "healthcare_nl_testgen_token";
 
 export const getStoredToken = () => localStorage.getItem(TOKEN_KEY);
 export const setStoredToken = (token) => localStorage.setItem(TOKEN_KEY, token);
 export const clearStoredToken = () => localStorage.removeItem(TOKEN_KEY);
 
+/**
+ * Centrally cleans up all transient Test Case Studio / Cognos workspace state.
+ * Called on logout, session expiration (401), and explicit workspace reset.
+ * Does NOT delete user preferences or authentication keys.
+ */
+export const clearCognosWorkspaceState = () => {
+  try {
+    localStorage.removeItem("cognos_active_run_id");
+    localStorage.removeItem("cognos_active_result");
+    localStorage.removeItem("cognos_project_context");
+    sessionStorage.removeItem("cognos_active_run_id");
+    sessionStorage.removeItem("cognos_active_result");
+
+    // Remove any dynamic evidence annotations/crop saved to localStorage
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("cognos_evidence_annotations_")) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+  } catch (err) {
+    console.error("Failed to clear Cognos workspace state:", err);
+  }
+};
+
 api.interceptors.request.use((config) => {
-  const token = getStoredToken();
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+  if (!config.headers.Authorization) {
+    const token = getStoredToken();
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
   }
   return config;
 });
 
-// A 401 means the token is missing/expired/invalid — clear it so the app
+// A 401 means the session is missing/expired/invalid — clear it so the app
 // doesn't keep retrying with a dead token, and let the caller's own
 // error handling (AuthContext) decide what to show/redirect to.
 api.interceptors.response.use(
@@ -35,6 +61,7 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       clearStoredToken();
+      clearCognosWorkspaceState();
     }
     return Promise.reject(error);
   }
@@ -42,22 +69,130 @@ api.interceptors.response.use(
 
 export const checkHealth = () => api.get("/health");
 
-// --- Auth (Phase 9) ---------------------------------------------------------
+// --- Core Auth & RBAC API Endpoints ----------------------------------------
 export const login = ({ username, password }) =>
   api.post("/auth/login", { username, password });
 
-// Only succeeds while the users table is empty (bootstrap account, always
-// admin) — see api/auth.py's register() docstring. Every subsequent
-// account must be created by an admin via createUser().
-export const registerFirstAdmin = ({ username, password }) =>
-  api.post("/auth/register", { username, password, role: "admin" });
+export const verifyMfa = ({ temp_token, code }) =>
+  api.post("/auth/verify-mfa", { temp_token, code });
+
+export const setupMfa = () =>
+  api.post("/auth/mfa/setup");
+
+export const confirmMfa = ({ code }) =>
+  api.post("/auth/mfa/confirm", { code });
+
+export const changePassword = (
+  { current_password, new_password, username, temp_token } = {},
+  tempToken = null
+) => {
+  let token = tempToken || temp_token;
+  if (!token) {
+    try {
+      token = sessionStorage.getItem("temp_auth_token") || null;
+    } catch {}
+  }
+
+  let user = username;
+  if (!user) {
+    try {
+      user =
+        sessionStorage.getItem("temp_auth_user") ||
+        localStorage.getItem("healthcare_nl_testgen_last_user") ||
+        null;
+    } catch {}
+  }
+
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  return api.post(
+    "/auth/change-password",
+    {
+      current_password,
+      new_password,
+      username: user,
+      temp_token: token,
+    },
+    { headers }
+  );
+};
+
+export const submitAccessRequest = ({ username, password, requested_role, reason }) =>
+  api.post("/auth/access-request", { username, password, requested_role, reason });
+
+export const getRequestStatus = () =>
+  api.get("/auth/access-request/status");
+
+export const logout = () =>
+  api.post("/auth/logout");
+
+export const logoutAll = () =>
+  api.post("/auth/logout-all");
+
+export const listSessions = () =>
+  api.get("/auth/sessions");
+
+export const revokeSession = (sessionId) =>
+  api.delete(`/auth/sessions/${encodeURIComponent(sessionId)}`);
+
+export const reauthenticate = ({ password, mfa_code }) =>
+  api.post("/auth/reauthenticate", { password, mfa_code });
 
 export const getMe = () => api.get("/auth/me");
+
+// --- Admin RBAC Approvals & Management -------------------------------------
+export const listApprovals = (params = {}) =>
+  api.get("/admin/approvals", { params });
+
+export const seedDemoRequest = () =>
+  api.post("/admin/approvals/demo-seed");
+
+export const approveRequest = (requestId, { reason, admin_password, mfa_code }) =>
+  api.post(`/admin/approvals/${requestId}/approve`, {
+    reason,
+    admin_password,
+    mfa_code,
+  });
+
+export const rejectRequest = (requestId, { reason, admin_password, mfa_code }) =>
+  api.post(`/admin/approvals/${requestId}/reject`, {
+    reason,
+    admin_password,
+    mfa_code,
+  });
+
+export const listAdminUsers = () =>
+  api.get("/admin/users");
+
+export const createAdminUser = ({ username, password, role }) =>
+  api.post("/admin/users", { username, password, role });
+
+export const updateUserStatus = (userId, { status, reason, admin_password, mfa_code }) =>
+  api.patch(`/admin/users/${userId}/status`, {
+    status,
+    reason,
+    admin_password,
+    mfa_code,
+  });
+
+export const updateUserRole = (userId, { role, reason, admin_password, mfa_code }) =>
+  api.patch(`/admin/users/${userId}/role`, {
+    role,
+    reason,
+    admin_password,
+    mfa_code,
+  });
+
+export const getAdminAuditLogs = (params = {}) =>
+  api.get("/admin/audit-logs", { params });
+
+// Legacy helper aliases for backward compatibility
+export const registerFirstAdmin = ({ username, password }) =>
+  api.post("/auth/register", { username, password, role: "admin" });
 
 export const createUser = ({ username, password, role }) =>
   api.post("/auth/users", { username, password, role });
 
-export const listUsers = () => api.get("/auth/users");
+export const listUsers = () => api.get("/admin/users");
 
 // Phase 1
 export const uploadDocument = ({ file, reportId, crId }) => {
@@ -197,6 +332,12 @@ export const downloadCognosExport = async (runId) => {
 };
 
 // --- Cognos HITL (Human-in-the-Loop) Review APIs ---
+export const getCognosRun = (runId) =>
+  api.get(`/cognos/runs/${runId}`);
+
+export const getLatestCognosRun = () =>
+  api.get(`/cognos/runs-latest`);
+
 export const getRunTestCases = (runId) =>
   api.get(`/cognos/runs/${runId}/test-cases`);
 
@@ -214,5 +355,42 @@ export const suggestMissingScenario = (runId, { whatToTest, dsdReference }) =>
 
 export const addMissingScenario = (runId, scenario) =>
   api.post(`/cognos/runs/${runId}/add-scenario`, { scenario });
+
+// --- Test Case File Assignment & Security APIs ---
+export const getTesterAssignedFiles = () =>
+  api.get("/cognos/tester/assigned-files");
+
+export const viewAssignedFileTestCases = (fileId) =>
+  api.get(`/cognos/files/${encodeURIComponent(fileId)}/view`);
+
+export const downloadAssignedFile = async (fileId, preferredFilename = null) => {
+  const response = await api.get(`/cognos/files/${encodeURIComponent(fileId)}/download`, {
+    responseType: "blob",
+  });
+  const contentDisposition = response.headers["content-disposition"] || "";
+  const match = contentDisposition.match(/filename="?([^"]+)"?/);
+  const filename = match ? match[1] : (preferredFilename || `Test_Cases_${fileId}.xlsx`);
+
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+};
+
+export const getAllAssignments = () =>
+  api.get("/admin/assignments");
+
+export const createAssignment = ({ run_id, user_id, notes }) =>
+  api.post("/admin/assignments", { run_id, user_id, notes });
+
+export const revokeAssignment = (assignmentId, reason) =>
+  api.post(`/admin/assignments/${assignmentId}/revoke`, { reason });
+
+export const deleteTestCaseRun = (runId, reason) =>
+  api.delete(`/admin/runs/${runId}`, { params: { reason } });
 
 export default api;

@@ -8,19 +8,28 @@ from datetime import datetime, timezone
 import hashlib
 import subprocess
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, cast
 from pydantic import BaseModel
 
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException, Body
 from fastapi.responses import FileResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
+
+import json
 
 from app.core.config import settings
 from app.db.session import get_db
 from app.core.rbac import require_role, CurrentUser
+from app.models.audit import AuditLogEntry
+from app.services.assignment_service import (
+    validate_test_case_file_access,
+    list_tester_assigned_files,
+)
 
 from app.cognos.pipeline import run_cognos_pipeline
 from app.domain.reporting_context import FinalReportContext
@@ -358,25 +367,27 @@ async def upload_and_generate(
             pipeline_result.report_definition
         )
         
-        # We need to manually convert the MethodologyApplicabilityReport and its nested enums to JSON-serializable dicts
-        import dataclasses
-        def _serialize_methodology_report(report):
-            from app.domain.cognos_requirement import RequirementConfidence
-            from enum import Enum
-            import typing
-            def _clean(obj: typing.Any) -> typing.Any:
-                if isinstance(obj, Enum):
-                    return obj.value
-                elif isinstance(obj, dict):
-                    return {k: _clean(v) for k, v in obj.items()}
-                elif isinstance(obj, list):
-                    return [_clean(i) for i in obj]
-                elif dataclasses.is_dataclass(obj):
-                    return _clean(dataclasses.asdict(obj))
-                elif hasattr(obj, 'model_dump'):
-                    return obj.model_dump()
-                return obj
-            return _clean(report)
+        # Methodology applicability report converted via module-level serializer
+        # Auto-assign the generated run to the creating tester
+        if current_user.role == "tester":
+            from app.models.rbac import TestCaseAssignment
+            import uuid
+            existing_a = db.query(TestCaseAssignment).filter_by(run_id=run.id, user_id=current_user.id).first()
+            if not existing_a:
+                file_id = f"TCF-{uuid.uuid4().hex[:12].upper()}"
+                db.add(TestCaseAssignment(
+                    file_id=file_id,
+                    run_id=run.id,
+                    user_id=current_user.id,
+                    assigned_by_id=current_user.id,
+                    status="ASSIGNED",
+                    notes="Self-generated test case suite",
+                ))
+                db.commit()
+
+        if current_user.role == "tester":
+            for tc in test_cases_out:
+                tc.pop("raw_structural_intent", None)
 
         return {
             "run_id": run.id,
@@ -419,21 +430,20 @@ def get_source_document(
 ):
     """
     Serve the canonical source document for a given run.
+    Restricted to standard_admin, admin, or tester assigned to this run.
     """
-    run = db.query(CognosGenerationRun).filter(CognosGenerationRun.id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found.")
+    run, assignment = validate_test_case_file_access(db, run_id, current_user)
         
     if not run.source_document_path:
         raise HTTPException(status_code=404, detail="Run does not have an associated source document path.")
         
-    source_path = Path(run.source_document_path)
+    source_path = Path(str(run.source_document_path))
     if not source_path.exists():
         raise HTTPException(status_code=404, detail="Source document not found on disk.")
         
     return FileResponse(
         path=source_path,
-        filename=run.source_document,
+        filename=str(run.source_document) if run.source_document else None,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
 
@@ -452,45 +462,58 @@ def get_source_snapshot(
 ):
     """
     Serve the PNG rasterization of the canonical source document's target region using Playwright.
+    Restricted to standard_admin, admin, or tester assigned to this run.
     """
     logger.info(
         f"[SOURCE_SNAPSHOT REQUEST] run_id={run_id}, evidence_id='{evidence_id}', "
         f"test_case_id='{test_case_id}', methodology='{methodology}', "
-        f"section='{section}', target_field='{target_field}', evidence_scope='{evidence_scope}'"
+        f"section='{section}', target_field='{target_field}', evidence_scope='{evidence_scope}', "
+        f"caller='{current_user.username}', role='{current_user.role}'"
     )
 
-    run = db.query(CognosGenerationRun).filter(CognosGenerationRun.id == run_id).first()
-    if not run:
-        logger.warning(f"[SOURCE_SNAPSHOT 404] Run {run_id} not found in DB.")
-        raise HTTPException(status_code=404, detail="Run not found.")
+    run, assignment = validate_test_case_file_access(db, run_id, current_user)
         
     if not run.source_document_path:
         logger.warning(f"[SOURCE_SNAPSHOT 404] Run {run_id} has no source_document_path.")
         raise HTTPException(status_code=404, detail="Run does not have an associated source document path.")
         
-    source_path = Path(run.source_document_path)
+    source_path = Path(str(run.source_document_path))
     if not source_path.exists():
         logger.warning(f"[SOURCE_SNAPSHOT 404] Source document not found at {source_path}.")
         raise HTTPException(status_code=404, detail="Source document not found on disk.")
 
-    evidence_dir = source_path.parent.parent / "evidence"
+    evidence_dir = (source_path.parent.parent / "evidence").resolve()
     evidence_dir.mkdir(parents=True, exist_ok=True)
     
+    # Path Traversal Protection & Parameter Sanitization
+    safe_evidence_id = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', evidence_id.strip()) if evidence_id else ""
+    safe_test_case_id = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', test_case_id.strip()) if test_case_id else ""
+    safe_methodology = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', methodology.strip()) if methodology else ""
+    safe_scope = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', evidence_scope.strip()) if evidence_scope else ""
+
     # Phase 12O.1: Layout Validation snapshot cache key is page-level
-    if methodology == "LAYOUT_VALIDATION" or evidence_scope == "FULL_REPORT_LAYOUT":
-        png_path = evidence_dir / f"source_snapshot_{run_id}_REPORT_LAYOUT_FULL.png"
+    if safe_methodology == "LAYOUT_VALIDATION" or safe_scope == "FULL_REPORT_LAYOUT":
+        png_filename = f"source_snapshot_{run_id}_REPORT_LAYOUT_FULL.png"
         target_field = ""
         evidence_scope = "FULL_REPORT_LAYOUT"
         section = "Report Layout"
-    elif methodology == "DB_REPORT_DATA_VALIDATION" or evidence_scope == "REPORT_BODY_MAPPING":
-        png_path = evidence_dir / f"source_snapshot_{run_id}_DBRV_FULL_REPORT_BODY.png"
+    elif safe_methodology == "DB_REPORT_DATA_VALIDATION" or safe_scope == "REPORT_BODY_MAPPING":
+        png_filename = f"source_snapshot_{run_id}_DBRV_FULL_REPORT_BODY.png"
         target_field = "Full Mapping"
         evidence_scope = "REPORT_BODY_MAPPING"
         section = "Report Body"
     else:
         # Safe fallback if evidence_id isn't provided
-        safe_evidence_id = evidence_id or (f"snap_{test_case_id}_{methodology[:6]}" if (test_case_id or methodology) else "default")
-        png_path = evidence_dir / f"source_snapshot_{safe_evidence_id}.png"
+        fallback_id = safe_evidence_id or (f"snap_{safe_test_case_id}_{safe_methodology[:6]}" if (safe_test_case_id or safe_methodology) else "default")
+        png_filename = f"source_snapshot_{fallback_id}.png"
+
+    # Strictly ensure png_filename is a safe file name without path separators
+    png_filename = Path(png_filename).name
+    png_path = (evidence_dir / png_filename).resolve()
+
+    if not png_path.is_relative_to(evidence_dir):
+        logger.warning(f"[SOURCE_SNAPSHOT 400] Path traversal attempt detected: {png_filename}")
+        raise HTTPException(status_code=400, detail="Invalid evidence parameters.")
 
     render_script = Path(__file__).parent.parent.parent / "render" / "render_snapshot.js"
 
@@ -504,12 +527,12 @@ def get_source_snapshot(
     
     # Try to find node executable path (fallback if 'node' not in PATH)
     node_cmd = "node"
-    args = [
+    args: list[str] = [
         str(render_script),
         str(source_path),
         str(png_path),
         section or "",
-        run.report_id or "",
+        str(run.report_id or ""),
         methodology or "",
         target_field or "",
         evidence_scope or "",
@@ -540,6 +563,9 @@ def get_source_snapshot(
                 errors="replace"
             )
             logger.info(f"[SOURCE_SNAPSHOT RENDER STDOUT] {res.stdout.strip()}")
+        except subprocess.CalledProcessError as sub_e:
+            logger.error(f"[SOURCE_SNAPSHOT PROCESS ERROR] Return code {sub_e.returncode}. Stderr: {sub_e.stderr}")
+            raise HTTPException(status_code=404, detail=f"Visual source preview unavailable: {sub_e.stderr or sub_e.stdout}")
         except Exception as fallback_e:
             logger.error(f"[SOURCE_SNAPSHOT NODE ERROR] Node execution failed: {fallback_e}")
             raise HTTPException(status_code=404, detail=f"Visual source preview unavailable (Node not found: {str(fallback_e)})")
@@ -565,23 +591,140 @@ def export_run_to_excel(
     current_user: CurrentUser = Depends(require_role("tester")),
 ):
     """
-    Serve the pre-generated authoritative Excel workbook for a given run.
+    Dynamically rebuild and serve the authoritative Excel workbook for a given run.
+    Always reflects the latest HITL edits (UPDATE_SCENARIO, APPROVE, REJECT, etc.).
+    Enforces IDOR validation (testers can only download assigned files) and audit logging.
     """
-    run = db.query(CognosGenerationRun).filter(CognosGenerationRun.id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found.")
-        
-    export_dir = Path(settings.EXPORT_DIR)
-    filename = f"Cognos_UT_{run.id}.xlsx"
-    export_path = export_dir / filename
-    
-    if not export_path.exists():
-        raise HTTPException(status_code=404, detail="Excel export not found on disk.")
-        
+    run, assignment = validate_test_case_file_access(db, run_id, current_user)
+
+    # Rebuild workbook from current DB state
+    try:
+        from app.domain.cognos_test_case import CognosTestCase, TestSuite, CoverageReport, TestSuiteSummary
+        from app.domain.cognos_requirement import CognosRequirement, RequirementSet
+        from app.domain.cognos_models import ReportDefinition
+
+        # Reconstruct test cases from ORM
+        tc_models = (
+            db.query(CognosTestCaseModel)
+            .filter(CognosTestCaseModel.run_id == run.id)
+            .order_by(CognosTestCaseModel.scenario_order.asc(), CognosTestCaseModel.id.asc())
+            .all()
+        )
+        domain_test_cases = []
+        for tc in tc_models:
+            domain_test_cases.append(CognosTestCase(
+                test_case_id=tc.test_case_id or "",
+                report_id=tc.report_id or "",
+                test_case_title=tc.test_case_title or "",
+                category=tc.category or "",
+                objective=tc.objective or "",
+                preconditions=tc.preconditions or "",
+                test_data=tc.test_data or "",
+                test_steps=tc.test_steps or "",
+                expected_result=tc.expected_result or "",
+                validation_logic=tc.validation_logic or "",
+                validation_sql=_extract_sql_from_model(tc),
+                source_section=tc.source_section or "",
+                source_page=tc.source_page,
+                source_table=tc.source_table or "",
+                source_column=tc.source_column or "",
+                processing_rule=tc.processing_rule or "",
+                formatting_rule=tc.formatting_rule or "",
+                priority=tc.priority or "Medium",
+                status=tc.status or "Generated",
+                notes=tc.notes or "",
+                open_questions=tc.open_questions or "",
+                version=tc.version or 1,
+                scenario_order=tc.scenario_order or 0,
+                review_status=tc.review_status or "GENERATED",
+                dsd_reference=getattr(tc, "dsd_reference", "") or "",
+                applicability_reason=getattr(tc, "applicability_reason", "") or "",
+                open_item=getattr(tc, "open_item", "") or "",
+                report_validation_sql=getattr(tc, "report_validation_sql", "") or "",
+            ))
+
+        # Reconstruct requirements from ORM
+        req_models = (
+            db.query(CognosRequirementModel)
+            .filter(CognosRequirementModel.run_id == run.id)
+            .order_by(CognosRequirementModel.id.asc())
+            .all()
+        )
+        domain_reqs = [
+            CognosRequirement(
+                requirement_id=str(r.requirement_id or ""),
+                report_id=str(r.report_id or ""),
+                category=r.category,
+                field=str(r.field_name or ""),
+                requirement_text=str(r.requirement_text or ""),
+                source_section=str(r.source_section or ""),
+                source_page=cast(int, r.source_page) if r.source_page is not None else None,
+                source_columns=[str(c) for c in r.source_columns] if isinstance(r.source_columns, list) else [],
+                processing_rule=str(r.processing_rule or ""),
+                formatting_rule=str(r.formatting_rule or ""),
+                confidence=r.confidence,
+                is_ambiguous=bool(r.is_ambiguous),
+                open_questions=[str(q) for q in r.open_questions] if isinstance(r.open_questions, list) else [],
+                is_duplicate_of=str(r.is_duplicate_of) if r.is_duplicate_of else None,
+            )
+            for r in req_models
+        ]
+
+        rep_def = run.report_definition_json or {}
+        if not rep_def.get("metadata"):
+            rep_def["metadata"] = {
+                "report_id": run.report_id,
+                "report_title": run.report_title or "Cognos Report",
+            }
+
+        test_suite = TestSuite(
+            report_id=run.report_id or "",
+            report_title=run.report_title or "",
+            test_cases=domain_test_cases,
+        )
+        test_suite.compute_summary()
+
+        context = FinalReportContext(
+            report_definition=ReportDefinition.model_validate(rep_def),
+            requirement_set=RequirementSet(requirements=domain_reqs),
+            test_suite=test_suite,
+        )
+
+        export_dir = Path(settings.EXPORT_DIR)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"Cognos_UT_{run.id}.xlsx"
+        export_path = export_dir / filename
+        generated_at = datetime.now(timezone.utc) if run.completed_at is None else cast(datetime, run.completed_at)
+        wb = build_cognos_workbook(context, generated_at=generated_at)
+        wb.save(export_path)
+
+    except Exception as e:
+        logger.error(f"Failed to regenerate Excel for run {run_id}: {e}")
+        # Fall back to pre-generated file if regeneration fails
+        export_dir = Path(settings.EXPORT_DIR)
+        filename = f"Cognos_UT_{run.id}.xlsx"
+        export_path = export_dir / filename
+        if not export_path.exists():
+            raise HTTPException(status_code=404, detail="Excel export not found and regeneration failed.")
+
+    db.add(AuditLogEntry(
+        user_id=current_user.username,
+        event_type="TEST_CASE_DOWNLOADED",
+        detail=json.dumps({
+            "run_id": run.id,
+            "report_id": run.report_id,
+            "filename": filename,
+            "caller": current_user.username,
+            "role": current_user.role,
+        }),
+    ))
+    db.commit()
+
     return FileResponse(
         path=export_path,
         filename=filename,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"}
     )
 
 @router.get("/runs/{run_id}/evidence/{evidence_id}")
@@ -593,26 +736,41 @@ def get_evidence_image(
 ):
     """
     Serve a specific DSD rendered page image for a given test case run.
+    Restricted to standard_admin, admin, or tester assigned to this run.
     """
-    run = db.query(CognosGenerationRun).filter(CognosGenerationRun.id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found.")
+    run, assignment = validate_test_case_file_access(db, run_id, current_user)
         
     if not run.job_id:
         raise HTTPException(status_code=404, detail="Run does not have associated evidence data.")
         
-    # Security: Ensure evidence_id is just a filename
+    # Security: Ensure evidence_id is just a sanitized filename
     evidence_id = Path(evidence_id).name
+    evidence_id = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', evidence_id)
+    if not evidence_id:
+        raise HTTPException(status_code=400, detail="Invalid evidence ID.")
     
-    candidate_paths = [
-        Path("jobs") / (run.job_id or "") / "evidence" / evidence_id,
-        Path("jobs") / (run.job_id or "") / "evidence" / f"{evidence_id}.png",
-        Path("runs") / str(run.id) / "evidence" / evidence_id,
-        Path("runs") / str(run.id) / "evidence" / f"{evidence_id}.png",
+    job_id_str = re.sub(r'[^a-zA-Z0-9_\-]', '', str(run.job_id or ""))
+    run_id_str = str(run.id)
+    candidate_paths: list[Path] = [
+        Path("jobs") / job_id_str / "evidence" / evidence_id,
+        Path("jobs") / job_id_str / "evidence" / f"{evidence_id}.png",
+        Path("runs") / run_id_str / "evidence" / evidence_id,
+        Path("runs") / run_id_str / "evidence" / f"{evidence_id}.png",
     ]
     
-    img_path = None
+    allowed_bases = [
+        (Path("jobs") / job_id_str / "evidence").resolve(),
+        (Path("runs") / run_id_str / "evidence").resolve(),
+    ]
+    
+    img_path: Optional[Path] = None
     for p in candidate_paths:
+        try:
+            resolved_p = p.resolve()
+            if not any(resolved_p.is_relative_to(base) for base in allowed_bases):
+                continue
+        except (ValueError, RuntimeError):
+            continue
         if p.exists() and p.is_file() and p.stat().st_size > 0:
             img_path = p
             break
@@ -683,17 +841,84 @@ def _extract_sql_from_model(tc: CognosTestCaseModel) -> str:
         return str(val_sql).strip()
     import re
     if getattr(tc, "validation_logic", None):
-        m = re.search(r"```sql\s*([\s\S]*?)```", tc.validation_logic or "")
+        m = re.search(r"```sql\s*([\s\S]*?)```", str(tc.validation_logic or ""))
         if m:
             return m.group(1).strip()
     if getattr(tc, "test_data", None):
-        m = re.search(r"```sql\s*([\s\S]*?)```", tc.test_data or "")
+        m = re.search(r"```sql\s*([\s\S]*?)```", str(tc.test_data or ""))
         if m:
             return m.group(1).strip()
     return ""
 
 
+def _serialize_methodology_report(report: Any) -> Optional[Dict[str, Any]]:
+    if report is None:
+        return None
+    import dataclasses
+    from enum import Enum
+    import typing
+    def _clean(obj: typing.Any) -> typing.Any:
+        if isinstance(obj, Enum):
+            return obj.value
+        elif isinstance(obj, dict):
+            return {k: _clean(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [_clean(i) for i in obj]
+        elif dataclasses.is_dataclass(obj):
+            return _clean(dataclasses.asdict(obj))
+        elif hasattr(obj, 'model_dump'):
+            return obj.model_dump()
+        return obj
+    return _clean(dataclasses.asdict(report) if dataclasses.is_dataclass(report) else (report.model_dump() if hasattr(report, 'model_dump') else report))
+
+
+def _serialize_requirement_model(req: CognosRequirementModel) -> Dict[str, Any]:
+    return {
+        "id": req.id,
+        "requirement_id": req.requirement_id,
+        "report_id": req.report_id,
+        "category": req.category,
+        "field": req.field_name,
+        "requirement_text": req.requirement_text,
+        "source_section": req.source_section,
+        "source_page": req.source_page,
+        "source_columns": req.source_columns or [],
+        "processing_rule": req.processing_rule or "",
+        "formatting_rule": req.formatting_rule or "",
+        "confidence": req.confidence,
+        "is_ambiguous": bool(req.is_ambiguous),
+        "open_questions": req.open_questions or [],
+        "is_duplicate_of": req.is_duplicate_of,
+    }
+
+
 def _serialize_test_case_model(tc: CognosTestCaseModel, run_id: int) -> Dict[str, Any]:
+    evidence_refs = []
+    if tc.evidence_references:
+        from urllib.parse import urlencode
+        for ev in tc.evidence_references:
+            ev_copy = dict(ev) if isinstance(ev, dict) else ev
+            if isinstance(ev_copy, dict):
+                ev_copy["run_id"] = run_id
+                if not ev_copy.get("source_document_url"):
+                    ev_copy["source_document_url"] = f"/api/cognos/runs/{run_id}/source-document"
+                if not ev_copy.get("snapshot_url"):
+                    if ev_copy.get("snapshot_path"):
+                        ev_id = Path(ev_copy["snapshot_path"]).name
+                        ev_copy["evidence_id"] = ev_id
+                        ev_copy["snapshot_url"] = f"/api/cognos/runs/{run_id}/evidence/{ev_id}"
+                    else:
+                        q_params = {
+                            "evidence_id": ev_copy.get("evidence_id") or "",
+                            "section": ev_copy.get("section") or "",
+                            "methodology": ev_copy.get("methodology") or "",
+                            "target_field": ev_copy.get("target_field") or "",
+                            "evidence_scope": ev_copy.get("evidence_scope") or "",
+                            "test_case_id": tc.test_case_id or "",
+                        }
+                        ev_copy["snapshot_url"] = f"/api/cognos/runs/{run_id}/source-snapshot?{urlencode(q_params)}"
+            evidence_refs.append(ev_copy)
+
     return {
         "id": tc.id,
         "run_id": tc.run_id,
@@ -722,7 +947,7 @@ def _serialize_test_case_model(tc: CognosTestCaseModel, run_id: int) -> Dict[str
         "scenario_order": tc.scenario_order or 0,
         "notes": tc.notes,
         "open_questions": tc.open_questions,
-        "evidence_references": tc.evidence_references,
+        "evidence_references": evidence_refs,
         "review_status": tc.review_status or "GENERATED",
         "review_comments": tc.review_comments or "",
         "reviewer": tc.reviewer or "",
@@ -740,6 +965,119 @@ def _serialize_test_case_model(tc: CognosTestCaseModel, run_id: int) -> Dict[str
     }
 
 
+@router.get("/tester/assigned-files")
+def get_tester_assigned_files(
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_role("tester")),
+):
+    """
+    Returns the list of test case files specifically assigned to the caller.
+    Restricted information (requirements, snapshots, methodology) is strictly excluded.
+    """
+    return list_tester_assigned_files(db, current_user.id)
+
+
+@router.get("/files/{file_id}/view")
+def view_assigned_file_test_cases(
+    file_id: str,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_role("tester")),
+):
+    """
+    IDOR-protected test cases viewer for an assigned test case file.
+    Returns sanitized test scenarios with zero restricted fields.
+    """
+    run, assignment = validate_test_case_file_access(db, file_id, current_user)
+
+    # Log file view
+    db.add(AuditLogEntry(
+        user_id=current_user.username,
+        event_type="TEST_CASE_VIEWED",
+        detail=json.dumps({
+            "file_id": file_id,
+            "run_id": run.id,
+            "report_id": run.report_id,
+            "caller": current_user.username,
+        }),
+    ))
+    db.commit()
+
+    test_cases = (
+        db.query(CognosTestCaseModel)
+        .filter(CognosTestCaseModel.run_id == run.id)
+        .order_by(CognosTestCaseModel.scenario_order.asc(), CognosTestCaseModel.id.asc())
+        .all()
+    )
+
+    # Sanitize for tester: no requirements, no snapshots, no methodology
+    sanitized = []
+    for tc in test_cases:
+        sanitized.append({
+            "id": tc.id,
+            "test_case_id": tc.test_case_id,
+            "category": tc.category,
+            "test_case_title": tc.test_case_title,
+            "objective": tc.objective,
+            "preconditions": tc.preconditions,
+            "test_data": tc.test_data,
+            "test_steps": tc.test_steps,
+            "expected_result": tc.expected_result,
+            "priority": tc.priority,
+            "status": tc.status,
+            "review_status": tc.review_status,
+            "execution_method": tc.execution_method,
+            "execution_tool": tc.execution_tool,
+        })
+
+    return {
+        "file_id": file_id,
+        "run_id": run.id,
+        "report_id": run.report_id,
+        "report_title": run.report_title,
+        "test_cases": sanitized,
+    }
+
+
+@router.get("/files/{file_id}/download")
+def download_assigned_file(
+    file_id: str,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_role("tester")),
+):
+    """
+    IDOR-protected test case file download.
+    Serves authoritative Excel workbook with no-cache headers and audit log.
+    """
+    run, assignment = validate_test_case_file_access(db, file_id, current_user)
+
+    export_dir = Path(settings.EXPORT_DIR)
+    filename = f"Cognos_UT_{run.id}.xlsx"
+    export_path = export_dir / filename
+
+    if not export_path.exists():
+        raise HTTPException(status_code=404, detail="Test case export workbook not found on server.")
+
+    db.add(AuditLogEntry(
+        user_id=current_user.username,
+        event_type="TEST_CASE_DOWNLOADED",
+        detail=json.dumps({
+            "file_id": file_id,
+            "run_id": run.id,
+            "report_id": run.report_id,
+            "filename": filename,
+            "caller": current_user.username,
+        }),
+    ))
+    db.commit()
+
+    return FileResponse(
+        path=export_path,
+        filename=f"Cognos_UT_{run.report_id or run.id}.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Cache-Control": "no-store, private", "Pragma": "no-cache"},
+    )
+
+
 @router.get("/runs/{run_id}/test-cases")
 def get_run_test_cases(
     run_id: int,
@@ -747,9 +1085,20 @@ def get_run_test_cases(
     current_user: CurrentUser = Depends(require_role("tester")),
 ):
     """Retrieve all test cases for a run with up-to-date HITL review status."""
-    run = db.query(CognosGenerationRun).filter(CognosGenerationRun.id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found.")
+    run, assignment = validate_test_case_file_access(db, run_id, current_user)
+
+    # Log file view event
+    db.add(AuditLogEntry(
+        user_id=current_user.username,
+        event_type="TEST_CASE_VIEWED",
+        detail=json.dumps({
+            "run_id": run.id,
+            "report_id": run.report_id,
+            "caller": current_user.username,
+            "role": current_user.role,
+        }),
+    ))
+    db.commit()
 
     test_cases = (
         db.query(CognosTestCaseModel)
@@ -757,13 +1106,167 @@ def get_run_test_cases(
         .order_by(CognosTestCaseModel.scenario_order.asc(), CognosTestCaseModel.id.asc())
         .all()
     )
+
+    test_cases_out = [_serialize_test_case_model(tc, run_id) for tc in test_cases]
+    if (current_user.role or "").lower() == "tester":
+        for tc_dict in test_cases_out:
+            tc_dict.pop("raw_structural_intent", None)
+
     return {
         "run_id": run_id,
+        "report_id": run.report_id,
+        "report_title": run.report_title,
         "work_type": run.work_type,
         "work_item_id": run.work_item_id,
         "work_item_title": run.work_item_title,
-        "test_cases": [_serialize_test_case_model(tc, run_id) for tc in test_cases],
+        "test_cases": test_cases_out,
     }
+
+
+@router.get("/runs/{run_id}")
+def get_run_details(
+    run_id: int,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_role("tester")),
+):
+    """
+    Get full run summary, requirements, methodology applicability, and test cases 
+    for display in Cognos Test Case Studio.
+    Validates file access for testers (IDOR protection).
+    """
+    run, assignment = validate_test_case_file_access(db, run_id, current_user)
+
+    test_cases = (
+        db.query(CognosTestCaseModel)
+        .filter(CognosTestCaseModel.run_id == run.id)
+        .order_by(CognosTestCaseModel.scenario_order.asc(), CognosTestCaseModel.id.asc())
+        .all()
+    )
+
+    test_cases_out = []
+    for tc in test_cases:
+        tc_dict = _serialize_test_case_model(tc, cast(int, run.id))
+        if (current_user.role or "").lower() == "tester":
+            tc_dict.pop("raw_structural_intent", None)
+        test_cases_out.append(tc_dict)
+
+    rep_def = run.report_definition_json or {}
+    if not rep_def.get("metadata"):
+        rep_def["metadata"] = {
+            "report_id": run.report_id,
+            "report_title": run.report_title or "Cognos Report",
+        }
+
+    # Fetch and serialize requirements
+    requirements = (
+        db.query(CognosRequirementModel)
+        .filter(CognosRequirementModel.run_id == run.id)
+        .order_by(CognosRequirementModel.id.asc())
+        .all()
+    )
+    requirements_out = [_serialize_requirement_model(r) for r in requirements]
+
+    # Reconstruct or compute methodology applicability report
+    methodology_data = None
+    try:
+        from app.domain.cognos_requirement import CognosRequirement
+        from app.domain.cognos_models import ReportDefinition
+        from app.cognos.rules.scenario_patterns import discover_applicable_patterns
+        domain_reqs = [
+            CognosRequirement(
+                requirement_id=str(r.requirement_id or ""),
+                report_id=str(r.report_id or ""),
+                category=r.category,
+                field=str(r.field_name or ""),
+                requirement_text=str(r.requirement_text or ""),
+                source_section=str(r.source_section or ""),
+                source_page=cast(int, r.source_page) if r.source_page is not None else None,
+                source_columns=[str(c) for c in r.source_columns] if isinstance(r.source_columns, list) else [],
+                processing_rule=str(r.processing_rule or ""),
+                formatting_rule=str(r.formatting_rule or ""),
+                confidence=r.confidence,
+                is_ambiguous=bool(r.is_ambiguous),
+                open_questions=[str(q) for q in r.open_questions] if isinstance(r.open_questions, list) else [],
+                is_duplicate_of=str(r.is_duplicate_of) if r.is_duplicate_of else None,
+            )
+            for r in requirements
+        ]
+        rd_obj = ReportDefinition.model_validate(rep_def) if rep_def else None
+        methodology_report = discover_applicable_patterns(domain_reqs, rd_obj)
+        methodology_data = _serialize_methodology_report(methodology_report)
+    except Exception as e:
+        logger.warning(f"Failed to generate methodology applicability report for run {run.id}: {e}")
+
+    # Compute category distribution for coverage
+    category_counts: Dict[str, int] = {}
+    for tc in test_cases:
+        cat = str(tc.category or "General")
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+
+    total_reqs = len(requirements_out) or run.requirements_extracted or 0
+    total_tcs = len(test_cases_out) or run.test_cases_generated or 0
+
+    return {
+        "run_id": run.id,
+        "report_id": run.report_id,
+        "report_title": run.report_title or (rep_def.get("metadata") or {}).get("report_title") or "Cognos Report",
+        "status": "success",
+        "work_type": run.work_type,
+        "work_item_id": run.work_item_id,
+        "work_item_title": run.work_item_title,
+        "report_definition": rep_def,
+        "summary": {
+            "total_requirements": total_reqs,
+            "total_test_cases": total_tcs,
+            "overall_coverage": run.coverage_percentage,
+            "execution_time_seconds": 0.8,
+        },
+        "coverage": {
+            "overall_coverage_percentage": run.coverage_percentage,
+            "total_requirements": total_reqs,
+            "covered_requirements": total_reqs,
+            "unmapped_requirements": 0,
+            "methodology_coverage_percentage": run.coverage_percentage,
+            "methodology_patterns_generated": total_tcs,
+            "distribution_by_category": category_counts,
+        },
+        "methodology_applicability": methodology_data,
+        "requirements": requirements_out,
+        "test_cases": test_cases_out,
+        "requirement_count": total_reqs,
+        "test_case_count": total_tcs,
+    }
+
+
+@router.get("/runs-latest")
+def get_latest_run(
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_role("tester")),
+):
+    """Returns the latest accessible run for the current user."""
+    from app.models.rbac import TestCaseAssignment
+    is_admin = getattr(current_user, "is_admin", False) or getattr(current_user, "role", "") in ("admin", "standard_admin")
+    if is_admin:
+        run = db.query(CognosGenerationRun).order_by(CognosGenerationRun.id.desc()).first()
+    else:
+        assigned_run_ids = [
+            a.run_id for a in db.query(TestCaseAssignment.run_id)
+            .filter(TestCaseAssignment.user_id == current_user.id, TestCaseAssignment.status == "ASSIGNED")
+            .all()
+        ]
+        filters = [CognosGenerationRun.requested_by == current_user.username]
+        if assigned_run_ids:
+            filters.append(CognosGenerationRun.id.in_(assigned_run_ids))
+        run = (
+            db.query(CognosGenerationRun)
+            .filter(or_(*filters))
+            .order_by(CognosGenerationRun.id.desc())
+            .first()
+        )
+
+    if not run:
+        raise HTTPException(status_code=404, detail="No active runs found.")
+    return get_run_details(cast(int, run.id), db, current_user)
 
 
 @router.patch("/runs/{run_id}/test-cases/{test_case_id}/review")
@@ -782,7 +1285,9 @@ def review_test_case(
     - CREATE_REVISION: unlocks approved scenario for new revision
     - UPDATE_SCENARIO: saves edits, creates version bump and diffs
     """
-    tc = (
+    run, assignment = validate_test_case_file_access(db, run_id, current_user)
+
+    tc: Any = (
         db.query(CognosTestCaseModel)
         .filter(CognosTestCaseModel.run_id == run_id, CognosTestCaseModel.test_case_id == test_case_id)
         .first()
@@ -793,7 +1298,7 @@ def review_test_case(
     action = (payload.action or "").upper().strip()
     history = list(tc.edit_history or [])
     now = datetime.now(timezone.utc)
-    current_version = tc.version or 1
+    current_version = int(tc.version or 1)
 
     if action == "APPROVE":
         # Validate required content before approval
@@ -945,7 +1450,9 @@ def suggest_correction(
     AI Suggests a targeted correction without automatically applying it.
     Analyzes execution method rules (NH IWA vs ND UC4), DSD references, and user issues.
     """
-    tc = (
+    run_validated, assignment = validate_test_case_file_access(db, run_id, current_user)
+
+    tc: Any = (
         db.query(CognosTestCaseModel)
         .filter(CognosTestCaseModel.run_id == run_id, CognosTestCaseModel.test_case_id == test_case_id)
         .first()
@@ -953,10 +1460,10 @@ def suggest_correction(
     if not tc:
         raise HTTPException(status_code=404, detail="Test case not found.")
 
-    run = db.query(CognosGenerationRun).filter(CognosGenerationRun.id == run_id).first()
+    run: Any = run_validated
     report_metadata = {
-        "report_id": run.report_id if run else tc.report_id,
-        "report_title": run.report_title if run else "",
+        "report_id": str(run.report_id if run else tc.report_id),
+        "report_title": str(run.report_title if run else ""),
         "frequency_type": "Scheduled",
     }
     if run and run.report_definition_json:
@@ -967,8 +1474,8 @@ def suggest_correction(
     tc_dict = _serialize_test_case_model(tc, run_id)
     suggestion = generate_suggested_correction(
         tc_dict,
-        issue_type=payload.issue_type or tc.issue_type or "",
-        issue_comment=payload.issue_comment or tc.issue_comment or "",
+        issue_type=str(payload.issue_type or tc.issue_type or ""),
+        issue_comment=str(payload.issue_comment or tc.issue_comment or ""),
         report_metadata=report_metadata,
     )
     return {
@@ -983,11 +1490,12 @@ def suggest_missing_scenario(
     run_id: int,
     payload: MissingScenarioRequest = Body(...),
     db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(require_role("tester")),
+    current_user: CurrentUser = Depends(require_role("admin")),
 ):
     """
     AI proposes a missing scenario given 'what to test' and 'DSD reference'.
     Does NOT automatically add it to the suite until user accepts.
+    Restricted to authorized administrators.
     """
     run = db.query(CognosGenerationRun).filter(CognosGenerationRun.id == run_id).first()
     if not run:
@@ -998,8 +1506,8 @@ def suggest_missing_scenario(
     proposed = generate_missing_scenario(
         what_to_test=payload.what_to_test,
         dsd_reference=payload.dsd_reference,
-        report_id=run.report_id or "PRV-INT-027",
-        report_title=run.report_title or "Cognos Report",
+        report_id=str(run.report_id or "PRV-INT-027"),
+        report_title=str(run.report_title or "Cognos Report"),
         existing_count=existing_count,
     )
     return {
@@ -1013,10 +1521,11 @@ def add_missing_scenario(
     run_id: int,
     payload: AddScenarioRequest = Body(...),
     db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(require_role("tester")),
+    current_user: CurrentUser = Depends(require_role("admin")),
 ):
     """
     Persists an accepted missing scenario into the run's test suite.
+    Restricted to authorized administrators.
     """
     run = db.query(CognosGenerationRun).filter(CognosGenerationRun.id == run_id).first()
     if not run:

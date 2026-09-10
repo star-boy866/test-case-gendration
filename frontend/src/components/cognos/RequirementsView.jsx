@@ -48,7 +48,7 @@ export default function RequirementsView({ result }) {
         </div>
         
         {/* Filters */}
-        <div className="flex gap-4">
+        <div className="flex flex-col sm:flex-row gap-2.5 sm:gap-4">
           <div className="relative flex-1">
             <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
               <Search className="h-4 w-4 text-slate-400" />
@@ -58,7 +58,7 @@ export default function RequirementsView({ result }) {
               placeholder="Search ID, field, or text..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="block w-full rounded-md border-0 py-1.5 pl-9 pr-3 text-slate-900 ring-1 ring-inset ring-slate-300 placeholder:text-slate-400 focus:ring-2 focus:ring-inset focus:ring-brand-600 sm:text-sm sm:leading-6"
+              className="block w-full rounded-md border-0 py-1.5 pl-9 pr-3 text-slate-900 ring-1 ring-inset ring-slate-300 placeholder:text-slate-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 text-xs sm:text-sm sm:leading-6"
             />
           </div>
           <div className="relative">
@@ -68,7 +68,7 @@ export default function RequirementsView({ result }) {
             <select
               value={categoryFilter}
               onChange={(e) => setCategoryFilter(e.target.value)}
-              className="block w-full rounded-md border-0 py-1.5 pl-9 pr-8 text-slate-900 ring-1 ring-inset ring-slate-300 focus:ring-2 focus:ring-inset focus:ring-brand-600 sm:text-sm sm:leading-6"
+              className="block w-full rounded-md border-0 py-1.5 pl-9 pr-8 text-slate-900 ring-1 ring-inset ring-slate-300 focus:ring-2 focus:ring-inset focus:ring-blue-600 text-xs sm:text-sm sm:leading-6"
             >
               {categories.map(c => (
                 <option key={c} value={c}>{c}</option>
@@ -79,7 +79,7 @@ export default function RequirementsView({ result }) {
       </div>
       
       <div className="flex-1 overflow-auto bg-slate-50/30">
-        <table className="min-w-full divide-y divide-slate-200 text-sm text-left">
+        <table className="w-full min-w-[750px] divide-y divide-slate-200 text-sm text-left">
           <thead className="bg-white sticky top-0 z-10 shadow-sm">
             <tr>
               <th className="px-4 py-3 font-semibold text-slate-600 w-32 bg-slate-50/95 backdrop-blur">Requirement ID</th>
