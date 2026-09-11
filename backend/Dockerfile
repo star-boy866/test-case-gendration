@@ -40,4 +40,4 @@ USER appuser
 EXPOSE 8000
 
 # Deterministic production startup: initialize schema sequentially once, then exec gunicorn with uvicorn workers dynamically binding to $PORT
-CMD ["sh", "-c", "python -m app.db.init_db && exec gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8000} --timeout 120"]
+CMD ["sh", "-c", "python -m app.db.init_db && exec gunicorn app.main:app --workers 1 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8000} --timeout 120"]

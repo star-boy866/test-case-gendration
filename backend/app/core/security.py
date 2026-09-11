@@ -35,7 +35,7 @@ from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHas
 
 from app.core.config import settings
 
-_ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, salt_len=16)
+_ph = PasswordHasher(time_cost=2, memory_cost=19456, parallelism=1, hash_len=32, salt_len=16)
 _PBKDF2_ITERATIONS = 200_000
 _SALT_BYTES = 16
 
