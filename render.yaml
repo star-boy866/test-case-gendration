@@ -3,7 +3,7 @@
 
 services:
   - type: web
-    name: cognos-testcase-backend
+    name: test-case-gendration
     env: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend

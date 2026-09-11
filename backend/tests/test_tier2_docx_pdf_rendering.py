@@ -149,3 +149,128 @@ def test_pypdfium2_rendering_pipeline(tmp_path: Path):
     # 612 * 2 = 1224, 792 * 2 = 1584
     assert img.size == (1224, 1584), f"Expected 1224x1584, got {img.size}"
     assert img.mode == "RGB"
+
+
+def test_synthetic_card_detection_and_provenance(tmp_path: Path):
+    """
+    Verifies that is_synthetic_card accurately detects _draw_evidence_card output
+    and that is_authentic_snapshot validates genuine document captures.
+    """
+    # 1. Create a synthetic evidence card using _draw_evidence_card
+    synth_png = tmp_path / "synthetic_test.png"
+    DSDSourceSnapshotService._draw_evidence_card(
+        png_path=synth_png,
+        doc_name="test.docx",
+        report_id="PRV-001",
+        report_title="Test Report",
+        section="Section 1",
+        methodology="VALIDATION",
+        target_field="Field A",
+        evidence_scope="SCOPE",
+        test_case_id="TC-001",
+        description="Synthetic test description",
+        table_rows=[["Col 1", "Col 2"], ["Val 1", "Val 2"]],
+        paragraphs=["Sample paragraph"],
+        source_badge="AUTO",
+    )
+    assert synth_png.exists()
+    assert DSDSourceSnapshotService.is_synthetic_card(synth_png) is True
+    assert DSDSourceSnapshotService.is_authentic_snapshot(synth_png) is False
+
+    # 2. Create an authentic document page using pypdfium2
+    import pypdfium2 as pdfium
+    pdf = pdfium.PdfDocument.new()
+    pdf.new_page(width=612, height=792)
+    test_pdf = tmp_path / "auth_doc.pdf"
+    pdf.save(str(test_pdf))
+    pdf.close()
+
+    auth_png = tmp_path / "authentic_test.png"
+    DSDSourceSnapshotService.render_pdf_page_to_png(test_pdf, page_number=1, png_path=auth_png)
+    assert auth_png.exists()
+    assert DSDSourceSnapshotService.is_synthetic_card(auth_png) is False
+    assert DSDSourceSnapshotService.is_authentic_snapshot(auth_png) is True
+
+    # 3. Test provenance metadata writer
+    DSDSourceSnapshotService.write_provenance_meta(
+        png_path=auth_png,
+        renderer="tier2_docx_pdf",
+        authentic=True,
+        page_number=1,
+    )
+    meta_path = auth_png.with_suffix(".meta.json")
+    assert meta_path.exists()
+    assert DSDSourceSnapshotService.is_authentic_snapshot(auth_png) is True
+
+
+def test_find_cached_snapshot_rejects_synthetic_cache(tmp_path: Path, monkeypatch):
+    """
+    Verifies that find_cached_snapshot rejects stale synthetic cards when
+    require_authentic is True, but returns authentic document captures.
+    """
+    # Setup candidate directory
+    runs_dir = tmp_path / "runs"
+    ev_dir = runs_dir / "101" / "evidence"
+    ev_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(DSDSourceSnapshotService, "get_candidate_runs_dirs", classmethod(lambda cls: [runs_dir]))
+
+    test_file = ev_dir / "source_snapshot_TEST_EVID.png"
+
+    # A. Draw synthetic card at test_file
+    DSDSourceSnapshotService._draw_evidence_card(
+        png_path=test_file,
+        doc_name="test.docx",
+        report_id="RPT-1",
+        report_title="Title",
+        section="",
+        methodology="",
+        target_field="",
+        evidence_scope="",
+        test_case_id="TC-1",
+        description="",
+        table_rows=[],
+        paragraphs=[],
+        source_badge="",
+    )
+    assert test_file.exists()
+
+    # When require_authentic=True: must reject synthetic cache
+    res = DSDSourceSnapshotService.find_cached_snapshot(
+        run_id=101,
+        png_filename="source_snapshot_TEST_EVID.png",
+        evidence_id="TEST_EVID",
+        test_case_id="TC-1",
+        require_authentic=True,
+    )
+    assert res is None, "Expected stale synthetic cache to be rejected when require_authentic=True"
+
+    # When require_authentic=False: accepts existing cache as emergency fallback
+    res_fallback = DSDSourceSnapshotService.find_cached_snapshot(
+        run_id=101,
+        png_filename="source_snapshot_TEST_EVID.png",
+        evidence_id="TEST_EVID",
+        test_case_id="TC-1",
+        require_authentic=False,
+    )
+    assert res_fallback == test_file, "Expected synthetic cache to be accepted when require_authentic=False"
+
+    # B. Now overwrite test_file with an authentic PDF page render
+    import pypdfium2 as pdfium
+    pdf = pdfium.PdfDocument.new()
+    pdf.new_page(width=612, height=792)
+    test_pdf = tmp_path / "doc.pdf"
+    pdf.save(str(test_pdf))
+    pdf.close()
+    DSDSourceSnapshotService.render_pdf_page_to_png(test_pdf, 1, test_file)
+    DSDSourceSnapshotService.write_provenance_meta(test_file, renderer="tier2_docx_pdf", authentic=True)
+
+    # Now find_cached_snapshot must return it!
+    res_authentic = DSDSourceSnapshotService.find_cached_snapshot(
+        run_id=101,
+        png_filename="source_snapshot_TEST_EVID.png",
+        evidence_id="TEST_EVID",
+        test_case_id="TC-1",
+        require_authentic=True,
+    )
+    assert res_authentic == test_file, "Expected authentic cache hit"

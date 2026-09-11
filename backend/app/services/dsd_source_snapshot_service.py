@@ -17,11 +17,13 @@ Strictly enforces:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -134,12 +136,115 @@ class DSDSourceSnapshotService:
         return primary
 
     @classmethod
+    def is_playwright_available(cls) -> bool:
+        """Returns True if Node.js and Playwright modules are present."""
+        node_modules = BACKEND_DIR / "node_modules"
+        render_script = BACKEND_DIR / "render" / "render_snapshot.js"
+        has_node = bool(shutil.which("node"))
+        has_modules = node_modules.exists() and (node_modules / "playwright").exists()
+        return bool(has_node and has_modules and render_script.exists())
+
+    @classmethod
+    def write_provenance_meta(
+        cls,
+        png_path: Path,
+        renderer: str,
+        authentic: bool,
+        page_number: int = 1,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Writes sidecar metadata recording the provenance of the snapshot."""
+        try:
+            meta_path = png_path.with_suffix(".meta.json")
+            data = {
+                "filename": png_path.name,
+                "renderer": renderer,
+                "authentic": bool(authentic),
+                "page_number": page_number,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            if extra:
+                data.update(extra)
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as ex:
+            logger.debug(f"[PROVENANCE META WARN] Could not write {png_path.name} metadata: {ex}")
+
+    @classmethod
+    def is_synthetic_card(cls, img_path: Path) -> bool:
+        """
+        Deterministically detects whether an image is a synthetic evidence card
+        produced by _draw_evidence_card() or table reconstruction.
+        """
+        if not img_path.exists() or not img_path.is_file() or img_path.stat().st_size == 0:
+            return False
+
+        # 1. Check sidecar metadata first if present
+        meta_path = img_path.with_suffix(".meta.json")
+        if meta_path.exists() and meta_path.is_file():
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if "authentic" in data:
+                        return not bool(data["authentic"])
+            except Exception:
+                pass
+
+        # 2. Inspect image structure & pixel markers
+        try:
+            with Image.open(img_path) as img:
+                rgb_img = img.convert("RGB")
+                w, h = rgb_img.size
+
+                # Check for _draw_evidence_card() signature:
+                # - Canvas width is strictly 1280
+                # - Top banner (0,0)-(1280,95) is Slate-900: RGB(15, 23, 42)
+                # - Accent stripe (0,96)-(1280,100) is Indigo-600: RGB(79, 70, 229)
+                if w == 1280 and h >= 700:
+                    banner_samples = [rgb_img.getpixel((x, 20)) for x in [20, 200, 600, 1000]]
+                    is_slate_banner = all(
+                        abs(p[0] - 15) <= 5 and abs(p[1] - 23) <= 5 and abs(p[2] - 42) <= 5
+                        for p in banner_samples
+                    )
+                    stripe_samples = [rgb_img.getpixel((x, 98)) for x in [20, 200, 600, 1000]]
+                    is_indigo_stripe = all(
+                        abs(p[0] - 79) <= 5 and abs(p[1] - 70) <= 5 and abs(p[2] - 229) <= 5
+                        for p in stripe_samples
+                    )
+                    if is_slate_banner and is_indigo_stripe:
+                        return True
+
+                # Check for _draw_docx_document_page() signature:
+                # - PAGE_W = 1240
+                # - Background border (0,0)-(10,10) is gray (220, 220, 220)
+                if w == 1240:
+                    corner = rgb_img.getpixel((5, 5))
+                    if abs(corner[0] - 220) <= 5 and abs(corner[1] - 220) <= 5 and abs(corner[2] - 220) <= 5:
+                        return True
+
+        except Exception:
+            return False
+
+        return False
+
+    @classmethod
+    def is_authentic_snapshot(cls, img_path: Path) -> bool:
+        """
+        Returns True if the snapshot is an authentic document page capture
+        (NOT a synthetic card or table reconstruction).
+        """
+        if not img_path.exists() or not img_path.is_file() or img_path.stat().st_size == 0:
+            return False
+        return not cls.is_synthetic_card(img_path)
+
+    @classmethod
     def find_cached_snapshot(
         cls,
         run_id: int,
         png_filename: str,
         evidence_id: Optional[str] = None,
         test_case_id: Optional[str] = None,
+        require_authentic: bool = True,
     ) -> Optional[Path]:
         """
         Searches all candidate runs directories for an existing authentic snapshot.
@@ -147,7 +252,8 @@ class DSDSourceSnapshotService:
           1. Direct png_filename match
           2. Sanitized evidence_id variations
           3. Test case ID pattern matching (e.g. *PRV008-EXEC-01*.png)
-        Ensures existing authentic snapshots are returned immediately and never overwritten.
+        When require_authentic is True, rejects stale synthetic cards to allow
+        Tier 2 to regenerate and serve the genuine document page.
         """
         candidate_names: List[str] = [Path(png_filename).name]
 
@@ -167,7 +273,13 @@ class DSDSourceSnapshotService:
                 for name in candidate_names:
                     cand = ev_dir / name
                     if cand.exists() and cand.is_file() and cand.stat().st_size > 0:
-                        return cand
+                        if not require_authentic or cls.is_authentic_snapshot(cand):
+                            return cand
+                        else:
+                            logger.info(
+                                f"[STALE CACHE REJECTED] Found synthetic/legacy cached file {cand.name} "
+                                f"for run {run_id}. Rejecting stale cache to allow authentic Tier 2 rendering."
+                            )
 
                 # 2. Test case ID matching (e.g. source_snapshot_snapshot_PRV008-EXEC-01_SCHEDU.png)
                 if test_case_id:
@@ -175,12 +287,21 @@ class DSDSourceSnapshotService:
                     if clean_tc:
                         for existing_file in ev_dir.glob(f"*{clean_tc}*.png"):
                             if existing_file.is_file() and existing_file.stat().st_size > 0:
-                                return existing_file
+                                if not require_authentic or cls.is_authentic_snapshot(existing_file):
+                                    return existing_file
+                                else:
+                                    logger.info(
+                                        f"[STALE CACHE REJECTED] Found synthetic/legacy file {existing_file.name} "
+                                        f"for run {run_id} tc {test_case_id}. Rejecting stale cache."
+                                    )
 
             # Check legacy root evidence path
             cand_legacy = r_dir / "evidence" / Path(png_filename).name
             if cand_legacy.exists() and cand_legacy.is_file() and cand_legacy.stat().st_size > 0:
-                return cand_legacy
+                if not require_authentic or cls.is_authentic_snapshot(cand_legacy):
+                    return cand_legacy
+                else:
+                    logger.info(f"[STALE CACHE REJECTED] Legacy root synthetic file {cand_legacy.name} rejected.")
 
         return None
 
@@ -353,6 +474,7 @@ class DSDSourceSnapshotService:
                 "--nodefault",
                 "--nofirststartwizard",
                 "--nolockcheck",
+                f"-env:UserInstallation=file:///tmp/soffice_profile_{os.getpid()}",
                 "--convert-to",
                 "pdf",
                 "--outdir",
@@ -1027,20 +1149,30 @@ class DSDSourceSnapshotService:
         elif methodology == "DB_REPORT_DATA_VALIDATION" or evidence_scope == "REPORT_BODY_MAPPING":
             page_number = 10
 
-        # 1. Check existing authentic snapshots FIRST
-        cached = cls.find_cached_snapshot(run_id, png_filename, evidence_id=evidence_id, test_case_id=test_case_id)
-        if cached:
-            logger.info(
-                f"run={run_id} evidence={evidence_id or Path(png_filename).stem} page={page_number} renderer=cached_authentic status=success path={cached.name}"
-            )
-            return cached
-
-        # Resolve paths
+        # Resolve paths first
         source_path = cls.resolve_source_path(run_id, run.source_document_path)
         evidence_dir = cls.resolve_evidence_dir(run_id, source_path)
         png_path = evidence_dir / png_filename
 
         desc = f"Source DSD snapshot — {section or 'Report Definition'} • {methodology or 'VALIDATION'}"
+
+        authentic_available = bool(
+            source_path and source_path.exists() and (cls._find_soffice_binary() or cls.is_playwright_available())
+        )
+
+        # 1. Check existing authentic snapshots FIRST
+        cached = cls.find_cached_snapshot(
+            run_id=run_id,
+            png_filename=png_filename,
+            evidence_id=evidence_id,
+            test_case_id=test_case_id,
+            require_authentic=authentic_available,
+        )
+        if cached:
+            logger.info(
+                f"run={run_id} evidence={evidence_id or Path(png_filename).stem} page={page_number} renderer=cached_authentic status=success path={cached.name}"
+            )
+            return cached
 
         # 2. Tier 1: Try Playwright / Node if source.docx is on disk
         render_script = BACKEND_DIR / "render" / "render_snapshot.js"
@@ -1057,6 +1189,7 @@ class DSDSourceSnapshotService:
                 test_case_id=test_case_id,
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
+                cls.write_provenance_meta(png_path, renderer="tier1_playwright", authentic=True, page_number=page_number)
                 logger.info(
                     f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier1_playwright status=success path={png_path.name}"
                 )
@@ -1070,6 +1203,7 @@ class DSDSourceSnapshotService:
                 page_number=page_number,
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
+                cls.write_provenance_meta(png_path, renderer="tier2_docx_pdf", authentic=True, page_number=page_number)
                 logger.info(
                     f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier2_docx_pdf status=success path={png_path.name}"
                 )
@@ -1091,6 +1225,7 @@ class DSDSourceSnapshotService:
             description=desc,
         )
         if success and png_path.exists() and png_path.stat().st_size > 0:
+            cls.write_provenance_meta(png_path, renderer="tier3_synthetic", authentic=False, page_number=page_number)
             return png_path
 
         raise RuntimeError(f"Failed to generate authoritative snapshot for run {run_id} ({png_filename}) across all 3 tiers.")

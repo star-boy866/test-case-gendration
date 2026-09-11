@@ -17,8 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
-# Create a non-root user
-RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+# Create a non-root user with home directory
+RUN groupadd -r appgroup && useradd -r -m -g appgroup appuser
+ENV HOME=/home/appuser
 
 WORKDIR /app
 
