@@ -1,31 +1,30 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import inspect
 
 from app.core.config import settings
-from app.db.session import Base, engine, SessionLocal
-from app import models  # noqa: F401  ensures all ORM tables register before create_all
-from app.db.migrations import ensure_rbac_schema
-from app.services.user_service import bootstrap_standard_admin, ensure_tester_account
+from app.db.session import engine
+from app.db.init_db import init_db
 from app.core.immutable_audit import register_immutability_guards
 from app.api import (
     health, ingestion, gatekeeper, generation,
     export, refinement, auth, cognos_api, jobs, admin_rbac
 )
 
-# Create SQLite tables and perform lightweight schema upgrades on startup
-Base.metadata.create_all(bind=engine)
-ensure_rbac_schema(engine)
-
-# Bootstrap the initial Standard Administrator account ('obuli') and Tester account
-_init_db = SessionLocal()
-try:
-    bootstrap_standard_admin(_init_db)
-    ensure_tester_account(_init_db)
-finally:
-    _init_db.close()
-
-# Phase 9: register immutable audit listeners
+# Phase 9: register immutable audit listeners (in-memory ORM event listeners)
 register_immutability_guards()
+
+# Ensure schema exists for standalone single-process local development (e.g. `uvicorn app.main:app`).
+# In production Docker, pre-flight `python -m app.db.init_db` executes sequentially before Gunicorn
+# forks workers, so inspector.has_table("users") returns True and worker imports bypass schema DDL entirely.
+try:
+    _inspector = inspect(engine)
+    if not _inspector.has_table("users"):
+        init_db()
+except Exception as _e:
+    _inspector = inspect(engine)
+    if not _inspector.has_table("users"):
+        raise RuntimeError(f"Database schema initialization failed on startup: {_e}") from _e
 
 # Production security check
 if settings.APP_ENV != "development" and settings.SECRET_KEY == "dev-only-change-me":
