@@ -274,3 +274,294 @@ def test_find_cached_snapshot_rejects_synthetic_cache(tmp_path: Path, monkeypatc
         require_authentic=True,
     )
     assert res_authentic == test_file, "Expected authentic cache hit"
+
+
+def _build_test_multipage_pdf(path: Path, page_texts: list[str]) -> None:
+    """Helper to build a valid multi-page PDF with genuine text streams using raw PDF-1.4 syntax."""
+    num_pages = len(page_texts)
+    objs = []
+    objs.append(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj")
+    kids_str = " ".join(f"{i+3} 0 R" for i in range(num_pages))
+    objs.append(f"2 0 obj << /Type /Pages /Kids [{kids_str}] /Count {num_pages} >> endobj".encode("ascii"))
+
+    font_obj_id = num_pages + 3
+    for i in range(num_pages):
+        content_obj_id = font_obj_id + 1 + i
+        objs.append(
+            f"{i+3} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 {font_obj_id} 0 R >> >> /Contents {content_obj_id} 0 R >> endobj".encode("ascii")
+        )
+
+    objs.append(f"{font_obj_id} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj".encode("ascii"))
+
+    for i in range(num_pages):
+        content_obj_id = font_obj_id + 1 + i
+        txt = page_texts[i]
+        if txt:
+            # Escape parenthesis
+            escaped = txt.replace("(", "\\(").replace(")", "\\)")
+            stream_data = f"BT /F1 12 Tf 50 700 Td ({escaped}) Tj ET".encode("latin1", errors="replace")
+        else:
+            stream_data = b""
+        objs.append(
+            f"{content_obj_id} 0 obj << /Length {len(stream_data)} >> stream\n".encode("ascii")
+            + stream_data
+            + b"\nendstream endobj"
+        )
+
+    pdf_bytes = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for obj in objs:
+        offsets.append(len(pdf_bytes))
+        pdf_bytes.extend(obj + b"\n")
+
+    xref_pos = len(pdf_bytes)
+    pdf_bytes.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode("ascii"))
+    for off in offsets[1:]:
+        pdf_bytes.extend(f"{off:010d} 00000 n \n".encode("ascii"))
+    pdf_bytes.extend(f"trailer << /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode("ascii"))
+
+    path.write_bytes(pdf_bytes)
+
+
+def test_parser_ordered_traversal_no_jump():
+    """
+    FIX 1: Proves that ordered document traversal correctly assigns page numbers
+    in OOXML order and eliminates artificial jumps such as 1 -> 6 -> 9 for PRV-INT-027.
+    """
+    from app.services.cognos_docx_parser import parse_cognos_docx
+
+    docx_candidates = [
+        Path("backend/runs/5/source/source.docx"),
+        Path("runs/5/source/source.docx"),
+        Path("backend/runs/1/source/source.docx"),
+    ]
+    target_docx = next((p for p in docx_candidates if p.exists()), None)
+    if not target_docx:
+        pytest.skip("PRV-INT-027 docx not present for parser validation")
+
+    parsed = parse_cognos_docx(target_docx)
+    assert len(parsed.all_parsed_tables) >= 3, "Expected at least 3 parsed tables in PRV-INT-027"
+
+    # Table 0: Report Definition starts on Page 1
+    t0 = parsed.all_parsed_tables[0]
+    assert t0.source_page == 1, f"Table 0 should start on Page 1, got {t0.source_page}"
+    assert t0.rows[0].source_page == 1, "Table 0 Row 0 must be on Page 1"
+    assert t0.rows[20].source_page == 1, "Table 0 Row 20 must be on Page 1"
+    # Table 0 internal break at Row 21 moves to Page 2
+    assert t0.rows[21].source_page == 2, "Table 0 Row 21 must be on Page 2"
+    assert t0.rows[-1].source_page == 2, "Table 0 trailing rows must be on Page 2"
+
+    # Verify no row in Table 0 jumped to Page 6 or Page 9!
+    for idx, row in enumerate(t0.rows):
+        assert row.source_page in (1, 2), f"Table 0 row {idx} has invalid page {row.source_page}, expected 1 or 2"
+
+    # Table 1: Report Layout starts on Page 3
+    t1 = parsed.all_parsed_tables[1]
+    assert t1.source_page == 3, f"Table 1 should start on Page 3, got {t1.source_page}"
+
+    # Table 2: Report Specification starts on Page 3/4
+    t2 = parsed.all_parsed_tables[2]
+    assert t2.source_page in (3, 4), f"Table 2 should start on Page 3 or 4, got {t2.source_page}"
+
+
+def test_invalid_pdf_page_handling_no_silent_clamping(tmp_path: Path):
+    """
+    FIX 2: Proves that requesting an out-of-bounds page (e.g. page 9 of a 3-page PDF, or page 0)
+    strictly returns False and never silently clamps to the last physical page.
+    """
+    pdf_file = tmp_path / "3page.pdf"
+    _build_test_multipage_pdf(
+        pdf_file,
+        [
+            "Page 1 Content with sufficient text",
+            "Page 2 Content with sufficient text",
+            "Page 3 Content with sufficient text",
+        ],
+    )
+
+    out_png = tmp_path / "clamped_test.png"
+
+    # Page 9 of 3-page PDF -> must return False and NOT render page 3
+    success_9 = DSDSourceSnapshotService.render_pdf_page_to_png(
+        pdf_path=pdf_file,
+        page_number=9,
+        png_path=out_png,
+    )
+    assert success_9 is False, "Expected page 9 on 3-page PDF to fail without silent clamping"
+    assert not out_png.exists(), "Should not create PNG for out-of-bounds page"
+
+    # Page 0 -> must return False
+    success_0 = DSDSourceSnapshotService.render_pdf_page_to_png(
+        pdf_path=pdf_file,
+        page_number=0,
+        png_path=out_png,
+    )
+    assert success_0 is False, "Expected page 0 to fail"
+
+    # Negative page -> must return False
+    success_neg = DSDSourceSnapshotService.render_pdf_page_to_png(
+        pdf_path=pdf_file,
+        page_number=-1,
+        png_path=out_png,
+    )
+    assert success_neg is False, "Expected negative page to fail"
+
+    # Page 4 of 3-page PDF -> must return False
+    success_4 = DSDSourceSnapshotService.render_pdf_page_to_png(
+        pdf_path=pdf_file,
+        page_number=4,
+        png_path=out_png,
+    )
+    assert success_4 is False, "Expected page 4 on 3-page PDF to fail"
+
+
+def test_semantic_page_resolution(tmp_path: Path):
+    """
+    FIX 3: Proves that semantic page resolution correctly resolves physical PDF pages
+    matching evidence metadata anchors instead of falling back to wrong/blank pages.
+    """
+    pdf_file = tmp_path / "prv027_mock.pdf"
+    # Structure mirroring PRV-INT-027 7-page physical PDF
+    _build_test_multipage_pdf(
+        pdf_file,
+        [
+            "Report Definition Selection Criteria Generation Frequency Schedule Daily",
+            "Report Control Breaks, Totals, Counts, and Sorts Special Processing Output Retention",
+            "Report Layout List Object Section Layout Preview",
+            "Report Section Heading Spec Heading Provider Information",
+            "Report Body OPLC Term Date MMIS Lic Cert End Date Prov Lic Cert Num Duplicate Lookup",
+            "Footnotes N/A",
+            "",  # Page 7 is blank trailing page
+        ],
+    )
+
+    # 1. Date Format -> Page 5 (NOT 9, NOT 7)
+    p_date = DSDSourceSnapshotService.resolve_physical_pdf_page(
+        pdf_path=pdf_file,
+        advisory_page=9,
+        section="Report Body",
+        methodology="DATE_FORMAT_VALIDATION",
+        target_field="OPLC Term Date",
+        evidence_scope="DATE_FORMAT_VALIDATION",
+        test_case_id="PRV027-DATE-01",
+    )
+    assert p_date == 5, f"Expected Date Format to resolve to Page 5, got {p_date}"
+
+    # 2. Sorts -> Page 2
+    p_sort = DSDSourceSnapshotService.resolve_physical_pdf_page(
+        pdf_path=pdf_file,
+        advisory_page=6,
+        section="Report Control Breaks, Totals, Counts, and Sorts",
+        methodology="SORT_VALIDATION",
+        target_field="Report Sorts",
+        evidence_scope="SORT_ORDER_ASCENDING",
+        test_case_id="PRV027-SORT-01",
+    )
+    assert p_sort == 2, f"Expected Sorts to resolve to Page 2, got {p_sort}"
+
+    # 3. Layout -> Page 3
+    p_layo = DSDSourceSnapshotService.resolve_physical_pdf_page(
+        pdf_path=pdf_file,
+        advisory_page=6,
+        section="Report Layout",
+        methodology="LAYOUT_VALIDATION",
+        target_field="Report Layout",
+        evidence_scope="REPORT_LAYOUT_FULL",
+        test_case_id="PRV027-LAYO-01",
+    )
+    assert p_layo == 3, f"Expected Layout to resolve to Page 3, got {p_layo}"
+
+    # 4. Report Definition -> Page 1
+    p_def = DSDSourceSnapshotService.resolve_physical_pdf_page(
+        pdf_path=pdf_file,
+        advisory_page=6,
+        section="Report Definition",
+        methodology="REPORT_DEFINITION_VALIDATION",
+        target_field="Report Title",
+        evidence_scope="REPORT_DEFINITION_TITLE",
+        test_case_id="PRV027-REPO-01",
+    )
+    assert p_def == 1, f"Expected Definition to resolve to Page 1, got {p_def}"
+
+    # Blank trailing Page 7 must NEVER be resolved
+    assert p_date != 7 and p_sort != 7 and p_layo != 7 and p_def != 7
+
+
+def test_exact_cache_identity_and_proof_collision_prevention(tmp_path: Path, monkeypatch):
+    """
+    FIX 4: Proves that proof_*.png files from semantic proof endpoints can never
+    satisfy source-snapshot requests and that distinct evidence IDs do not collide.
+    """
+    runs_dir = tmp_path / "runs"
+    ev_dir = runs_dir / "200" / "evidence"
+    ev_dir.mkdir(parents=True)
+    monkeypatch.setattr(DSDSourceSnapshotService, "get_candidate_runs_dirs", classmethod(lambda cls: [runs_dir]))
+
+    # Create a semantic proof file
+    proof_file = ev_dir / "proof_PRV027-RHDR-01.png"
+    proof_file.write_bytes(b"dummy_proof_content_not_authentic_snapshot")
+
+    # source-snapshot request for PRV027-RHDR-01 must NEVER return the proof file!
+    cached = DSDSourceSnapshotService.find_cached_snapshot(
+        run_id=200,
+        png_filename="source_snapshot_PRV027-RHDR-01.png",
+        evidence_id="snapshot_PRV027-RHDR-01_REPORT",
+        test_case_id="PRV027-RHDR-01",
+        require_authentic=True,
+    )
+    assert cached is None, "Proof file must never satisfy source-snapshot request"
+
+    # Now create the exact authentic snapshot file
+    auth_file = ev_dir / "source_snapshot_snapshot_PRV027-RHDR-01_REPORT.png"
+    # Create valid authentic PNG
+    img = Image.new("RGB", (1224, 1584), color=(255, 255, 255))
+    img.save(auth_file, format="PNG")
+    DSDSourceSnapshotService.write_provenance_meta(auth_file, renderer="tier2_docx_pdf", authentic=True)
+
+    # Now it must be found
+    cached_auth = DSDSourceSnapshotService.find_cached_snapshot(
+        run_id=200,
+        png_filename="source_snapshot_snapshot_PRV027-RHDR-01_REPORT.png",
+        evidence_id="snapshot_PRV027-RHDR-01_REPORT",
+        test_case_id="PRV027-RHDR-01",
+        require_authentic=True,
+    )
+    assert cached_auth == auth_file, "Authentic snapshot matching exact canonical key must be found"
+
+
+def test_blank_trailing_page_rejection(tmp_path: Path):
+    """
+    Proves that a blank trailing PDF page (containing no text) is strictly rejected
+    by render_pdf_page_to_png when allow_blank=False, and is never selected by resolve_physical_pdf_page.
+    """
+    pdf_file = tmp_path / "blank_trail.pdf"
+    _build_test_multipage_pdf(
+        pdf_file,
+        [
+            "Page 1 has authentic business document content",
+            "",  # Page 2 is completely blank trailing page
+        ],
+    )
+
+    out_png = tmp_path / "page2_blank.png"
+    rendered = DSDSourceSnapshotService.render_pdf_page_to_png(
+        pdf_path=pdf_file,
+        page_number=2,
+        png_path=out_png,
+        allow_blank=False,
+    )
+    assert rendered is False, "Blank trailing page must be rejected when allow_blank=False"
+    assert not out_png.exists(), "No output image should be produced for blank page"
+
+    # resolve_physical_pdf_page must also reject page 2
+    resolved = DSDSourceSnapshotService.resolve_physical_pdf_page(
+        pdf_path=pdf_file,
+        advisory_page=2,
+        section="Report Body",
+        methodology="DATA_VALIDATION",
+        target_field="Field X",
+        evidence_scope="SCOPE_X",
+        test_case_id="TC-BLANK-01",
+    )
+    assert resolved != 2, f"Blank page 2 must never be resolved, got {resolved}"

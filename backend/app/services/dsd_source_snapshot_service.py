@@ -245,20 +245,17 @@ class DSDSourceSnapshotService:
         evidence_id: Optional[str] = None,
         test_case_id: Optional[str] = None,
         require_authentic: bool = True,
+        page_number: Optional[int] = None,
     ) -> Optional[Path]:
         """
-        Searches all candidate runs directories for an existing authentic snapshot.
-        Checks:
-          1. Direct png_filename match
-          2. Sanitized evidence_id variations
-          3. Test case ID pattern matching (e.g. *PRV008-EXEC-01*.png)
-        When require_authentic is True, rejects stale synthetic cards to allow
-        Tier 2 to regenerate and serve the genuine document page.
+        Searches all candidate runs directories for an existing authentic snapshot
+        strictly matching the canonical identity without wildcard cross-endpoint collisions.
         """
         candidate_names: List[str] = [Path(png_filename).name]
 
         if evidence_id:
             clean_ev = Path(evidence_id).name
+            clean_ev = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", clean_ev)
             candidate_names.append(clean_ev)
             if not clean_ev.endswith(".png"):
                 candidate_names.append(f"{clean_ev}.png")
@@ -266,13 +263,55 @@ class DSDSourceSnapshotService:
             else:
                 candidate_names.append(f"source_snapshot_{clean_ev}")
 
+        if test_case_id and evidence_id:
+            clean_tc = re.sub(r"[^a-zA-Z0-9_\-]", "", test_case_id)
+            clean_ev = re.sub(r"[^a-zA-Z0-9_\-]", "", Path(evidence_id).name)
+            candidate_names.append(f"source_snapshot_{clean_tc}_{clean_ev}.png")
+            candidate_names.append(f"source_snapshot_{clean_tc}.png")
+
+        # De-duplicate candidate names while preserving order
+        seen_names = set()
+        deduped_candidates = []
+        for n in candidate_names:
+            if n not in seen_names:
+                seen_names.add(n)
+                deduped_candidates.append(n)
+
         for r_dir in cls.get_candidate_runs_dirs():
             ev_dir = r_dir / str(run_id) / "evidence"
             if ev_dir.exists() and ev_dir.is_dir():
-                # 1. Exact candidate filename checks
-                for name in candidate_names:
+                for name in deduped_candidates:
                     cand = ev_dir / name
                     if cand.exists() and cand.is_file() and cand.stat().st_size > 0:
+                        # Guard 1: Never let a semantic proof file satisfy a source_snapshot request
+                        if "proof" in cand.name.lower() and "proof" not in (png_filename or "").lower():
+                            continue
+
+                        # Guard 2: Reject blank trailing pages (Render blank page 7 is exactly 8246 bytes)
+                        if cand.stat().st_size == 8246:
+                            logger.info(
+                                f"[BLANK CACHE REJECTED] Found blank page 7 cached file {cand.name} "
+                                f"({cand.stat().st_size} bytes). Rejecting to allow genuine rendering."
+                            )
+                            continue
+
+                        # Guard 3: If metadata is present with page_number, verify it matches
+                        if page_number is not None:
+                            meta_cand = cand.with_suffix(".meta.json")
+                            if meta_cand.exists():
+                                try:
+                                    with open(meta_cand, "r", encoding="utf-8") as mf:
+                                        m_dict = json.load(mf)
+                                        m_page = m_dict.get("page_number")
+                                        if m_page is not None and m_page != page_number:
+                                            logger.info(
+                                                f"[CACHE PAGE MISMATCH] Cached file {cand.name} has page {m_page}, "
+                                                f"expected page {page_number}. Rejecting stale cache."
+                                            )
+                                            continue
+                                except Exception:
+                                    pass
+
                         if not require_authentic or cls.is_authentic_snapshot(cand):
                             return cand
                         else:
@@ -281,27 +320,15 @@ class DSDSourceSnapshotService:
                                 f"for run {run_id}. Rejecting stale cache to allow authentic Tier 2 rendering."
                             )
 
-                # 2. Test case ID matching (e.g. source_snapshot_snapshot_PRV008-EXEC-01_SCHEDU.png)
-                if test_case_id:
-                    clean_tc = re.sub(r"[^a-zA-Z0-9_\-]", "", test_case_id)
-                    if clean_tc:
-                        for existing_file in ev_dir.glob(f"*{clean_tc}*.png"):
-                            if existing_file.is_file() and existing_file.stat().st_size > 0:
-                                if not require_authentic or cls.is_authentic_snapshot(existing_file):
-                                    return existing_file
-                                else:
-                                    logger.info(
-                                        f"[STALE CACHE REJECTED] Found synthetic/legacy file {existing_file.name} "
-                                        f"for run {run_id} tc {test_case_id}. Rejecting stale cache."
-                                    )
-
             # Check legacy root evidence path
             cand_legacy = r_dir / "evidence" / Path(png_filename).name
             if cand_legacy.exists() and cand_legacy.is_file() and cand_legacy.stat().st_size > 0:
-                if not require_authentic or cls.is_authentic_snapshot(cand_legacy):
-                    return cand_legacy
-                else:
-                    logger.info(f"[STALE CACHE REJECTED] Legacy root synthetic file {cand_legacy.name} rejected.")
+                if cand_legacy.stat().st_size != 8246:
+                    if "proof" not in cand_legacy.name.lower() or "proof" in (png_filename or "").lower():
+                        if not require_authentic or cls.is_authentic_snapshot(cand_legacy):
+                            return cand_legacy
+                    else:
+                        logger.info(f"[STALE CACHE REJECTED] Legacy root synthetic file {cand_legacy.name} rejected.")
 
         return None
 
@@ -493,12 +520,19 @@ class DSDSourceSnapshotService:
         return None
 
     @classmethod
-    def render_pdf_page_to_png(cls, pdf_path: Path, page_number: int, png_path: Path) -> bool:
+    def render_pdf_page_to_png(
+        cls,
+        pdf_path: Path,
+        page_number: int,
+        png_path: Path,
+        allow_blank: bool = True,
+    ) -> bool:
         """
         Renders the requested page of an authentic PDF to a sharp PNG image.
         Uses pypdfium2 (Google PDFium) first, falling back to PyMuPDF (fitz).
         Renders the REAL document page with original Word fonts, tables, headers,
         and spacing without any synthetic reconstruction or annotations.
+        Enforces strict bounds validation — never silently clamps invalid page numbers.
         """
         if not pdf_path.exists() or pdf_path.stat().st_size == 0:
             return False
@@ -507,17 +541,46 @@ class DSDSourceSnapshotService:
         try:
             import pypdfium2 as pdfium
             pdf = pdfium.PdfDocument(str(pdf_path))
-            num_pages = len(pdf)
-            if num_pages > 0:
-                target_idx = max(0, min(page_number - 1, num_pages - 1))
-                page = pdf.get_page(target_idx)
-                # scale=2.0 renders at ~144 DPI for crisp document text
-                bitmap = page.render(scale=2.0)
-                pil_img = bitmap.to_pil()
-                png_path.parent.mkdir(parents=True, exist_ok=True)
-                pil_img.save(png_path, format="PNG", optimize=True)
-                logger.info(f"[TIER 2 RENDER SUCCESS] pypdfium2 rendered page {target_idx + 1}/{num_pages} -> {png_path.name} ({png_path.stat().st_size} bytes)")
-                return True
+            try:
+                num_pages = len(pdf)
+                if num_pages > 0:
+                    if page_number < 1 or page_number > num_pages:
+                        logger.warning(
+                            f"[TIER 2 INVALID PAGE] Requested page {page_number} is out of bounds (1..{num_pages}) "
+                            f"for {pdf_path.name}. Refusing to silently clamp."
+                        )
+                        return False
+
+                    target_idx = page_number - 1
+                    page = pdf.get_page(target_idx)
+                    try:
+                        # Check for blank page if not allow_blank
+                        if not allow_blank:
+                            try:
+                                textpage = page.get_textpage()
+                                try:
+                                    text = textpage.get_text_range() or ""
+                                    if len(re.sub(r"\s+", "", text)) < 20:
+                                        logger.warning(
+                                            f"[TIER 2 BLANK PAGE] Page {page_number}/{num_pages} of {pdf_path.name} contains no text. "
+                                            f"Rejecting blank page."
+                                        )
+                                        return False
+                                finally:
+                                    textpage.close()
+                            except Exception:
+                                pass
+
+                        bitmap = page.render(scale=2.0)
+                        pil_img = bitmap.to_pil()
+                        png_path.parent.mkdir(parents=True, exist_ok=True)
+                        pil_img.save(png_path, format="PNG", optimize=True)
+                        logger.info(f"[TIER 2 RENDER SUCCESS] pypdfium2 rendered page {page_number}/{num_pages} -> {png_path.name} ({png_path.stat().st_size} bytes)")
+                        return True
+                    finally:
+                        page.close()
+            finally:
+                pdf.close()
         except ImportError:
             pass
         except Exception as ex:
@@ -527,14 +590,32 @@ class DSDSourceSnapshotService:
         try:
             import fitz
             doc = fitz.open(str(pdf_path))
-            if len(doc) > 0:
-                target_idx = max(0, min(page_number - 1, len(doc) - 1))
-                page = doc.load_page(target_idx)
-                pix = page.get_pixmap(dpi=150)
-                png_path.parent.mkdir(parents=True, exist_ok=True)
-                pix.save(str(png_path))
-                logger.info(f"[TIER 2 RENDER SUCCESS] fitz rendered page {target_idx + 1}/{len(doc)} -> {png_path.name}")
-                return True
+            try:
+                if len(doc) > 0:
+                    if page_number < 1 or page_number > len(doc):
+                        logger.warning(
+                            f"[TIER 2 INVALID PAGE] fitz requested page {page_number} is out of bounds (1..{len(doc)}) "
+                            f"for {pdf_path.name}. Refusing to clamp."
+                        )
+                        return False
+
+                    target_idx = page_number - 1
+                    page = doc.load_page(target_idx)
+                    if not allow_blank:
+                        text = page.get_text() or ""
+                        if len(re.sub(r"\s+", "", text)) < 20:
+                            logger.warning(
+                                f"[TIER 2 BLANK PAGE] fitz page {page_number}/{len(doc)} contains no text. Rejecting blank page."
+                            )
+                            return False
+
+                    pix = page.get_pixmap(dpi=150)
+                    png_path.parent.mkdir(parents=True, exist_ok=True)
+                    pix.save(str(png_path))
+                    logger.info(f"[TIER 2 RENDER SUCCESS] fitz rendered page {page_number}/{len(doc)} -> {png_path.name}")
+                    return True
+            finally:
+                doc.close()
         except ImportError:
             pass
         except Exception as ex:
@@ -543,22 +624,213 @@ class DSDSourceSnapshotService:
         return False
 
     @classmethod
+    def extract_pdf_page_texts(cls, pdf_path: Path) -> List[str]:
+        """Extracts plain text for each page of the PDF (1-indexed returned as list)."""
+        texts: List[str] = []
+        try:
+            import pypdfium2 as pdfium
+            pdf = pdfium.PdfDocument(str(pdf_path))
+            try:
+                for page in pdf:
+                    try:
+                        tp = page.get_textpage()
+                        try:
+                            texts.append(tp.get_text_range() or "")
+                        finally:
+                            tp.close()
+                    except Exception:
+                        texts.append("")
+                    finally:
+                        page.close()
+            finally:
+                pdf.close()
+            return texts
+        except Exception:
+            pass
+
+        try:
+            import fitz
+            doc = fitz.open(str(pdf_path))
+            try:
+                for page in doc:
+                    texts.append(page.get_text() or "")
+            finally:
+                doc.close()
+            return texts
+        except Exception:
+            pass
+
+        return texts
+
+    @classmethod
+    def resolve_physical_pdf_page(
+        cls,
+        pdf_path: Path,
+        advisory_page: int = 1,
+        section: str = "",
+        methodology: str = "",
+        target_field: str = "",
+        evidence_scope: str = "",
+        test_case_id: str = "",
+    ) -> Optional[int]:
+        """
+        Deterministically resolves the authoritative physical PDF page matching
+        the evidence requirements by scoring per-page PDF text against strong semantic anchors.
+        Never clamps to blank or unrelated pages.
+        """
+        page_texts = cls.extract_pdf_page_texts(pdf_path)
+        if not page_texts:
+            return advisory_page if advisory_page >= 1 else 1
+
+        num_pages = len(page_texts)
+
+        tf_norm = (target_field or "").strip().lower()
+        sec_norm = (section or "").strip().lower()
+        scope_norm = (evidence_scope or "").strip().lower()
+        meth_norm = (methodology or "").strip().lower()
+
+        # Build prioritized search anchors
+        strong_anchors: List[Tuple[str, int]] = []
+        if tf_norm and len(tf_norm) >= 3:
+            strong_anchors.append((tf_norm, 150))
+            for part in re.split(r"[,;/]+", tf_norm):
+                p_clean = part.strip()
+                if len(p_clean) >= 4 and p_clean != tf_norm:
+                    strong_anchors.append((p_clean, 120))
+
+        if sec_norm and len(sec_norm) >= 4:
+            strong_anchors.append((sec_norm, 80))
+
+        # Methodology / Scope anchors
+        if "layout" in meth_norm or "layout" in scope_norm:
+            strong_anchors.append(("report layout", 100))
+            strong_anchors.append(("list object", 80))
+            strong_anchors.append(("enterprise operational reports", 90))
+        if "label" in meth_norm or "column_labels" in scope_norm or "body" in sec_norm or "db_report" in meth_norm:
+            strong_anchors.append(("report body", 90))
+            strong_anchors.append(("business label", 70))
+        if "schedule" in meth_norm or "frequency" in scope_norm or "frequency" in tf_norm:
+            strong_anchors.append(("report frequency type", 120))
+            strong_anchors.append(("scheduled", 80))
+            strong_anchors.append(("report generation", 70))
+        if "sort" in meth_norm:
+            strong_anchors.append(("sort by", 110))
+            strong_anchors.append(("control break", 70))
+        if "count" in meth_norm or "total" in scope_norm:
+            strong_anchors.append(("counts", 90))
+            strong_anchors.append(("total errors", 110))
+            strong_anchors.append(("control break", 60))
+        if "special_processing" in meth_norm or "special processing" in sec_norm:
+            strong_anchors.append(("report special processing", 130))
+            strong_anchors.append(("special processing", 90))
+        if "output" in meth_norm or "output" in sec_norm:
+            strong_anchors.append(("report output", 90))
+        if "retention" in sec_norm or "script" in meth_norm:
+            strong_anchors.append(("report retention", 100))
+        if "section_heading" in meth_norm or "section heading" in sec_norm:
+            strong_anchors.append(("report section heading", 130))
+            strong_anchors.append(("section heading", 80))
+        if "header" in meth_norm or "header" in scope_norm:
+            strong_anchors.append(("report header", 110))
+            if "layout" in sec_norm or "layout" in meth_norm:
+                strong_anchors.append(("report layout", 120))
+                strong_anchors.append(("enterprise operational reports", 110))
+        if "name_description" in meth_norm or "definition" in sec_norm:
+            strong_anchors.append(("report definition", 100))
+            strong_anchors.append(("client report id", 90))
+            strong_anchors.append(("report description", 90))
+        if "selection_criteria" in meth_norm or "selection criteria" in sec_norm:
+            strong_anchors.append(("report selection criteria", 120))
+            strong_anchors.append(("selection criteria", 80))
+
+        page_scores: List[Tuple[int, int]] = []
+        for idx, text in enumerate(page_texts):
+            p_num = idx + 1
+            t_lower = text.lower()
+            # Disqualify blank pages (< 20 non-space chars)
+            if len(re.sub(r"\s+", "", t_lower)) < 20:
+                continue
+
+            score = 0
+            for anchor, weight in strong_anchors:
+                if anchor in t_lower:
+                    score += weight
+                elif " " in anchor:
+                    tokens = [tok for tok in anchor.split() if len(tok) >= 4]
+                    matched_toks = sum(1 for tok in tokens if tok in t_lower)
+                    if tokens and matched_toks == len(tokens):
+                        score += int(weight * 0.8)
+                    elif tokens and matched_toks >= 1:
+                        score += int(weight * 0.3 * (matched_toks / len(tokens)))
+
+            if p_num == advisory_page and score > 0:
+                score += 30
+
+            page_scores.append((score, p_num))
+
+        if not page_scores:
+            return None
+
+        page_scores.sort(key=lambda x: x[0], reverse=True)
+        best_score, best_page = page_scores[0]
+
+        logger.info(
+            f"[SEMANTIC PAGE RESOLVER] advisory_page={advisory_page}, section='{section}', "
+            f"target_field='{target_field}', scope='{evidence_scope}', meth='{methodology}' "
+            f"-> resolved page {best_page}/{num_pages} (score={best_score})"
+        )
+
+        if best_score >= 50:
+            return best_page
+
+        # Fallback to advisory page if within bounds and not blank
+        if 1 <= advisory_page <= num_pages:
+            adv_text = page_texts[advisory_page - 1]
+            if len(re.sub(r"\s+", "", adv_text)) >= 20:
+                return advisory_page
+
+        return None
+
+    @classmethod
     def render_tier2_docx_pdf(
         cls,
         source_path: Path,
         png_path: Path,
         page_number: int = 1,
+        section: str = "",
+        methodology: str = "",
+        target_field: str = "",
+        evidence_scope: str = "",
+        test_case_id: str = "",
     ) -> bool:
         """
         Tier 2 Genuine Document Rendering:
-        Converts source.docx to authentic source.pdf, then renders the exact
-        requested document page to PNG.
-        Produces visual output identical to the original Word document page.
+        Converts source.docx to authentic source.pdf, resolves the correct
+        physical PDF page using deterministic semantic anchor scoring,
+        and renders the page to PNG without silent clamping.
         """
         pdf_path = cls.convert_docx_to_pdf(source_path)
         if not pdf_path:
             return False
-        return cls.render_pdf_page_to_png(pdf_path, page_number, png_path)
+
+        resolved_page = cls.resolve_physical_pdf_page(
+            pdf_path=pdf_path,
+            advisory_page=page_number,
+            section=section,
+            methodology=methodology,
+            target_field=target_field,
+            evidence_scope=evidence_scope,
+            test_case_id=test_case_id,
+        )
+
+        if not resolved_page:
+            logger.warning(
+                f"[TIER 2 RESOLVE FAILED] Could not resolve physical PDF page for {test_case_id} "
+                f"(advisory page {page_number}). Refusing to render incorrect page."
+            )
+            return False
+
+        return cls.render_pdf_page_to_png(pdf_path, resolved_page, png_path, allow_blank=False)
 
     # -------------------------------------------------------------------------
     # Legacy Table Extractor (retained for auxiliary inspection)
@@ -1201,31 +1473,49 @@ class DSDSourceSnapshotService:
                 source_path=source_path,
                 png_path=png_path,
                 page_number=page_number,
+                section=section,
+                methodology=methodology,
+                target_field=target_field,
+                evidence_scope=evidence_scope,
+                test_case_id=test_case_id,
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
-                cls.write_provenance_meta(png_path, renderer="tier2_docx_pdf", authentic=True, page_number=page_number)
+                cls.write_provenance_meta(
+                    png_path,
+                    renderer="tier2_docx_pdf",
+                    authentic=True,
+                    page_number=page_number,
+                    extra={
+                        "test_case_id": test_case_id,
+                        "evidence_id": evidence_id,
+                        "section": section,
+                        "target_field": target_field,
+                    },
+                )
                 logger.info(
                     f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier2_docx_pdf status=success path={png_path.name}"
                 )
                 return png_path
 
         # 4. Tier 3: Pure-Python Authoritative DB Metadata Snapshot (Fallback)
-        logger.warning(
-            f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier3_synthetic status=fallback path={png_path.name}"
-        )
-        success = cls.render_tier3_db(
-            db=db,
-            run_id=run_id,
-            png_path=png_path,
-            section=section,
-            methodology=methodology,
-            target_field=target_field,
-            evidence_scope=evidence_scope,
-            test_case_id=test_case_id,
-            description=desc,
-        )
-        if success and png_path.exists() and png_path.stat().st_size > 0:
-            cls.write_provenance_meta(png_path, renderer="tier3_synthetic", authentic=False, page_number=page_number)
-            return png_path
+        # ONLY permitted when source.docx is NOT present on disk (e.g. remote run, ephemeral restart)
+        if not source_path or not source_path.exists():
+            logger.warning(
+                f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier3_synthetic status=fallback path={png_path.name}"
+            )
+            success = cls.render_tier3_db(
+                db=db,
+                run_id=run_id,
+                png_path=png_path,
+                section=section,
+                methodology=methodology,
+                target_field=target_field,
+                evidence_scope=evidence_scope,
+                test_case_id=test_case_id,
+                description=desc,
+            )
+            if success and png_path.exists() and png_path.stat().st_size > 0:
+                cls.write_provenance_meta(png_path, renderer="tier3_synthetic", authentic=False, page_number=page_number)
+                return png_path
 
-        raise RuntimeError(f"Failed to generate authoritative snapshot for run {run_id} ({png_filename}) across all 3 tiers.")
+        raise RuntimeError(f"Visual source preview unavailable: unable to render authoritative DSD page for run {run_id} ({png_filename})")

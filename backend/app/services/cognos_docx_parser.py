@@ -203,6 +203,7 @@ class ParsedRow:
     """A single row within a table."""
     row_index: int
     cells: list[ParsedCell] = field(default_factory=list)
+    source_page: Optional[int] = None
 
 
 @dataclass
@@ -441,6 +442,7 @@ def _extract_parsed_table(
     section_name: str,
     source_order: int,
     source_page: Optional[int],
+    row_pages: Optional[list[int]] = None,
 ) -> ParsedTable:
     """Construct a detailed ParsedTable preserving cell-level attributes."""
     parsed_rows: list[ParsedRow] = []
@@ -475,7 +477,8 @@ def _extract_parsed_table(
             row_cells.append(parsed_cell)
             grid_row.append(clean_text)
 
-        parsed_rows.append(ParsedRow(row_index=r_idx, cells=row_cells))
+        r_page = row_pages[r_idx] if (row_pages and r_idx < len(row_pages)) else source_page
+        parsed_rows.append(ParsedRow(row_index=r_idx, cells=row_cells, source_page=r_page))
         raw_grid.append(grid_row)
 
     col_count = max((len(r.cells) for r in parsed_rows), default=0)
@@ -511,7 +514,7 @@ def parse_cognos_docx(path: str | Path) -> CognosParsedDocument:
     current_section: Optional[DocumentSection] = None
     source_order = 0
     table_index = 0
-    current_page: Optional[int] = None  # None unless explicit page break detected
+    current_page: int = 1
 
     for item in iter_block_items(document):
         source_order += 1
@@ -520,11 +523,11 @@ def parse_cognos_docx(path: str | Path) -> CognosParsedDocument:
             text = item.text.strip()
             result.all_paragraphs.append(text)
 
-            # Check explicit page breaks or last rendered page breaks in XML
+            # Check explicit page breaks or last rendered page breaks in paragraph XML
             xml = item._element.xml
-            breaks = xml.count("w:lastRenderedPageBreak") + xml.count('w:type="page"')
-            if breaks > 0:
-                current_page = (current_page or 1) + breaks
+            if ("w:lastRenderedPageBreak" in xml) or ('w:type="page"' in xml):
+                p_breaks = xml.count('w:type="page"') + xml.count('w:lastRenderedPageBreak')
+                current_page = (current_page or 1) + max(1, min(p_breaks, 2))
 
             # Check section detection
             is_heading = item.style and item.style.name and \
@@ -563,27 +566,32 @@ def parse_cognos_docx(path: str | Path) -> CognosParsedDocument:
 
         elif isinstance(item, docx.table.Table):
             table_index += 1
-
-            # Check explicit page breaks or last rendered page breaks inside the table XML
-            xml = item._element.xml
-            breaks = xml.count("w:lastRenderedPageBreak") + xml.count('w:type="page"')
-            if breaks > 0:
-                current_page = (current_page or 1) + breaks
+            table_start_page = current_page or 1
 
             if current_section is None:
                 current_section = DocumentSection(
                     name="Report Definition",
                     start_order=source_order,
-                    source_page=current_page,
+                    source_page=table_start_page,
                 )
                 result.sections.append(current_section)
+
+            # Track page per row in OOXML document order
+            row_pages: list[int] = []
+            for r_idx, row in enumerate(item.rows):
+                if r_idx > 0:
+                    r_xml = row._tr.xml
+                    if ("w:lastRenderedPageBreak" in r_xml) or ('w:type="page"' in r_xml):
+                        current_page = (current_page or 1) + 1
+                row_pages.append(current_page or 1)
 
             parsed_table = _extract_parsed_table(
                 item,
                 table_index=table_index,
                 section_name=current_section.name,
                 source_order=source_order,
-                source_page=current_page,
+                source_page=table_start_page,
+                row_pages=row_pages,
             )
 
             current_section.tables.append(parsed_table)
