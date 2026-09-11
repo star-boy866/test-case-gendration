@@ -33,6 +33,10 @@ RUN pip install --no-cache /wheels/*
 # Copy application source
 COPY --chown=appuser:appgroup . /app
 
+# Pre-create runtime directories and grant ownership to non-root appuser
+RUN mkdir -p /app/jobs /app/runs /app/exports /app/uploads && \
+    chown -R appuser:appgroup /app/jobs /app/runs /app/exports /app/uploads
+
 # Switch to non-root user
 USER appuser
 
