@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -42,6 +43,9 @@ class DSDSourceSnapshotService:
     """
     Manages resolution, caching, and resilient generation of Source DSD Snapshots.
     """
+
+    CURRENT_CROP_VERSION = "v2_semantic_crop"
+    _pdfium_lock = threading.Lock()
 
     @classmethod
     def get_candidate_runs_dirs(cls) -> List[Path]:
@@ -81,7 +85,7 @@ class DSDSourceSnapshotService:
             return None
 
         # Normalize backslashes to forward slashes
-        norm_str = str(stored_path).replace("\\", "/").strip()
+        norm_str = stored_path.replace("\\", "/").strip()
         raw_path = Path(norm_str)
 
         # Check raw path if absolute
@@ -142,7 +146,7 @@ class DSDSourceSnapshotService:
         render_script = BACKEND_DIR / "render" / "render_snapshot.js"
         has_node = bool(shutil.which("node"))
         has_modules = node_modules.exists() and (node_modules / "playwright").exists()
-        return bool(has_node and has_modules and render_script.exists())
+        return has_node and has_modules and render_script.exists()
 
     @classmethod
     def write_provenance_meta(
@@ -159,8 +163,9 @@ class DSDSourceSnapshotService:
             data = {
                 "filename": png_path.name,
                 "renderer": renderer,
-                "authentic": bool(authentic),
+                "authentic": authentic,
                 "page_number": page_number,
+                "crop_version": cls.CURRENT_CROP_VERSION,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             if extra:
@@ -203,12 +208,12 @@ class DSDSourceSnapshotService:
                 if w == 1280 and h >= 700:
                     banner_samples = [rgb_img.getpixel((x, 20)) for x in [20, 200, 600, 1000]]
                     is_slate_banner = all(
-                        abs(p[0] - 15) <= 5 and abs(p[1] - 23) <= 5 and abs(p[2] - 42) <= 5
+                        isinstance(p, (tuple, list)) and len(p) >= 3 and abs(p[0] - 15) <= 5 and abs(p[1] - 23) <= 5 and abs(p[2] - 42) <= 5
                         for p in banner_samples
                     )
                     stripe_samples = [rgb_img.getpixel((x, 98)) for x in [20, 200, 600, 1000]]
                     is_indigo_stripe = all(
-                        abs(p[0] - 79) <= 5 and abs(p[1] - 70) <= 5 and abs(p[2] - 229) <= 5
+                        isinstance(p, (tuple, list)) and len(p) >= 3 and abs(p[0] - 79) <= 5 and abs(p[1] - 70) <= 5 and abs(p[2] - 229) <= 5
                         for p in stripe_samples
                     )
                     if is_slate_banner and is_indigo_stripe:
@@ -219,8 +224,9 @@ class DSDSourceSnapshotService:
                 # - Background border (0,0)-(10,10) is gray (220, 220, 220)
                 if w == 1240:
                     corner = rgb_img.getpixel((5, 5))
-                    if abs(corner[0] - 220) <= 5 and abs(corner[1] - 220) <= 5 and abs(corner[2] - 220) <= 5:
-                        return True
+                    if isinstance(corner, (tuple, list)) and len(corner) >= 3:
+                        if abs(corner[0] - 220) <= 5 and abs(corner[1] - 220) <= 5 and abs(corner[2] - 220) <= 5:
+                            return True
 
         except Exception:
             return False
@@ -296,21 +302,42 @@ class DSDSourceSnapshotService:
                             continue
 
                         # Guard 3: If metadata is present with page_number, verify it matches
-                        if page_number is not None:
-                            meta_cand = cand.with_suffix(".meta.json")
-                            if meta_cand.exists():
-                                try:
-                                    with open(meta_cand, "r", encoding="utf-8") as mf:
-                                        m_dict = json.load(mf)
-                                        m_page = m_dict.get("page_number")
-                                        if m_page is not None and m_page != page_number:
+                        meta_cand = cand.with_suffix(".meta.json")
+                        if meta_cand.exists():
+                            try:
+                                with open(meta_cand, "r", encoding="utf-8") as mf:
+                                    m_dict = json.load(mf)
+                                    m_page = m_dict.get("page_number")
+                                    if page_number is not None and m_page is not None and m_page != page_number:
+                                        logger.info(
+                                            f"[CACHE PAGE MISMATCH] Cached file {cand.name} has page {m_page}, "
+                                            f"expected page {page_number}. Rejecting stale cache."
+                                        )
+                                        continue
+
+                                    # Guard 4: Require semantic crop version when require_authentic is True
+                                    # If generated by Tier 2, reject legacy uncropped full-page captures
+                                    if require_authentic and m_dict.get("renderer") == "tier2_docx_pdf":
+                                        if m_dict.get("crop_version") != cls.CURRENT_CROP_VERSION and not m_dict.get("is_semantic_crop"):
                                             logger.info(
-                                                f"[CACHE PAGE MISMATCH] Cached file {cand.name} has page {m_page}, "
-                                                f"expected page {page_number}. Rejecting stale cache."
+                                                f"[STALE UNCROPPED CACHE REJECTED] Found legacy full-page snapshot "
+                                                f"{cand.name} (crop_version={m_dict.get('crop_version')}). Rejecting to force semantic crop generation."
                                             )
                                             continue
-                                except Exception:
-                                    pass
+                            except Exception:
+                                pass
+                        elif require_authentic:
+                            # If no metadata sidecar exists, reject full-page dimensions (1584x1224 or 1224x1584)
+                            try:
+                                with Image.open(cand) as img:
+                                    if img.size in [(1584, 1224), (1224, 1584), (1650, 1275), (1275, 1650)]:
+                                        logger.info(
+                                            f"[STALE UNCROPPED CACHE REJECTED] Legacy full-page image {cand.name} {img.size} "
+                                            f"has no semantic crop metadata. Rejecting to force semantic crop."
+                                        )
+                                        continue
+                            except Exception:
+                                pass
 
                         if not require_authentic or cls.is_authentic_snapshot(cand):
                             return cand
@@ -336,7 +363,7 @@ class DSDSourceSnapshotService:
     # Font Loader Helper
     # -------------------------------------------------------------------------
     @classmethod
-    def _get_fonts(cls) -> Tuple[ImageFont.ImageFont, ImageFont.ImageFont, ImageFont.ImageFont, ImageFont.ImageFont]:
+    def _get_fonts(cls) -> Tuple[Any, Any, Any, Any]:
         """Loads scalable TrueType fonts across Windows/Linux or falls back cleanly."""
         font_candidates = [
             ("arial.ttf", "arialbd.ttf"),
@@ -483,14 +510,14 @@ class DSDSourceSnapshotService:
         Converts source.docx to authentic source.pdf using LibreOffice headless.
         Caches the resulting PDF beside source.docx for fast reuse.
         """
+        pdf_path = source_path.with_suffix(".pdf")
+        if pdf_path.exists() and pdf_path.stat().st_size > 0:
+            return pdf_path
+
         soffice_bin = cls._find_soffice_binary()
         if not soffice_bin:
             logger.info("[TIER 2 SKIP] soffice/libreoffice binary not present in environment.")
             return None
-
-        pdf_path = source_path.with_suffix(".pdf")
-        if pdf_path.exists() and pdf_path.stat().st_size > 0:
-            return pdf_path
 
         try:
             cmd = [
@@ -526,69 +553,91 @@ class DSDSourceSnapshotService:
         page_number: int,
         png_path: Path,
         allow_blank: bool = True,
+        crop_box: Optional[Tuple[int, int, int, int]] = None,
     ) -> bool:
         """
-        Renders the requested page of an authentic PDF to a sharp PNG image.
+        Renders the requested page of an authentic PDF to a sharp PNG image,
+        with optional scenario-focused semantic cropping.
         Uses pypdfium2 (Google PDFium) first, falling back to PyMuPDF (fitz).
         Renders the REAL document page with original Word fonts, tables, headers,
         and spacing without any synthetic reconstruction or annotations.
         Enforces strict bounds validation — never silently clamps invalid page numbers.
+        Thread-safe and memory-safe (isolates unpinned C buffers via .copy() to eliminate SIGSEGV).
         """
         if not pdf_path.exists() or pdf_path.stat().st_size == 0:
             return False
 
-        # 1. Preferred: pypdfium2
-        try:
-            import pypdfium2 as pdfium
-            pdf = pdfium.PdfDocument(str(pdf_path))
+        # 1. Preferred: pypdfium2 with process-level lock
+        with cls._pdfium_lock:
             try:
-                num_pages = len(pdf)
-                if num_pages > 0:
-                    if page_number < 1 or page_number > num_pages:
-                        logger.warning(
-                            f"[TIER 2 INVALID PAGE] Requested page {page_number} is out of bounds (1..{num_pages}) "
-                            f"for {pdf_path.name}. Refusing to silently clamp."
-                        )
-                        return False
+                import pypdfium2 as pdfium
+                pdf = pdfium.PdfDocument(str(pdf_path))
+                try:
+                    num_pages = len(pdf)
+                    if num_pages > 0:
+                        if page_number < 1 or page_number > num_pages:
+                            logger.warning(
+                                f"[TIER 2 INVALID PAGE] Requested page {page_number} is out of bounds (1..{num_pages}) "
+                                f"for {pdf_path.name}. Refusing to silently clamp."
+                            )
+                            return False
 
-                    target_idx = page_number - 1
-                    page = pdf.get_page(target_idx)
-                    try:
-                        # Check for blank page if not allow_blank
-                        if not allow_blank:
-                            try:
-                                textpage = page.get_textpage()
+                        target_idx = page_number - 1
+                        page = pdf.get_page(target_idx)
+                        try:
+                            # Check for blank page if not allow_blank
+                            if not allow_blank:
                                 try:
-                                    text = textpage.get_text_range() or ""
-                                    if len(re.sub(r"\s+", "", text)) < 20:
-                                        logger.warning(
-                                            f"[TIER 2 BLANK PAGE] Page {page_number}/{num_pages} of {pdf_path.name} contains no text. "
-                                            f"Rejecting blank page."
-                                        )
-                                        return False
-                                finally:
-                                    textpage.close()
-                            except Exception:
-                                pass
+                                    textpage = page.get_textpage()
+                                    try:
+                                        text = textpage.get_text_range() or ""
+                                        if len(re.sub(r"\s+", "", text)) < 20:
+                                            logger.warning(
+                                                f"[TIER 2 BLANK PAGE] Page {page_number}/{num_pages} of {pdf_path.name} contains no text. "
+                                                f"Rejecting blank page."
+                                            )
+                                            return False
+                                    finally:
+                                        textpage.close()
+                                except Exception:
+                                    pass
 
-                        bitmap = page.render(scale=2.0)
-                        pil_img = bitmap.to_pil()
-                        png_path.parent.mkdir(parents=True, exist_ok=True)
-                        pil_img.save(png_path, format="PNG", optimize=True)
-                        logger.info(f"[TIER 2 RENDER SUCCESS] pypdfium2 rendered page {page_number}/{num_pages} -> {png_path.name} ({png_path.stat().st_size} bytes)")
-                        return True
-                    finally:
-                        page.close()
-            finally:
-                pdf.close()
-        except ImportError:
-            pass
-        except Exception as ex:
-            logger.warning(f"[TIER 2 RENDER] pypdfium2 failed ({ex}), trying fitz...")
+                            bitmap = page.render(scale=2.0)
+                            # CRITICAL FIX for Render code 139 (SIGSEGV):
+                            # Calling .copy() creates an independent Python-managed PIL pixel buffer,
+                            # preventing use-after-free when closing the C bitmap and page handles.
+                            pil_img = bitmap.to_pil().copy()
+                            bitmap.close()
+
+                            if crop_box:
+                                img_w, img_h = pil_img.size
+                                cx0, cy0, cx1, cy1 = crop_box
+                                cx0 = max(0, min(cx0, img_w - 10))
+                                cy0 = max(0, min(cy0, img_h - 10))
+                                cx1 = min(img_w, max(cx1, cx0 + 10))
+                                cy1 = min(img_h, max(cy1, cy0 + 10))
+                                pil_img = pil_img.crop((cx0, cy0, cx1, cy1))
+
+                            png_path.parent.mkdir(parents=True, exist_ok=True)
+                            pil_img.save(png_path, format="PNG", optimize=True)
+                            logger.info(
+                                f"[TIER 2 RENDER SUCCESS] pypdfium2 rendered page {page_number}/{num_pages} "
+                                f"(crop={crop_box is not None}) -> {png_path.name} ({png_path.stat().st_size} bytes, dims={pil_img.size})"
+                            )
+                            return True
+                        finally:
+                            page.close()
+                finally:
+                    pdf.close()
+            except ImportError:
+                pass
+            except Exception as ex:
+                logger.warning(f"[TIER 2 RENDER] pypdfium2 failed ({ex}), trying fitz...")
 
         # 2. PyMuPDF (fitz) fallback
         try:
-            import fitz
+            import importlib
+            fitz = importlib.import_module("fitz")
             doc = fitz.open(str(pdf_path))
             try:
                 if len(doc) > 0:
@@ -612,6 +661,18 @@ class DSDSourceSnapshotService:
                     pix = page.get_pixmap(dpi=150)
                     png_path.parent.mkdir(parents=True, exist_ok=True)
                     pix.save(str(png_path))
+
+                    if crop_box:
+                        with Image.open(png_path) as full_img:
+                            img_w, img_h = full_img.size
+                            cx0, cy0, cx1, cy1 = crop_box
+                            cx0 = max(0, min(cx0, img_w - 10))
+                            cy0 = max(0, min(cy0, img_h - 10))
+                            cx1 = min(img_w, max(cx1, cx0 + 10))
+                            cy1 = min(img_h, max(cy1, cy0 + 10))
+                            cropped = full_img.crop((cx0, cy0, cx1, cy1))
+                            cropped.save(png_path, format="PNG", optimize=True)
+
                     logger.info(f"[TIER 2 RENDER SUCCESS] fitz rendered page {page_number}/{len(doc)} -> {png_path.name}")
                     return True
             finally:
@@ -627,29 +688,33 @@ class DSDSourceSnapshotService:
     def extract_pdf_page_texts(cls, pdf_path: Path) -> List[str]:
         """Extracts plain text for each page of the PDF (1-indexed returned as list)."""
         texts: List[str] = []
-        try:
-            import pypdfium2 as pdfium
-            pdf = pdfium.PdfDocument(str(pdf_path))
+        with cls._pdfium_lock:
             try:
-                for page in pdf:
-                    try:
-                        tp = page.get_textpage()
+                import pypdfium2 as pdfium
+                pdf = pdfium.PdfDocument(str(pdf_path))
+                try:
+                    for i in range(len(pdf)):
                         try:
-                            texts.append(tp.get_text_range() or "")
-                        finally:
-                            tp.close()
-                    except Exception:
-                        texts.append("")
-                    finally:
-                        page.close()
-            finally:
-                pdf.close()
-            return texts
-        except Exception:
-            pass
+                            page = pdf.get_page(i)
+                            try:
+                                tp = page.get_textpage()
+                                try:
+                                    texts.append(tp.get_text_range() or "")
+                                finally:
+                                    tp.close()
+                            finally:
+                                page.close()
+                        except Exception:
+                            texts.append("")
+                finally:
+                    pdf.close()
+                return texts
+            except Exception:
+                pass
 
         try:
-            import fitz
+            import importlib
+            fitz = importlib.import_module("fitz")
             doc = fitz.open(str(pdf_path))
             try:
                 for page in doc:
@@ -693,10 +758,13 @@ class DSDSourceSnapshotService:
         strong_anchors: List[Tuple[str, int]] = []
         if tf_norm and len(tf_norm) >= 3:
             strong_anchors.append((tf_norm, 150))
-            for part in re.split(r"[,;/]+", tf_norm):
+            for part in re.split(r"[,;/\-]+", tf_norm):
                 p_clean = part.strip()
-                if len(p_clean) >= 4 and p_clean != tf_norm:
+                if len(p_clean) >= 3 and p_clean != tf_norm and p_clean not in {"desc", "code", "date", "type", "name", "text"}:
                     strong_anchors.append((p_clean, 120))
+                    words = p_clean.split()
+                    if len(words) >= 3:
+                        strong_anchors.append((" ".join(words[:2]), 110))
 
         if sec_norm and len(sec_norm) >= 4:
             strong_anchors.append((sec_norm, 80))
@@ -742,6 +810,9 @@ class DSDSourceSnapshotService:
         if "selection_criteria" in meth_norm or "selection criteria" in sec_norm:
             strong_anchors.append(("report selection criteria", 120))
             strong_anchors.append(("selection criteria", 80))
+        if "spec" in sec_norm or "lookup" in meth_norm:
+            strong_anchors.append(("source table", 90))
+            strong_anchors.append(("source column", 90))
 
         page_scores: List[Tuple[int, int]] = []
         for idx, text in enumerate(page_texts):
@@ -756,11 +827,11 @@ class DSDSourceSnapshotService:
                 if anchor in t_lower:
                     score += weight
                 elif " " in anchor:
-                    tokens = [tok for tok in anchor.split() if len(tok) >= 4]
-                    matched_toks = sum(1 for tok in tokens if tok in t_lower)
+                    tokens = [tok for tok in re.findall(r"[a-z0-9]+", anchor) if len(tok) >= 2]
+                    matched_toks = sum(1 for tok in tokens if re.search(r"\b" + re.escape(tok) + r"\b", t_lower))
                     if tokens and matched_toks == len(tokens):
                         score += int(weight * 0.8)
-                    elif tokens and matched_toks >= 1:
+                    elif tokens and matched_toks >= 2:
                         score += int(weight * 0.3 * (matched_toks / len(tokens)))
 
             if p_num == advisory_page and score > 0:
@@ -792,6 +863,312 @@ class DSDSourceSnapshotService:
         return None
 
     @classmethod
+    def _find_text_boxes_in_pdf(cls, page: Any, text_query: str) -> List[Tuple[float, float, float, float]]:
+        """
+        Returns all matching bounding boxes (left, bottom, right, top) in PDF coordinates
+        for the given text query using pypdfium2 or fitz.
+        """
+        if not text_query or len(text_query.strip()) < 2:
+            return []
+        q = text_query.strip()
+        boxes: List[Tuple[float, float, float, float]] = []
+
+        # 1. pypdfium2 textpage search
+        try:
+            tp = page.get_textpage()
+            try:
+                search = tp.search(q, match_case=False, match_whole_word=False)
+                while True:
+                    match = search.get_next()
+                    if not match:
+                        break
+                    start_idx, count = match
+                    char_boxes = [tp.get_charbox(start_idx + k) for k in range(count)]
+                    min_x = min(b[0] for b in char_boxes)
+                    min_y = min(b[1] for b in char_boxes)
+                    max_x = max(b[2] for b in char_boxes)
+                    max_y = max(b[3] for b in char_boxes)
+                    boxes.append((min_x, min_y, max_x, max_y))
+                search.close()
+                return boxes
+            finally:
+                tp.close()
+        except Exception:
+            pass
+
+        # 2. fitz page search fallback
+        try:
+            rects = page.search_for(q)
+            h = page.rect.height
+            for r in rects:
+                boxes.append((r.x0, h - r.y1, r.x1, h - r.y0))
+            return boxes
+        except Exception:
+            pass
+
+        return boxes
+
+    @classmethod
+    def _get_page_horizontal_content_bounds(cls, page: Any) -> Tuple[float, float]:
+        """Finds left and right content margins across characters on the page."""
+        try:
+            w, _ = page.get_size()
+            tp = page.get_textpage()
+            try:
+                count = tp.count_chars()
+                if count == 0:
+                    return 36.0, w - 36.0
+                xs = []
+                step = max(1, count // 250)
+                for i in range(0, count, step):
+                    box = tp.get_charbox(i)
+                    if box[2] > box[0] and box[3] > box[1]:
+                        xs.append(box[0])
+                        xs.append(box[2])
+                if not xs:
+                    return 36.0, w - 36.0
+                xs.sort()
+                p2 = xs[int(len(xs) * 0.02)]
+                p98 = xs[int(len(xs) * 0.98)]
+                return max(20.0, p2 - 15.0), min(w - 20.0, p98 + 15.0)
+            finally:
+                tp.close()
+        except Exception:
+            try:
+                w = getattr(page.rect, "width", 612.0)
+                return 36.0, w - 36.0
+            except Exception:
+                return 36.0, 576.0
+
+    @classmethod
+    def calculate_semantic_crop_bounds(
+        cls,
+        pdf_path: Path,
+        page_number: int,
+        section: str = "",
+        methodology: str = "",
+        target_field: str = "",
+        evidence_scope: str = "",
+        test_case_id: str = "",
+        scale: float = 2.0,
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """
+        Computes (px_x0, px_y0, px_x1, px_y1) pixel crop box for the requested semantic scenario.
+        Mirrors localhost Tier 1 Playwright element/structural region targeting.
+        Thread-safe and memory-safe.
+        """
+        if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+            return None
+
+        with cls._pdfium_lock:
+            try:
+                import pypdfium2 as pdfium
+                pdf = pdfium.PdfDocument(str(pdf_path))
+                try:
+                    num_pages = len(pdf)
+                    if page_number < 1 or page_number > num_pages:
+                        return None
+                    page = pdf.get_page(page_number - 1)
+                    try:
+                        w, h = page.get_size()
+                        c_left, c_right = cls._get_page_horizontal_content_bounds(page)
+
+                        sec_l = (section or "").lower()
+                        meth_l = (methodology or "").lower()
+                        tf_l = (target_field or "").lower()
+                        scope_l = (evidence_scope or "").lower()
+                        tc_l = (test_case_id or "").lower()
+
+                        top_y: Optional[float] = None
+                        bottom_y: Optional[float] = None
+                        left_x: float = c_left
+                        right_x: float = c_right
+
+                        # 1. EXEC / Report Generation & Scheduling
+                        if "scheduled_execution" in meth_l or "exec" in tc_l or "frequency" in scope_l or "generation" in sec_l:
+                            b_gen = cls._find_text_boxes_in_pdf(page, "Report Generation")
+                            b_freq = cls._find_text_boxes_in_pdf(page, "Frequency")
+                            b_sched = cls._find_text_boxes_in_pdf(page, "Scheduled")
+                            b_acc = cls._find_text_boxes_in_pdf(page, "Accumulation")
+
+                            if b_gen or b_freq:
+                                anchors = b_gen + b_freq
+                                top_y = max(b[3] for b in anchors) + 15.0
+                                end_anchors = b_sched + b_acc
+                                if end_anchors:
+                                    bottom_y = min(b[1] for b in end_anchors) - 18.0
+                                else:
+                                    bottom_y = min(b[1] for b in anchors) - 150.0
+
+                        # 2. REPO / Report Definition & Metadata
+                        elif "report_name_description" in meth_l or "repo" in tc_l or "metadata" in scope_l or "definition" in sec_l:
+                            b_def = cls._find_text_boxes_in_pdf(page, "Report Definition")
+                            b_id = cls._find_text_boxes_in_pdf(page, "Report ID")
+                            b_gen_by = cls._find_text_boxes_in_pdf(page, "Report Generated By")
+                            b_desc = cls._find_text_boxes_in_pdf(page, "Report Description")
+
+                            anchors = b_def or b_id
+                            if anchors:
+                                top_y = max(b[3] for b in anchors) + 15.0
+                                end_anchors = b_gen_by or b_desc
+                                if end_anchors:
+                                    bottom_y = min(b[1] for b in end_anchors) - 20.0
+                                else:
+                                    bottom_y = min(b[1] for b in anchors) - 180.0
+
+                        # 3. SELC / Selection Criteria
+                        elif "selection_criteria" in meth_l or "selc" in tc_l or "selection" in sec_l:
+                            b_sel = cls._find_text_boxes_in_pdf(page, "Selection Criteria")
+                            if b_sel:
+                                top_y = max(b[3] for b in b_sel) + 15.0
+                                b_next = (
+                                    cls._find_text_boxes_in_pdf(page, "Report Control Breaks")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Output")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Retention")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Specification")
+                                )
+                                if b_next:
+                                    bottom_y = max(b[3] for b in b_next) + 10.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_sel) - 180.0
+
+                        # 4. SORT / DBCO / Control Breaks, Totals, Counts, and Sorts
+                        elif "sort" in meth_l or "count" in meth_l or "total" in meth_l or "sort" in tc_l or "dbco" in tc_l or "control break" in sec_l:
+                            b_cb = cls._find_text_boxes_in_pdf(page, "Control Break") or cls._find_text_boxes_in_pdf(page, "Sort By")
+                            if b_cb:
+                                top_y = max(b[3] for b in b_cb) + 18.0
+                                b_tot = cls._find_text_boxes_in_pdf(page, "Total") or cls._find_text_boxes_in_pdf(page, "Counts") or cls._find_text_boxes_in_pdf(page, "processed")
+                                if b_tot:
+                                    bottom_y = min(b[1] for b in b_tot) - 20.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_cb) - 160.0
+
+                        # 5. SPEC / Special Processing
+                        elif "special_processing" in meth_l or "spec" in tc_l or "special" in sec_l:
+                            b_sp = cls._find_text_boxes_in_pdf(page, "Special Processing")
+                            if b_sp:
+                                top_y = max(b[3] for b in b_sp) + 15.0
+                                b_next = (
+                                    cls._find_text_boxes_in_pdf(page, "Report Specification")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Layout")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Section Heading")
+                                )
+                                if b_next:
+                                    bottom_y = max(b[3] for b in b_next) + 10.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_sp) - 140.0
+
+                        # 6. OUTP / SCRI / Output & Retention
+                        elif "output" in meth_l or "script" in meth_l or "outp" in tc_l or "scri" in tc_l or "output" in sec_l:
+                            b_out = cls._find_text_boxes_in_pdf(page, "Report Output") or cls._find_text_boxes_in_pdf(page, "Output Format")
+                            if b_out:
+                                top_y = max(b[3] for b in b_out) + 15.0
+                                b_ret = cls._find_text_boxes_in_pdf(page, "Retention") or cls._find_text_boxes_in_pdf(page, "Portal") or cls._find_text_boxes_in_pdf(page, "Distribution")
+                                if b_ret:
+                                    bottom_y = min(b[1] for b in b_ret) - 20.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_out) - 180.0
+
+                        # 7. RHDR / Report Header
+                        elif "header" in meth_l or "rhdr" in tc_l or "header" in scope_l:
+                            b_hdr = cls._find_text_boxes_in_pdf(page, "Report Header") or cls._find_text_boxes_in_pdf(page, "Report ID:") or cls._find_text_boxes_in_pdf(page, "Enterprise Operational")
+                            if b_hdr:
+                                top_y = max(b[3] for b in b_hdr) + 20.0
+                                bottom_y = min(b[1] for b in b_hdr) - 160.0
+
+                        # 8. LAYO / Report Layout
+                        elif "layout" in meth_l or "layo" in tc_l or "layout" in scope_l:
+                            b_layo = cls._find_text_boxes_in_pdf(page, "Report Layout")
+                            if b_layo:
+                                top_y = max(b[3] for b in b_layo) + 15.0
+                                bottom_y = min(b[1] for b in b_layo) - 400.0
+
+                        # 9. SECT / Section Heading
+                        elif "section_heading" in meth_l or "sect" in tc_l or "section heading" in sec_l:
+                            b_sec = cls._find_text_boxes_in_pdf(page, "Section Heading") or cls._find_text_boxes_in_pdf(page, "Report Section")
+                            if b_sec:
+                                top_y = max(b[3] for b in b_sec) + 15.0
+                                bottom_y = min(b[1] for b in b_sec) - 200.0
+
+                        # 10. LOOK / DATE / Target Field specific row search
+                        if top_y is None and tf_l:
+                            queries = [tf_l]
+                            for part in re.split(r"[,;/\-]+", tf_l):
+                                p_c = part.strip()
+                                if len(p_c) >= 3 and p_c != tf_l and p_c not in {"desc", "code", "date", "type", "name", "text"}:
+                                    queries.append(p_c)
+
+                            row_boxes = []
+                            for q in queries:
+                                m = cls._find_text_boxes_in_pdf(page, q)
+                                if m:
+                                    row_boxes.extend(m)
+                                    break
+
+                            if row_boxes:
+                                match_top = max(b[3] for b in row_boxes)
+                                match_bottom = min(b[1] for b in row_boxes)
+
+                                tbl_headers = cls._find_text_boxes_in_pdf(page, "Business Label") or cls._find_text_boxes_in_pdf(page, "Field Type")
+                                header_above = [h_box for h_box in tbl_headers if 0 < (h_box[1] - match_top) < 140]
+
+                                if header_above:
+                                    top_y = max(h_box[3] for h_box in header_above) + 12.0
+                                else:
+                                    top_y = match_top + 18.0
+
+                                bottom_y = match_bottom - 20.0
+
+                        # 11. DBRV / LABE / Table Region search
+                        if top_y is None:
+                            if "body" in sec_l or "dbrv" in tc_l or "labe" in tc_l or "mapping" in scope_l or "label" in meth_l:
+                                b_body = cls._find_text_boxes_in_pdf(page, "Report Body") or cls._find_text_boxes_in_pdf(page, "Business Label")
+                                if b_body:
+                                    top_y = max(b[3] for b in b_body) + 15.0
+                                    bottom_y = min(b[1] for b in b_body) - 350.0
+
+                        # 12. DUPL / Duplicate Rule search
+                        if top_y is None and ("dupl" in tc_l or "duplicate" in meth_l):
+                            b_dup = cls._find_text_boxes_in_pdf(page, "Duplicate") or cls._find_text_boxes_in_pdf(page, "p_alt_id")
+                            if b_dup:
+                                top_y = max(b[3] for b in b_dup) + 20.0
+                                bottom_y = min(b[1] for b in b_dup) - 150.0
+
+                        # Final validation and pixel translation
+                        if top_y is not None and bottom_y is not None:
+                            if top_y <= bottom_y:
+                                top_y, bottom_y = bottom_y + 80.0, top_y - 20.0
+
+                            if (top_y - bottom_y) < 45.0:
+                                mid = (top_y + bottom_y) / 2.0
+                                top_y = mid + 25.0
+                                bottom_y = mid - 25.0
+
+                            top_y = min(h - 10.0, top_y)
+                            bottom_y = max(10.0, bottom_y)
+
+                            px_x0 = max(0, int(left_x * scale))
+                            px_y0 = max(0, int((h - top_y) * scale))
+                            px_x1 = min(int(w * scale), int(right_x * scale))
+                            px_y1 = min(int(h * scale), int((h - bottom_y) * scale))
+
+                            if (px_y1 - px_y0) < 60:
+                                mid_py = (px_y0 + px_y1) // 2
+                                px_y0 = max(0, mid_py - 30)
+                                px_y1 = min(int(h * scale), mid_py + 30)
+
+                            return (px_x0, px_y0, px_x1, px_y1)
+
+                        return None
+                    finally:
+                        page.close()
+                finally:
+                    pdf.close()
+            except Exception as ex:
+                logger.warning(f"[SEMANTIC CROP ERROR] {ex}")
+                return None
+
+    @classmethod
     def render_tier2_docx_pdf(
         cls,
         source_path: Path,
@@ -807,7 +1184,7 @@ class DSDSourceSnapshotService:
         Tier 2 Genuine Document Rendering:
         Converts source.docx to authentic source.pdf, resolves the correct
         physical PDF page using deterministic semantic anchor scoring,
-        and renders the page to PNG without silent clamping.
+        and renders ONLY the relevant semantic section/region as a cropped PNG.
         """
         pdf_path = cls.convert_docx_to_pdf(source_path)
         if not pdf_path:
@@ -830,7 +1207,20 @@ class DSDSourceSnapshotService:
             )
             return False
 
-        return cls.render_pdf_page_to_png(pdf_path, resolved_page, png_path, allow_blank=False)
+        crop_box = cls.calculate_semantic_crop_bounds(
+            pdf_path=pdf_path,
+            page_number=resolved_page,
+            section=section,
+            methodology=methodology,
+            target_field=target_field,
+            evidence_scope=evidence_scope,
+            test_case_id=test_case_id,
+            scale=2.0,
+        )
+
+        return cls.render_pdf_page_to_png(
+            pdf_path, resolved_page, png_path, allow_blank=False, crop_box=crop_box
+        )
 
     # -------------------------------------------------------------------------
     # Legacy Table Extractor (retained for auxiliary inspection)
@@ -910,7 +1300,7 @@ class DSDSourceSnapshotService:
         """
         try:
             import docx as _docx
-            doc = _docx.Document(source_path)
+            doc = _docx.Document(str(source_path))
         except Exception as e:
             logger.warning(f"[TIER 2 WARN] Failed to open DOCX {source_path}: {e}")
             return False
@@ -1084,7 +1474,7 @@ class DSDSourceSnapshotService:
                 )
             else:
                 for c_idx in range(max_cols):
-                    val = str(row_vals[c_idx]).strip() if c_idx < len(row_vals) else ""
+                    val = row_vals[c_idx].strip() if c_idx < len(row_vals) else ""
                     cell_x = MARGIN_X + c_idx * col_w
                     if c_idx > 0:
                         draw.line(
@@ -1151,9 +1541,9 @@ class DSDSourceSnapshotService:
         if not run:
             return False
 
-        report_id = run.report_id or "COGNOS-DSD"
-        report_title = run.report_title or "Authoritative Report Specification"
-        doc_name = run.source_document or "Authoritative Source DSD.docx"
+        report_id = str(run.report_id or "COGNOS-DSD")
+        report_title = str(run.report_title or "Authoritative Report Specification")
+        doc_name = str(run.source_document or "Authoritative Source DSD.docx")
 
         # Look up matching test case details if available
         tc = None
@@ -1169,15 +1559,15 @@ class DSDSourceSnapshotService:
 
         # Populate structured specification rows
         table_rows.append(["DSD Specification Field", "Authoritative Specification Value"])
-        table_rows.append(["Report Identifier", str(report_id)])
-        table_rows.append(["Report Title", str(report_title)])
-        table_rows.append(["Target Section", str(section or "Report Definition")])
+        table_rows.append(["Report Identifier", report_id])
+        table_rows.append(["Report Title", report_title])
+        table_rows.append(["Target Section", section or "Report Definition"])
         if methodology:
-            table_rows.append(["Validation Methodology", str(methodology)])
+            table_rows.append(["Validation Methodology", methodology])
         if target_field:
-            table_rows.append(["Target Field / Column", str(target_field)])
+            table_rows.append(["Target Field / Column", target_field])
         if evidence_scope:
-            table_rows.append(["Evidence Scope", str(evidence_scope)])
+            table_rows.append(["Evidence Scope", evidence_scope])
 
         if tc:
             if tc.source_section:
@@ -1308,7 +1698,7 @@ class DSDSourceSnapshotService:
                     text_color = (15, 23, 42) if r_idx == 0 else (51, 65, 85)
                     # Truncate text to fit cell width
                     max_chars = max(10, col_w // 8)
-                    disp_val = str(val)[:max_chars]
+                    disp_val = val[:max_chars]
                     draw.text((cell_x, current_y + 8), disp_val, fill=text_color, font=cell_font)
 
                 current_y += row_h
@@ -1322,7 +1712,7 @@ class DSDSourceSnapshotService:
 
             for p_text in paragraphs:
                 draw.rounded_rectangle([(36, current_y), (width - 36, current_y + 38)], radius=4, fill=(248, 250, 252), outline=(226, 232, 240), width=1)
-                draw.text((48, current_y + 10), str(p_text)[:140], fill=(51, 65, 85), font=f_body)
+                draw.text((48, current_y + 10), p_text[:140], fill=(51, 65, 85), font=f_body)
                 current_y += 44
 
         # 6. Footer Citation & Verification Seal
@@ -1404,16 +1794,16 @@ class DSDSourceSnapshotService:
                     ):
                         if ev.get("page_number"):
                             try:
-                                page_number = int(ev["page_number"])
+                                page_number = int(str(ev["page_number"]))
                                 break
                             except (ValueError, TypeError):
                                 pass
                 else:
                     if tc.source_page and str(tc.source_page).isdigit():
-                        page_number = int(tc.source_page)
+                        page_number = int(str(tc.source_page))
                     elif tc.evidence_references and tc.evidence_references[0].get("page_number"):
                         try:
-                            page_number = int(tc.evidence_references[0]["page_number"])
+                            page_number = int(str(tc.evidence_references[0]["page_number"]))
                         except (ValueError, TypeError):
                             pass
         elif methodology == "LAYOUT_VALIDATION" or evidence_scope == "FULL_REPORT_LAYOUT":
@@ -1422,7 +1812,7 @@ class DSDSourceSnapshotService:
             page_number = 10
 
         # Resolve paths first
-        source_path = cls.resolve_source_path(run_id, run.source_document_path)
+        source_path = cls.resolve_source_path(run_id, str(run.source_document_path) if run.source_document_path else None)
         evidence_dir = cls.resolve_evidence_dir(run_id, source_path)
         png_path = evidence_dir / png_filename
 
@@ -1490,6 +1880,8 @@ class DSDSourceSnapshotService:
                         "evidence_id": evidence_id,
                         "section": section,
                         "target_field": target_field,
+                        "crop_version": cls.CURRENT_CROP_VERSION,
+                        "is_semantic_crop": True,
                     },
                 )
                 logger.info(
