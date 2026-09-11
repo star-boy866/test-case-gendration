@@ -39,5 +39,5 @@ USER appuser
 # Expose API port
 EXPOSE 8000
 
-# Deterministic production startup command via gunicorn with uvicorn workers
-CMD ["gunicorn", "app.main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
+# Deterministic production startup command via gunicorn with uvicorn workers dynamically binding to $PORT
+CMD ["sh", "-c", "exec gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8000} --timeout 120"]
