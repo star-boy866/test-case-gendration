@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,7 +45,7 @@ class DSDSourceSnapshotService:
     Manages resolution, caching, and resilient generation of Source DSD Snapshots.
     """
 
-    CURRENT_CROP_VERSION = "v2_semantic_crop"
+    CURRENT_CROP_VERSION = "v3_tight_crop"
     _pdfium_lock = threading.Lock()
 
     @classmethod
@@ -160,12 +161,16 @@ class DSDSourceSnapshotService:
         """Writes sidecar metadata recording the provenance of the snapshot."""
         try:
             meta_path = png_path.with_suffix(".meta.json")
+            is_crop = True if authentic else False
+            if extra and "is_semantic_crop" in extra:
+                is_crop = bool(extra["is_semantic_crop"])
             data = {
                 "filename": png_path.name,
                 "renderer": renderer,
                 "authentic": authentic,
                 "page_number": page_number,
                 "crop_version": cls.CURRENT_CROP_VERSION,
+                "is_semantic_crop": is_crop,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             if extra:
@@ -252,10 +257,16 @@ class DSDSourceSnapshotService:
         test_case_id: Optional[str] = None,
         require_authentic: bool = True,
         page_number: Optional[int] = None,
+        section: Optional[str] = None,
+        methodology: Optional[str] = None,
+        target_field: Optional[str] = None,
+        evidence_scope: Optional[str] = None,
     ) -> Optional[Path]:
         """
-        Searches all candidate runs directories for an existing authentic snapshot
-        strictly matching the canonical identity without wildcard cross-endpoint collisions.
+        Searches candidate runs directories for an authentic snapshot.
+        Strictly requires provenance metadata (matching crop_version == CURRENT_CROP_VERSION,
+        is_semantic_crop == True, matching page_number and evidence identity, non-blank,
+        and non-full-page dimensions) when require_authentic is True.
         """
         candidate_names: List[str] = [Path(png_filename).name]
 
@@ -283,79 +294,113 @@ class DSDSourceSnapshotService:
                 seen_names.add(n)
                 deduped_candidates.append(n)
 
+        full_page_dims = {
+            (1584, 1224), (1224, 1584),
+            (1191, 1684), (1684, 1191),
+            (1275, 1650), (1650, 1275),
+            (1700, 2200), (2200, 1700),
+            (2550, 3300), (3300, 2550),
+        }
+
         for r_dir in cls.get_candidate_runs_dirs():
             ev_dir = r_dir / str(run_id) / "evidence"
             if ev_dir.exists() and ev_dir.is_dir():
                 for name in deduped_candidates:
                     cand = ev_dir / name
-                    if cand.exists() and cand.is_file() and cand.stat().st_size > 0:
-                        # Guard 1: Never let a semantic proof file satisfy a source_snapshot request
-                        if "proof" in cand.name.lower() and "proof" not in (png_filename or "").lower():
-                            continue
+                    if not (cand.exists() and cand.is_file() and cand.stat().st_size > 0):
+                        continue
 
-                        # Guard 2: Reject blank trailing pages (Render blank page 7 is exactly 8246 bytes)
-                        if cand.stat().st_size == 8246:
+                    # Guard 1: Never let a semantic proof file satisfy a source_snapshot request
+                    if "proof" in cand.name.lower() and "proof" not in (png_filename or "").lower():
+                        continue
+
+                    # Guard 2: Reject blank trailing pages (Render blank page is exactly 8246 bytes)
+                    if cand.stat().st_size == 8246:
+                        logger.info(
+                            f"[BLANK CACHE REJECTED] Found blank cached file {cand.name} "
+                            f"({cand.stat().st_size} bytes). Rejecting to allow genuine rendering."
+                        )
+                        continue
+
+                    if require_authentic:
+                        # Guard 3: Sidecar metadata MUST exist to prove provenance
+                        meta_cand = cand.with_suffix(".meta.json")
+                        if not (meta_cand.exists() and meta_cand.is_file()):
                             logger.info(
-                                f"[BLANK CACHE REJECTED] Found blank page 7 cached file {cand.name} "
-                                f"({cand.stat().st_size} bytes). Rejecting to allow genuine rendering."
+                                f"[UNPROVENANCED CACHE REJECTED] Cached file {cand.name} has no sidecar metadata. "
+                                f"Rejecting to enforce current {cls.CURRENT_CROP_VERSION} rendering."
                             )
                             continue
 
-                        # Guard 3: If metadata is present with page_number, verify it matches
-                        meta_cand = cand.with_suffix(".meta.json")
-                        if meta_cand.exists():
-                            try:
-                                with open(meta_cand, "r", encoding="utf-8") as mf:
-                                    m_dict = json.load(mf)
-                                    m_page = m_dict.get("page_number")
-                                    if page_number is not None and m_page is not None and m_page != page_number:
-                                        logger.info(
-                                            f"[CACHE PAGE MISMATCH] Cached file {cand.name} has page {m_page}, "
-                                            f"expected page {page_number}. Rejecting stale cache."
-                                        )
-                                        continue
+                        try:
+                            with open(meta_cand, "r", encoding="utf-8") as mf:
+                                m_dict = json.load(mf)
+                        except Exception as ex:
+                            logger.info(f"[CORRUPT META REJECTED] {meta_cand.name}: {ex}. Rejecting.")
+                            continue
 
-                                    # Guard 4: Require semantic crop version when require_authentic is True
-                                    # If generated by Tier 2, reject legacy uncropped full-page captures
-                                    if require_authentic and m_dict.get("renderer") == "tier2_docx_pdf":
-                                        if m_dict.get("crop_version") != cls.CURRENT_CROP_VERSION and not m_dict.get("is_semantic_crop"):
-                                            logger.info(
-                                                f"[STALE UNCROPPED CACHE REJECTED] Found legacy full-page snapshot "
-                                                f"{cand.name} (crop_version={m_dict.get('crop_version')}). Rejecting to force semantic crop generation."
-                                            )
-                                            continue
-                            except Exception:
-                                pass
-                        elif require_authentic:
-                            # If no metadata sidecar exists, reject full-page dimensions (1584x1224 or 1224x1584)
-                            try:
-                                with Image.open(cand) as img:
-                                    if img.size in [(1584, 1224), (1224, 1584), (1650, 1275), (1275, 1650)]:
-                                        logger.info(
-                                            f"[STALE UNCROPPED CACHE REJECTED] Legacy full-page image {cand.name} {img.size} "
-                                            f"has no semantic crop metadata. Rejecting to force semantic crop."
-                                        )
-                                        continue
-                            except Exception:
-                                pass
+                        # Guard 4: Must be marked authentic
+                        if not m_dict.get("authentic"):
+                            logger.info(f"[SYNTHETIC CACHE REJECTED] {cand.name} is marked synthetic in metadata.")
+                            continue
 
-                        if not require_authentic or cls.is_authentic_snapshot(cand):
+                        # Guard 5: Must match CURRENT_CROP_VERSION
+                        m_version = m_dict.get("crop_version")
+                        if m_version != cls.CURRENT_CROP_VERSION:
+                            logger.info(
+                                f"[STALE CROP VERSION REJECTED] Cached file {cand.name} version '{m_version}' "
+                                f"does not match current '{cls.CURRENT_CROP_VERSION}'. Rejecting."
+                            )
+                            continue
+
+                        # Guard 6: Must be a semantic crop
+                        if not m_dict.get("is_semantic_crop"):
+                            logger.info(
+                                f"[UNCROPPED CACHE REJECTED] Cached file {cand.name} is not marked as a semantic crop. Rejecting."
+                            )
+                            continue
+
+                        # Guard 7: Physical page number check
+                        m_page = m_dict.get("page_number")
+                        m_tc = m_dict.get("test_case_id")
+                        m_ev = m_dict.get("evidence_id")
+                        identity_match = bool(
+                            (test_case_id and m_tc and test_case_id == m_tc)
+                            or (evidence_id and m_ev and evidence_id == m_ev)
+                        )
+                        if not identity_match and page_number is not None and page_number > 0:
+                            if m_page is not None and m_page != page_number:
+                                logger.info(
+                                    f"[CACHE PAGE MISMATCH] Cached file {cand.name} has page {m_page}, "
+                                    f"expected page {page_number}. Rejecting stale cache."
+                                )
+                                continue
+
+                        # Guard 8: Dimension validation
+                        try:
+                            with Image.open(cand) as img:
+                                w, h = img.size
+                                if (w, h) in full_page_dims:
+                                    logger.info(
+                                        f"[FULL PAGE DIMS REJECTED] Cached file {cand.name} has full page dims ({w}, {h}). Rejecting."
+                                    )
+                                    continue
+                                if w < 60 or h < 30:
+                                    logger.info(f"[IMAGE TOO SMALL REJECTED] {cand.name} dims ({w}, {h}) invalid.")
+                                    continue
+                        except Exception as ex:
+                            logger.info(f"[IMAGE OPEN FAILED] {cand.name}: {ex}. Rejecting.")
+                            continue
+
+                        # All authenticity and crop provenance checks passed!
+                        return cand
+
+                    else:
+                        # Fallback mode (no source docx on disk)
+                        if cls.is_authentic_snapshot(cand):
                             return cand
                         else:
-                            logger.info(
-                                f"[STALE CACHE REJECTED] Found synthetic/legacy cached file {cand.name} "
-                                f"for run {run_id}. Rejecting stale cache to allow authentic Tier 2 rendering."
-                            )
-
-            # Check legacy root evidence path
-            cand_legacy = r_dir / "evidence" / Path(png_filename).name
-            if cand_legacy.exists() and cand_legacy.is_file() and cand_legacy.stat().st_size > 0:
-                if cand_legacy.stat().st_size != 8246:
-                    if "proof" not in cand_legacy.name.lower() or "proof" in (png_filename or "").lower():
-                        if not require_authentic or cls.is_authentic_snapshot(cand_legacy):
-                            return cand_legacy
-                    else:
-                        logger.info(f"[STALE CACHE REJECTED] Legacy root synthetic file {cand_legacy.name} rejected.")
+                            return cand
 
         return None
 
@@ -495,9 +540,12 @@ class DSDSourceSnapshotService:
                 return linux_path
 
         # Standard Windows paths
+        home = Path.home()
         for win_path in [
             r"C:\Program Files\LibreOffice\program\soffice.exe",
             r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+            str(home / "LibreOfficeInstalled" / "program" / "soffice.com"),
+            str(home / "LibreOfficeInstalled" / "program" / "soffice.exe"),
         ]:
             if Path(win_path).exists():
                 return win_path
@@ -520,6 +568,7 @@ class DSDSourceSnapshotService:
             return None
 
         try:
+            temp_dir = tempfile.gettempdir().replace("\\", "/").lstrip("/")
             cmd = [
                 soffice_bin,
                 "--headless",
@@ -528,7 +577,7 @@ class DSDSourceSnapshotService:
                 "--nodefault",
                 "--nofirststartwizard",
                 "--nolockcheck",
-                f"-env:UserInstallation=file:///tmp/soffice_profile_{os.getpid()}",
+                f"-env:UserInstallation=file:///{temp_dir}/soffice_profile_{os.getpid()}",
                 "--convert-to",
                 "pdf",
                 "--outdir",
@@ -800,9 +849,12 @@ class DSDSourceSnapshotService:
             strong_anchors.append(("section heading", 80))
         if "header" in meth_norm or "header" in scope_norm:
             strong_anchors.append(("report header", 110))
+            strong_anchors.append(("report id", 140))
             if "layout" in sec_norm or "layout" in meth_norm:
-                strong_anchors.append(("report layout", 120))
+                strong_anchors.append(("report layout", 140))
                 strong_anchors.append(("enterprise operational reports", 110))
+                strong_anchors.append(("department of health", 120))
+                strong_anchors.append(("department of human services", 120))
         if "name_description" in meth_norm or "definition" in sec_norm:
             strong_anchors.append(("report definition", 100))
             strong_anchors.append(("client report id", 90))
@@ -866,31 +918,64 @@ class DSDSourceSnapshotService:
     def _find_text_boxes_in_pdf(cls, page: Any, text_query: str) -> List[Tuple[float, float, float, float]]:
         """
         Returns all matching bounding boxes (left, bottom, right, top) in PDF coordinates
-        for the given text query using pypdfium2 or fitz.
+        for the given text query using pypdfium2 with whitespace-normalized character matching,
+        falling back to fitz.
         """
         if not text_query or len(text_query.strip()) < 2:
             return []
         q = text_query.strip()
+        q_clean = re.sub(r"\s+", "", q.lower())
+        if not q_clean:
+            return []
+
         boxes: List[Tuple[float, float, float, float]] = []
 
-        # 1. pypdfium2 textpage search
+        # 1. pypdfium2 textpage normalized search
         try:
             tp = page.get_textpage()
             try:
-                search = tp.search(q, match_case=False, match_whole_word=False)
-                while True:
-                    match = search.get_next()
-                    if not match:
-                        break
-                    start_idx, count = match
-                    char_boxes = [tp.get_charbox(start_idx + k) for k in range(count)]
-                    min_x = min(b[0] for b in char_boxes)
-                    min_y = min(b[1] for b in char_boxes)
-                    max_x = max(b[2] for b in char_boxes)
-                    max_y = max(b[3] for b in char_boxes)
-                    boxes.append((min_x, min_y, max_x, max_y))
-                search.close()
-                return boxes
+                num_chars = tp.count_chars()
+                if num_chars > 0:
+                    full_text = tp.get_text_range() or ""
+                    norm_map = []
+                    norm_chars = []
+                    for c_idx in range(len(full_text)):
+                        ch = full_text[c_idx]
+                        if not ch.isspace():
+                            norm_map.append(c_idx)
+                            norm_chars.append(ch.lower())
+                    norm_str = "".join(norm_chars)
+                    start_pos = 0
+                    while True:
+                        pos = norm_str.find(q_clean, start_pos)
+                        if pos == -1:
+                            break
+                        raw_start = norm_map[pos]
+                        raw_end = norm_map[pos + len(q_clean) - 1]
+                        count = raw_end - raw_start + 1
+                        try:
+                            n_rects = tp.count_rects(raw_start, count)
+                            if n_rects > 0:
+                                rect_boxes = [tp.get_rect(r) for r in range(n_rects)]
+                                min_l = min(b[0] for b in rect_boxes)
+                                min_b = min(b[1] for b in rect_boxes)
+                                max_r = max(b[2] for b in rect_boxes)
+                                max_t = max(b[3] for b in rect_boxes)
+                                boxes.append((min_l, min_b, max_r, max_t))
+                        except Exception:
+                            # Charbox fallback
+                            char_boxes = [tp.get_charbox(raw_start + k) for k in range(count)]
+                            valid_boxes = [b for b in char_boxes if b[2] > b[0] and b[3] > b[1]]
+                            if valid_boxes:
+                                min_l = min(b[0] for b in valid_boxes)
+                                min_b = min(b[1] for b in valid_boxes)
+                                max_r = max(b[2] for b in valid_boxes)
+                                max_t = max(b[3] for b in valid_boxes)
+                                boxes.append((min_l, min_b, max_r, max_t))
+                        start_pos = pos + 1
+
+                if boxes:
+                    return boxes
             finally:
                 tp.close()
         except Exception:
@@ -954,7 +1039,8 @@ class DSDSourceSnapshotService:
     ) -> Optional[Tuple[int, int, int, int]]:
         """
         Computes (px_x0, px_y0, px_x1, px_y1) pixel crop box for the requested semantic scenario.
-        Mirrors localhost Tier 1 Playwright element/structural region targeting.
+        Enforces Level 1 (exact row/table), Level 2 (bounded subsection), and Level 3 (fallback)
+        hierarchy to produce tight, scenario-focused crops matching localhost Tier 1 Playwright.
         Thread-safe and memory-safe.
         """
         if not pdf_path.exists() or pdf_path.stat().st_size == 0:
@@ -984,114 +1070,284 @@ class DSDSourceSnapshotService:
                         left_x: float = c_left
                         right_x: float = c_right
 
-                        # 1. EXEC / Report Generation & Scheduling
-                        if "scheduled_execution" in meth_l or "exec" in tc_l or "frequency" in scope_l or "generation" in sec_l:
+                        # 1. RHDR: ONLY Report Header Region
+                        if (
+                            "report_header" in meth_l
+                            or "rhdr" in tc_l
+                            or "report_header" in scope_l
+                            or meth_l == "header_validation"
+                        ):
+                            b_hdr_top = (
+                                cls._find_text_boxes_in_pdf(page, "Report Layout")
+                                or cls._find_text_boxes_in_pdf(page, "NH MMIS REPORT LAYOUT")
+                                or cls._find_text_boxes_in_pdf(page, "Enterprise")
+                                or cls._find_text_boxes_in_pdf(page, "Department of Health")
+                                or cls._find_text_boxes_in_pdf(page, "Department of Human Services")
+                                or cls._find_text_boxes_in_pdf(page, "Report Header")
+                            )
+                            b_hdr_id = (
+                                cls._find_text_boxes_in_pdf(page, "Report ID")
+                                or cls._find_text_boxes_in_pdf(page, "File Name")
+                                or cls._find_text_boxes_in_pdf(page, "MM/DD/CCYY")
+                                or cls._find_text_boxes_in_pdf(page, "Report Definition")
+                            )
+                            if b_hdr_top or b_hdr_id:
+                                all_hdr = b_hdr_top + b_hdr_id
+                                top_y = max(b[3] for b in all_hdr) + 12.0
+
+                                b_below = (
+                                    cls._find_text_boxes_in_pdf(page, "Total Errors")
+                                    or cls._find_text_boxes_in_pdf(page, "Total Records")
+                                    or cls._find_text_boxes_in_pdf(page, "Prov ID")
+                                    or cls._find_text_boxes_in_pdf(page, "Prov Sort")
+                                    or cls._find_text_boxes_in_pdf(page, "Prov Lic")
+                                    or cls._find_text_boxes_in_pdf(page, "Error Field")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Body")
+                                    or cls._find_text_boxes_in_pdf(page, "Run Date")
+                                )
+                                if b_below:
+                                    candidate_bottom = max(b[3] for b in b_below) + 8.0
+                                    if b_hdr_id:
+                                        min_id = min(b[1] for b in b_hdr_id) - 15.0
+                                        bottom_y = max(candidate_bottom, min_id)
+                                    else:
+                                        bottom_y = candidate_bottom
+                                else:
+                                    if b_hdr_id:
+                                        bottom_y = min(b[1] for b in b_hdr_id) - 18.0
+                                    else:
+                                        bottom_y = min(b[1] for b in all_hdr) - 50.0
+
+                                # RHDR precision: strictly limit height to header block (~100-160 pt)
+                                if (top_y - bottom_y) > 165.0:
+                                    bottom_y = top_y - 130.0
+
+                        # 2. LAYO: FULL Report Layout ONLY (broad mockup grid)
+                        elif (
+                            "layout" in meth_l
+                            or "layo" in tc_l
+                            or "full_report_layout" in scope_l
+                            or "report_layout_full" in scope_l
+                        ):
+                            b_layo = (
+                                cls._find_text_boxes_in_pdf(page, "Report Layout")
+                                or cls._find_text_boxes_in_pdf(page, "NH MMIS REPORT LAYOUT")
+                                or cls._find_text_boxes_in_pdf(page, "Enterprise")
+                            )
+                            if b_layo:
+                                top_y = max(b[3] for b in b_layo) + 15.0
+                                b_rundate = cls._find_text_boxes_in_pdf(page, "Run Date") or cls._find_text_boxes_in_pdf(page, "Page:")
+                                if b_rundate:
+                                    bottom_y = min(b[1] for b in b_rundate) - 15.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_layo) - 550.0
+
+                        # 3. DBRV: Full Mapping Rows ONLY (Strictly Excludes Footers & Footnotes)
+                        elif (
+                            "db_report" in meth_l
+                            or "dbrv" in tc_l
+                            or "report_body_mapping" in scope_l
+                            or "full mapping" in tf_l
+                        ):
+                            b_tbl_hdr = (
+                                cls._find_text_boxes_in_pdf(page, "Field Type")
+                                or cls._find_text_boxes_in_pdf(page, "Business Label")
+                                or cls._find_text_boxes_in_pdf(page, "Source Table")
+                                or cls._find_text_boxes_in_pdf(page, "Source Column")
+                                or cls._find_text_boxes_in_pdf(page, "Report Body")
+                            )
+                            if b_tbl_hdr:
+                                top_y = max(b[3] for b in b_tbl_hdr) + 12.0
+                                b_stop = (
+                                    cls._find_text_boxes_in_pdf(page, "Chart Footer")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Footnote")
+                                    or cls._find_text_boxes_in_pdf(page, "Footnote")
+                                    or cls._find_text_boxes_in_pdf(page, "Chart Footnote")
+                                )
+                                if b_stop:
+                                    bottom_y = max(b[3] for b in b_stop) + 10.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_tbl_hdr) - 260.0
+
+                        # 4. LABE: Column Labels Table
+                        elif (
+                            "label" in meth_l
+                            or "labe" in tc_l
+                            or "column labels" in scope_l
+                            or "column_labels" in scope_l
+                            or "column labels" in tf_l
+                        ):
+                            b_lbl = (
+                                cls._find_text_boxes_in_pdf(page, "Business Label")
+                                or cls._find_text_boxes_in_pdf(page, "Field Type")
+                                or cls._find_text_boxes_in_pdf(page, "Column Labels")
+                                or cls._find_text_boxes_in_pdf(page, "Report Body")
+                            )
+                            if b_lbl:
+                                top_y = max(b[3] for b in b_lbl) + 12.0
+                                b_stop = (
+                                    cls._find_text_boxes_in_pdf(page, "Chart Footer")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Footnote")
+                                    or cls._find_text_boxes_in_pdf(page, "Footnote")
+                                )
+                                if b_stop:
+                                    bottom_y = max(b[3] for b in b_stop) + 10.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_lbl) - 220.0
+
+                        # 5. SECT: Report Section Heading
+                        elif "section_heading" in meth_l or "sect" in tc_l or "section heading" in sec_l:
+                            b_sec = (
+                                cls._find_text_boxes_in_pdf(page, "Report Section Heading")
+                                or cls._find_text_boxes_in_pdf(page, "Section Heading")
+                                or cls._find_text_boxes_in_pdf(page, "Report Section")
+                            )
+                            if b_sec:
+                                top_y = max(b[3] for b in b_sec) + 15.0
+                                b_next = (
+                                    cls._find_text_boxes_in_pdf(page, "Report Body")
+                                    or cls._find_text_boxes_in_pdf(page, "Business Label")
+                                    or cls._find_text_boxes_in_pdf(page, "Field Type")
+                                    or cls._find_text_boxes_in_pdf(page, "Chart Header")
+                                )
+                                if b_next:
+                                    bottom_y = max(b[3] for b in b_next) + 8.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_sec) - 120.0
+
+                        # 6. EXEC: Report Generation & Scheduling
+                        elif (
+                            "scheduled_execution" in meth_l
+                            or "exec" in tc_l
+                            or "frequency" in scope_l
+                            or "generation" in sec_l
+                        ):
                             b_gen = cls._find_text_boxes_in_pdf(page, "Report Generation")
                             b_freq = cls._find_text_boxes_in_pdf(page, "Frequency")
-                            b_sched = cls._find_text_boxes_in_pdf(page, "Scheduled")
-                            b_acc = cls._find_text_boxes_in_pdf(page, "Accumulation")
-
                             if b_gen or b_freq:
                                 anchors = b_gen + b_freq
                                 top_y = max(b[3] for b in anchors) + 15.0
-                                end_anchors = b_sched + b_acc
-                                if end_anchors:
-                                    bottom_y = min(b[1] for b in end_anchors) - 18.0
+                                b_next = (
+                                    cls._find_text_boxes_in_pdf(page, "Selection Criteria")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Control Breaks")
+                                )
+                                if b_next:
+                                    bottom_y = max(b[3] for b in b_next) + 10.0
                                 else:
-                                    bottom_y = min(b[1] for b in anchors) - 150.0
+                                    bottom_y = min(b[1] for b in anchors) - 130.0
 
-                        # 2. REPO / Report Definition & Metadata
-                        elif "report_name_description" in meth_l or "repo" in tc_l or "metadata" in scope_l or "definition" in sec_l:
-                            b_def = cls._find_text_boxes_in_pdf(page, "Report Definition")
-                            b_id = cls._find_text_boxes_in_pdf(page, "Report ID")
-                            b_gen_by = cls._find_text_boxes_in_pdf(page, "Report Generated By")
-                            b_desc = cls._find_text_boxes_in_pdf(page, "Report Description")
-
-                            anchors = b_def or b_id
-                            if anchors:
-                                top_y = max(b[3] for b in anchors) + 15.0
-                                end_anchors = b_gen_by or b_desc
-                                if end_anchors:
-                                    bottom_y = min(b[1] for b in end_anchors) - 20.0
-                                else:
-                                    bottom_y = min(b[1] for b in anchors) - 180.0
-
-                        # 3. SELC / Selection Criteria
+                        # 7. SELC: Selection Criteria
                         elif "selection_criteria" in meth_l or "selc" in tc_l or "selection" in sec_l:
                             b_sel = cls._find_text_boxes_in_pdf(page, "Selection Criteria")
                             if b_sel:
                                 top_y = max(b[3] for b in b_sel) + 15.0
                                 b_next = (
                                     cls._find_text_boxes_in_pdf(page, "Report Control Breaks")
+                                    or cls._find_text_boxes_in_pdf(page, "Sort By")
                                     or cls._find_text_boxes_in_pdf(page, "Report Output")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Retention")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Specification")
                                 )
                                 if b_next:
                                     bottom_y = max(b[3] for b in b_next) + 10.0
                                 else:
-                                    bottom_y = min(b[1] for b in b_sel) - 180.0
+                                    bottom_y = min(b[1] for b in b_sel) - 150.0
 
-                        # 4. SORT / DBCO / Control Breaks, Totals, Counts, and Sorts
-                        elif "sort" in meth_l or "count" in meth_l or "total" in meth_l or "sort" in tc_l or "dbco" in tc_l or "control break" in sec_l:
-                            b_cb = cls._find_text_boxes_in_pdf(page, "Control Break") or cls._find_text_boxes_in_pdf(page, "Sort By")
-                            if b_cb:
-                                top_y = max(b[3] for b in b_cb) + 18.0
-                                b_tot = cls._find_text_boxes_in_pdf(page, "Total") or cls._find_text_boxes_in_pdf(page, "Counts") or cls._find_text_boxes_in_pdf(page, "processed")
-                                if b_tot:
-                                    bottom_y = min(b[1] for b in b_tot) - 20.0
+                        # 8. SORT: Sort By / Control Break
+                        elif "sort" in meth_l or "sort" in tc_l or "control break" in sec_l:
+                            b_sort = cls._find_text_boxes_in_pdf(page, "Sort By") or cls._find_text_boxes_in_pdf(page, "Control Break")
+                            if b_sort:
+                                top_y = max(b[3] for b in b_sort) + 15.0
+                                b_next = (
+                                    cls._find_text_boxes_in_pdf(page, "Total")
+                                    or cls._find_text_boxes_in_pdf(page, "Counts")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Output")
+                                )
+                                if b_next:
+                                    bottom_y = max(b[3] for b in b_next) + 10.0
                                 else:
-                                    bottom_y = min(b[1] for b in b_cb) - 160.0
+                                    bottom_y = min(b[1] for b in b_sort) - 120.0
 
-                        # 5. SPEC / Special Processing
+                        # 9. DBCO: Counts / Totals
+                        elif "count" in meth_l or "total" in meth_l or "dbco" in tc_l:
+                            b_cnt = (
+                                cls._find_text_boxes_in_pdf(page, "Total Records")
+                                or cls._find_text_boxes_in_pdf(page, "Counts")
+                                or cls._find_text_boxes_in_pdf(page, "Total Errors")
+                                or cls._find_text_boxes_in_pdf(page, "Total")
+                            )
+                            if b_cnt:
+                                top_y = max(b[3] for b in b_cnt) + 15.0
+                                b_next = cls._find_text_boxes_in_pdf(page, "Report Output") or cls._find_text_boxes_in_pdf(page, "Output Format")
+                                if b_next:
+                                    bottom_y = max(b[3] for b in b_next) + 10.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_cnt) - 120.0
+
+                        # 10. OUTP: Report Output
+                        elif "output" in meth_l or "outp" in tc_l or "output" in sec_l:
+                            b_out = cls._find_text_boxes_in_pdf(page, "Report Output") or cls._find_text_boxes_in_pdf(page, "Output Format")
+                            if b_out:
+                                top_y = max(b[3] for b in b_out) + 15.0
+                                b_next = (
+                                    cls._find_text_boxes_in_pdf(page, "Report Retention")
+                                    or cls._find_text_boxes_in_pdf(page, "Retention")
+                                    or cls._find_text_boxes_in_pdf(page, "Special Processing")
+                                )
+                                if b_next:
+                                    bottom_y = max(b[3] for b in b_next) + 10.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_out) - 140.0
+
+                        # 11. SCRI: Report Retention
+                        elif "script" in meth_l or "scri" in tc_l or "retention" in sec_l:
+                            b_ret = cls._find_text_boxes_in_pdf(page, "Report Retention") or cls._find_text_boxes_in_pdf(page, "Retention")
+                            if b_ret:
+                                top_y = max(b[3] for b in b_ret) + 15.0
+                                b_next = (
+                                    cls._find_text_boxes_in_pdf(page, "Report Special Processing")
+                                    or cls._find_text_boxes_in_pdf(page, "Special Processing")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Layout")
+                                )
+                                if b_next:
+                                    bottom_y = max(b[3] for b in b_next) + 10.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_ret) - 140.0
+
+                        # 12. SPEC: Special Processing
                         elif "special_processing" in meth_l or "spec" in tc_l or "special" in sec_l:
-                            b_sp = cls._find_text_boxes_in_pdf(page, "Special Processing")
+                            b_sp = cls._find_text_boxes_in_pdf(page, "Report Special Processing") or cls._find_text_boxes_in_pdf(page, "Special Processing")
                             if b_sp:
                                 top_y = max(b[3] for b in b_sp) + 15.0
                                 b_next = (
                                     cls._find_text_boxes_in_pdf(page, "Report Specification")
                                     or cls._find_text_boxes_in_pdf(page, "Report Layout")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Section Heading")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Section")
                                 )
                                 if b_next:
                                     bottom_y = max(b[3] for b in b_next) + 10.0
                                 else:
                                     bottom_y = min(b[1] for b in b_sp) - 140.0
 
-                        # 6. OUTP / SCRI / Output & Retention
-                        elif "output" in meth_l or "script" in meth_l or "outp" in tc_l or "scri" in tc_l or "output" in sec_l:
-                            b_out = cls._find_text_boxes_in_pdf(page, "Report Output") or cls._find_text_boxes_in_pdf(page, "Output Format")
-                            if b_out:
-                                top_y = max(b[3] for b in b_out) + 15.0
-                                b_ret = cls._find_text_boxes_in_pdf(page, "Retention") or cls._find_text_boxes_in_pdf(page, "Portal") or cls._find_text_boxes_in_pdf(page, "Distribution")
-                                if b_ret:
-                                    bottom_y = min(b[1] for b in b_ret) - 20.0
+                        # 12B. LOOK: Report Specification / Presentation Type / Lookup
+                        elif "look" in meth_l or "look" in tc_l or "lookup" in scope_l:
+                            b_spec = (
+                                cls._find_text_boxes_in_pdf(page, "Report Specification")
+                                or cls._find_text_boxes_in_pdf(page, "NH MMIS REPORT SPECIFICATION")
+                                or cls._find_text_boxes_in_pdf(page, "Presentation")
+                            )
+                            if b_spec:
+                                top_y = max(b[3] for b in b_spec) + 15.0
+                                b_next = (
+                                    cls._find_text_boxes_in_pdf(page, "Report Section Heading")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Body")
+                                    or cls._find_text_boxes_in_pdf(page, "Chart Header")
+                                )
+                                if b_next:
+                                    bottom_y = max(b[3] for b in b_next) + 10.0
                                 else:
-                                    bottom_y = min(b[1] for b in b_out) - 180.0
+                                    bottom_y = min(b[1] for b in b_spec) - 180.0
 
-                        # 7. RHDR / Report Header
-                        elif "header" in meth_l or "rhdr" in tc_l or "header" in scope_l:
-                            b_hdr = cls._find_text_boxes_in_pdf(page, "Report Header") or cls._find_text_boxes_in_pdf(page, "Report ID:") or cls._find_text_boxes_in_pdf(page, "Enterprise Operational")
-                            if b_hdr:
-                                top_y = max(b[3] for b in b_hdr) + 20.0
-                                bottom_y = min(b[1] for b in b_hdr) - 160.0
-
-                        # 8. LAYO / Report Layout
-                        elif "layout" in meth_l or "layo" in tc_l or "layout" in scope_l:
-                            b_layo = cls._find_text_boxes_in_pdf(page, "Report Layout")
-                            if b_layo:
-                                top_y = max(b[3] for b in b_layo) + 15.0
-                                bottom_y = min(b[1] for b in b_layo) - 400.0
-
-                        # 9. SECT / Section Heading
-                        elif "section_heading" in meth_l or "sect" in tc_l or "section heading" in sec_l:
-                            b_sec = cls._find_text_boxes_in_pdf(page, "Section Heading") or cls._find_text_boxes_in_pdf(page, "Report Section")
-                            if b_sec:
-                                top_y = max(b[3] for b in b_sec) + 15.0
-                                bottom_y = min(b[1] for b in b_sec) - 200.0
-
-                        # 10. LOOK / DATE / Target Field specific row search
-                        if top_y is None and tf_l:
+                        # 13. Level 1: LOOK / DATE / Target field exact row search
+                        if top_y is None and tf_l and tf_l not in {"report header", "report layout", "full mapping", "report body"}:
                             queries = [tf_l]
                             for part in re.split(r"[,;/\-]+", tf_l):
                                 p_c = part.strip()
@@ -1119,20 +1375,17 @@ class DSDSourceSnapshotService:
 
                                 bottom_y = match_bottom - 20.0
 
-                        # 11. DBRV / LABE / Table Region search
+                        # 14. Fallback: Section or Body fallback
                         if top_y is None:
                             if "body" in sec_l or "dbrv" in tc_l or "labe" in tc_l or "mapping" in scope_l or "label" in meth_l:
                                 b_body = cls._find_text_boxes_in_pdf(page, "Report Body") or cls._find_text_boxes_in_pdf(page, "Business Label")
                                 if b_body:
                                     top_y = max(b[3] for b in b_body) + 15.0
-                                    bottom_y = min(b[1] for b in b_body) - 350.0
-
-                        # 12. DUPL / Duplicate Rule search
-                        if top_y is None and ("dupl" in tc_l or "duplicate" in meth_l):
-                            b_dup = cls._find_text_boxes_in_pdf(page, "Duplicate") or cls._find_text_boxes_in_pdf(page, "p_alt_id")
-                            if b_dup:
-                                top_y = max(b[3] for b in b_dup) + 20.0
-                                bottom_y = min(b[1] for b in b_dup) - 150.0
+                                    b_stop = cls._find_text_boxes_in_pdf(page, "Chart Footer") or cls._find_text_boxes_in_pdf(page, "Report Footnote")
+                                    if b_stop:
+                                        bottom_y = max(b[3] for b in b_stop) + 10.0
+                                    else:
+                                        bottom_y = min(b[1] for b in b_body) - 220.0
 
                         # Final validation and pixel translation
                         if top_y is not None and bottom_y is not None:
@@ -1179,12 +1432,14 @@ class DSDSourceSnapshotService:
         target_field: str = "",
         evidence_scope: str = "",
         test_case_id: str = "",
+        evidence_id: str = "",
     ) -> bool:
         """
         Tier 2 Genuine Document Rendering:
         Converts source.docx to authentic source.pdf, resolves the correct
         physical PDF page using deterministic semantic anchor scoring,
         and renders ONLY the relevant semantic section/region as a cropped PNG.
+        Writes complete provenance metadata sidecar.
         """
         pdf_path = cls.convert_docx_to_pdf(source_path)
         if not pdf_path:
@@ -1218,9 +1473,29 @@ class DSDSourceSnapshotService:
             scale=2.0,
         )
 
-        return cls.render_pdf_page_to_png(
+        success = cls.render_pdf_page_to_png(
             pdf_path, resolved_page, png_path, allow_blank=False, crop_box=crop_box
         )
+        if success and png_path.exists() and png_path.stat().st_size > 0:
+            cls.write_provenance_meta(
+                png_path,
+                renderer="tier2_docx_pdf",
+                authentic=True,
+                page_number=resolved_page,
+                extra={
+                    "test_case_id": test_case_id,
+                    "evidence_id": evidence_id,
+                    "section": section,
+                    "methodology": methodology,
+                    "target_field": target_field,
+                    "evidence_scope": evidence_scope,
+                    "crop_version": cls.CURRENT_CROP_VERSION,
+                    "is_semantic_crop": crop_box is not None,
+                    "crop_box": crop_box,
+                },
+            )
+            return True
+        return False
 
     # -------------------------------------------------------------------------
     # Legacy Table Extractor (retained for auxiliary inspection)
@@ -1829,6 +2104,11 @@ class DSDSourceSnapshotService:
             evidence_id=evidence_id,
             test_case_id=test_case_id,
             require_authentic=authentic_available,
+            page_number=page_number,
+            section=section,
+            methodology=methodology,
+            target_field=target_field,
+            evidence_scope=evidence_scope,
         )
         if cached:
             logger.info(
@@ -1868,22 +2148,9 @@ class DSDSourceSnapshotService:
                 target_field=target_field,
                 evidence_scope=evidence_scope,
                 test_case_id=test_case_id,
+                evidence_id=evidence_id,
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
-                cls.write_provenance_meta(
-                    png_path,
-                    renderer="tier2_docx_pdf",
-                    authentic=True,
-                    page_number=page_number,
-                    extra={
-                        "test_case_id": test_case_id,
-                        "evidence_id": evidence_id,
-                        "section": section,
-                        "target_field": target_field,
-                        "crop_version": cls.CURRENT_CROP_VERSION,
-                        "is_semantic_crop": True,
-                    },
-                )
                 logger.info(
                     f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier2_docx_pdf status=success path={png_path.name}"
                 )

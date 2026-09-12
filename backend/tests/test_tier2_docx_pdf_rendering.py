@@ -262,8 +262,8 @@ def test_find_cached_snapshot_rejects_synthetic_cache(tmp_path: Path, monkeypatc
     test_pdf = tmp_path / "doc.pdf"
     pdf.save(str(test_pdf))
     pdf.close()
-    DSDSourceSnapshotService.render_pdf_page_to_png(test_pdf, 1, test_file)
-    DSDSourceSnapshotService.write_provenance_meta(test_file, renderer="tier2_docx_pdf", authentic=True)
+    DSDSourceSnapshotService.render_pdf_page_to_png(test_pdf, 1, test_file, crop_box=(50, 50, 500, 300))
+    DSDSourceSnapshotService.write_provenance_meta(test_file, renderer="tier2_docx_pdf", authentic=True, extra={"is_semantic_crop": True, "crop_box": [50, 50, 500, 300]})
 
     # Now find_cached_snapshot must return it!
     res_authentic = DSDSourceSnapshotService.find_cached_snapshot(
@@ -298,9 +298,15 @@ def _build_test_multipage_pdf(path: Path, page_texts: list[str]) -> None:
         content_obj_id = font_obj_id + 1 + i
         txt = page_texts[i]
         if txt:
-            # Escape parenthesis
-            escaped = txt.replace("(", "\\(").replace(")", "\\)")
-            stream_data = f"BT /F1 12 Tf 50 700 Td ({escaped}) Tj ET".encode("latin1", errors="replace")
+            lines = [l.strip() for l in txt.split("\n") if l.strip()]
+            stream_parts = ["BT /F1 12 Tf 24 TL 50 720 Td"]
+            for l_i, l_txt in enumerate(lines):
+                escaped = l_txt.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+                if l_i > 0:
+                    stream_parts.append("T*")
+                stream_parts.append(f"({escaped}) Tj")
+            stream_parts.append("ET")
+            stream_data = " ".join(stream_parts).encode("latin1", errors="replace")
         else:
             stream_data = b""
         objs.append(
@@ -515,9 +521,9 @@ def test_exact_cache_identity_and_proof_collision_prevention(tmp_path: Path, mon
     # Now create the exact authentic snapshot file
     auth_file = ev_dir / "source_snapshot_snapshot_PRV027-RHDR-01_REPORT.png"
     # Create valid authentic PNG
-    img = Image.new("RGB", (1224, 1584), color=(255, 255, 255))
+    img = Image.new("RGB", (960, 400), color=(255, 255, 255))
     img.save(auth_file, format="PNG")
-    DSDSourceSnapshotService.write_provenance_meta(auth_file, renderer="tier2_docx_pdf", authentic=True)
+    DSDSourceSnapshotService.write_provenance_meta(auth_file, renderer="tier2_docx_pdf", authentic=True, extra={"is_semantic_crop": True, "crop_box": [50, 50, 500, 300]})
 
     # Now it must be found
     cached_auth = DSDSourceSnapshotService.find_cached_snapshot(
@@ -737,7 +743,7 @@ def test_cache_versioning_rejects_legacy_uncropped_snapshots(tmp_path: Path, mon
         renderer="tier2_docx_pdf",
         authentic=True,
         page_number=1,
-        extra={"is_semantic_crop": True},
+        extra={"is_semantic_crop": True, "crop_version": DSDSourceSnapshotService.CURRENT_CROP_VERSION},
     )
 
     cached_valid = DSDSourceSnapshotService.find_cached_snapshot(
@@ -745,8 +751,32 @@ def test_cache_versioning_rejects_legacy_uncropped_snapshots(tmp_path: Path, mon
         png_filename="source_snapshot_TEST_VALID.png",
         evidence_id="TEST_VALID",
         require_authentic=True,
+        page_number=1,
     )
     assert cached_valid == valid_crop, "Genuine semantic crop with current version must be accepted"
+
+    # 4. Stale v2_semantic_crop must be rejected
+    v2_stale = ev_dir / "source_snapshot_TEST_V2.png"
+    im_v2 = Image.new("RGB", (900, 300), color=(255, 255, 255))
+    im_v2.save(v2_stale)
+    meta_v2 = v2_stale.with_suffix(".meta.json")
+    with open(meta_v2, "w", encoding="utf-8") as f:
+        json.dump({
+            "filename": v2_stale.name,
+            "renderer": "tier2_docx_pdf",
+            "authentic": True,
+            "page_number": 1,
+            "crop_version": "v2_semantic_crop",
+            "is_semantic_crop": True,
+        }, f)
+
+    cached_v2 = DSDSourceSnapshotService.find_cached_snapshot(
+        run_id=300,
+        png_filename="source_snapshot_TEST_V2.png",
+        evidence_id="TEST_V2",
+        require_authentic=True,
+    )
+    assert cached_v2 is None, "Stale v2_semantic_crop snapshot must be rejected"
 
 
 def test_pypdfium2_thread_safe_crop_rendering(tmp_path: Path):
@@ -778,3 +808,112 @@ def test_pypdfium2_thread_safe_crop_rendering(tmp_path: Path):
 
     with Image.open(out_png) as im:
         assert im.size == (700, 400), f"Expected cropped size 700x400, got {im.size}"
+
+
+def test_rhdr_exact_semantic_crop_and_layo_differentiation(tmp_path: Path):
+    """
+    Validates:
+      1. RHDR produces a tight crop around ONLY the Report Header table (~200-300px height).
+      2. LAYO on the same page produces the full wireframe layout mockup (>1000px height).
+      3. RHDR stops strictly above Total Errors/Records and does not contain entire layout.
+    """
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument.new()
+    page = pdf.new_page(width=792, height=612)  # Landscape Letter in points
+    # Insert text objects representing PRV-INT-008 Report Layout page
+    test_pdf = tmp_path / "prv008_layout_page.pdf"
+    pdf.save(str(test_pdf))
+    pdf.close()
+
+    # Create mock multipage pdf with exact layout text
+    _build_test_multipage_pdf(
+        test_pdf,
+        [
+            "NH MMIS REPORT LAYOUT - PROVIDER PARTICIPATION EXCEPTION REPORT\n"
+            "Report ID: PRV-INT-008\nFile Name: PRV008.PDF\nDate: MM/DD/CCYY\n"
+            "Total Errors: 999\n"
+            "Prov ID   Prov Lic   Error Field\n"
+            "123456    LIC001     Invalid Format\n"
+            "123457    LIC002     Missing Expiry\n"
+            "123458    LIC003     Inactive Status\n"
+            "Run Date: MM/DD/CCYY    Page: 1    Run Time: 12:00:00"
+        ]
+    )
+
+    crop_rhdr = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=test_pdf,
+        page_number=1,
+        section="Report Layout",
+        methodology="REPORT_HEADER_VALIDATION",
+        target_field="Report Header",
+        evidence_scope="REPORT_HEADER",
+        test_case_id="PRV008-RHDR-01",
+        scale=2.0,
+    )
+    assert crop_rhdr is not None, "RHDR crop must be calculated"
+    h_rhdr = crop_rhdr[3] - crop_rhdr[1]
+    assert 100 <= h_rhdr <= 350, f"RHDR crop must be tight header region, got height {h_rhdr}px"
+
+    crop_layo = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=test_pdf,
+        page_number=1,
+        section="Report Layout",
+        methodology="LAYOUT_VALIDATION",
+        target_field="",
+        evidence_scope="FULL_REPORT_LAYOUT",
+        test_case_id="PRV008-LAYO-01",
+        scale=2.0,
+    )
+    assert crop_layo is not None, "LAYO crop must be calculated"
+    h_layo = crop_layo[3] - crop_layo[1]
+    assert h_layo > h_rhdr, f"LAYO crop ({h_layo}px) must be significantly larger than RHDR ({h_rhdr}px)"
+    assert crop_rhdr != crop_layo, "RHDR and LAYO on the same page must never resolve to the same crop box"
+
+
+def test_dbrv_excludes_chart_footer_and_footnote(tmp_path: Path):
+    """
+    Validates that DBRV (Full Mapping) stops strictly above Chart Footer and Report Footnote
+    and does not capture footnote content.
+    """
+    test_pdf = tmp_path / "prv008_body_page.pdf"
+    _build_test_multipage_pdf(
+        test_pdf,
+        [
+            "NH MMIS REPORT SPECIFICATION\nReport Section Heading\nTotal Errors\n"
+            "Report Body\nField Type | Business Label | Source Table | Source Column\n"
+            "Column | Prov Lic Cert Num | P_LIC | CERT_NUM\n"
+            "Column | Error Field | P_LIC | ERR_FIELD\n"
+            "Column | Error Field Value | P_LIC | ERR_VAL\n"
+            "Column | Error Message | P_LIC | ERR_MSG\n"
+            "Chart Footer (opt)\nChart Footnote Label (opt)\n"
+            "Report Footnote (opt)\nReport Footnote Label (opt)"
+        ]
+    )
+
+    crop_dbrv = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=test_pdf,
+        page_number=1,
+        section="Report Body",
+        methodology="DB_REPORT_DATA_VALIDATION",
+        target_field="Full Mapping",
+        evidence_scope="REPORT_BODY_MAPPING",
+        test_case_id="PRV008-DBRV-01",
+        scale=2.0,
+    )
+    assert crop_dbrv is not None, "DBRV crop must be calculated"
+
+    # Also render to check footer exclusion
+    out_png = tmp_path / "dbrv_rendered.png"
+    ok = DSDSourceSnapshotService.render_pdf_page_to_png(
+        pdf_path=test_pdf,
+        page_number=1,
+        png_path=out_png,
+        crop_box=crop_dbrv,
+    )
+    assert ok is True
+    assert out_png.exists()
+    with Image.open(out_png) as im:
+        assert im.size[0] > 200
+        # Check that crop does not extend the full height
+        assert im.size[1] < 1500

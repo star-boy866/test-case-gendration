@@ -27,6 +27,8 @@ build/
 # Runtime
 backend/runs/
 backend/jobs/
+runs/
+jobs/
 
 # Generated output
 *.xlsx
