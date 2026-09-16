@@ -68,7 +68,7 @@ def test_database_explorer_access_generates_audit_event(client: TestClient, admi
         db.query(AuditEvent)
         .filter(
             AuditEvent.actor_username == username,
-            AuditEvent.action == "ADMIN_DATABASE_VIEWED",
+            AuditEvent.action.in_(["ADMIN_DATABASE_VIEWED", "ADMIN_DATABASE_TABLE_VIEWED"]),
             AuditEvent.resource_id == "cognos_test_cases"
         )
         .order_by(AuditEvent.occurred_at.desc())

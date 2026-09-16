@@ -28,13 +28,24 @@ def get_engine():
                 pool_size=settings.DB_POOL_SIZE,
                 max_overflow=settings.DB_MAX_OVERFLOW,
                 pool_timeout=settings.DB_POOL_TIMEOUT,
-                connect_args={"connect_timeout": 5},
+                connect_args={"connect_timeout": 15},
             )
             with pg_engine.connect() as conn:
                 pass
             logger.info("Connected to primary PostgreSQL database.")
             return pg_engine
         except Exception as exc:
+            if settings.is_production:
+                masked_host = getattr(settings, "SUPABASE_DB_HOST", "") or "remote_postgres_host"
+                if len(masked_host) > 8:
+                    masked_host = masked_host[:4] + "***" + masked_host[-4:]
+                err_msg = (
+                    f"PRODUCTION PERSISTENCE FAILURE: Cannot connect to PostgreSQL database "
+                    f"(host={masked_host}, error={type(exc).__name__}). "
+                    f"Silent fallback to ephemeral SQLite is strictly prohibited in production."
+                )
+                logger.critical(err_msg)
+                raise RuntimeError(err_msg) from exc
             logger.warning(
                 f"PostgreSQL connection could not be established ({type(exc).__name__}). "
                 f"Falling back to local SQLite at {settings.SQLITE_DB_PATH}."
@@ -44,6 +55,14 @@ def get_engine():
                 connect_args={"check_same_thread": False, "timeout": 30.0},
             )
     else:
+        if settings.is_production:
+            err_msg = (
+                "PRODUCTION PERSISTENCE FAILURE: No PostgreSQL database configured in production "
+                "(DATABASE_URL or SUPABASE_DB_* is required). "
+                "Silent fallback to ephemeral SQLite is strictly prohibited in production."
+            )
+            logger.critical(err_msg)
+            raise RuntimeError(err_msg)
         # Local Development / SQLite (hardened for multi-worker concurrency)
         return create_engine(
             f"sqlite:///{settings.SQLITE_DB_PATH}",

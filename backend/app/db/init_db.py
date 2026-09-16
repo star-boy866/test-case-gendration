@@ -24,6 +24,32 @@ def init_db() -> None:
     Initializes database schema and bootstraps baseline administrative accounts.
     Idempotent: safe to run multiple times against existing databases without data loss.
     """
+    from app.core.config import settings
+    url = engine.url
+    is_postgres = "postgresql" in str(url.drivername).lower() or "postgres" in str(url.drivername).lower()
+    masked_host = "local_embedded"
+    if is_postgres:
+        raw_h = url.host or ""
+        masked_host = raw_h[:4] + "***" + raw_h[-4:] if len(raw_h) > 8 else "masked"
+    db_name = str(url.database or "app_metadata.db")
+    masked_db = (db_name[:3] + "***" + db_name[-3:]) if len(db_name) > 8 else db_name
+
+    logger.info(
+        f"DATABASE_RUNTIME_DIAGNOSTIC: "
+        f"environment={'production' if settings.is_production else 'development'}, "
+        f"database_backend={'postgresql' if is_postgres else 'sqlite'}, "
+        f"database_driver={url.drivername}, "
+        f"host={masked_host}, "
+        f"database_name={masked_db}, "
+        f"persistence_mode={'external_persistent' if is_postgres else 'local_ephemeral'}, "
+        f"sqlalchemy_url_scheme={url.drivername}"
+    )
+
+    if settings.is_production and not is_postgres:
+        raise RuntimeError(
+            "PRODUCTION PERSISTENCE FAILURE: init_db refusing to run against local SQLite database in production."
+        )
+
     logger.info("Starting database schema initialization...")
 
     # 1. Create tables if they do not already exist (never drops or recreates existing tables)

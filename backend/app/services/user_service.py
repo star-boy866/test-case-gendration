@@ -49,17 +49,13 @@ def bootstrap_standard_admin(db: Session) -> User:
         .first()
     )
     if admin_user:
-        # If INITIAL_ADMIN_PASSWORD is explicitly set in .env, sync it and clear must_change_password
-        if settings.INITIAL_ADMIN_PASSWORD:
-            admin_user.hashed_password = hash_password(settings.INITIAL_ADMIN_PASSWORD)
-            admin_user.must_change_password = False
-            admin_user.failed_login_attempts = 0
-            admin_user.locked_until = None
-            admin_user.is_active = True
-            admin_user.status = "ACTIVE"
-            db.commit()
-            db.refresh(admin_user)
-            logger.info(f"Standard Admin '{admin_user.username}' password synchronized from INITIAL_ADMIN_PASSWORD.")
+        # Existing account: ensure account is active and preserve intentional password changes
+        if not admin_user.hashed_password:
+            admin_pass = settings.INITIAL_ADMIN_PASSWORD or settings.INITIAL_ADMIN_TEMP_PASSWORD
+            if admin_pass:
+                admin_user.hashed_password = hash_password(admin_pass)
+                db.commit()
+                db.refresh(admin_user)
         return admin_user
 
     admin_pass = settings.INITIAL_ADMIN_PASSWORD or settings.INITIAL_ADMIN_TEMP_PASSWORD
@@ -104,11 +100,10 @@ def ensure_tester_account(db: Session) -> User:
     """Ensures a default active tester account ('tester') is available for QA validation."""
     tester = db.query(User).filter(User.username == "tester").first()
     if tester:
-        if not tester.hashed_password or not verify_password("Tester#Password2026!", str(tester.hashed_password)):
+        if not tester.hashed_password:
             tester.hashed_password = hash_password("Tester#Password2026!")
         tester.is_active = True
         tester.status = "ACTIVE"
-        tester.must_change_password = False
         db.commit()
         db.refresh(tester)
         return tester

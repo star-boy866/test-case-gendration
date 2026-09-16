@@ -30,22 +30,28 @@ class Settings(BaseSettings):
                 if not p.is_absolute():
                     setattr(self, attr, (BACKEND_DIR / p).resolve().as_posix())
 
-        if self.APP_ENV.lower() == "production":
+        if self.is_production:
+            self.APP_ENV = "production"
             if self.SECRET_KEY.startswith("dev-only-change-me"):
                 raise ValueError("PRODUCTION SAFETY: Default SECRET_KEY is not allowed in production.")
-            if not self.DATABASE_URL or "sqlite" in self.DATABASE_URL.lower():
-                raise ValueError("PRODUCTION SAFETY: A real PostgreSQL DATABASE_URL is required in production.")
-            if not self.CELERY_BROKER_URL:
-                raise ValueError("PRODUCTION SAFETY: CELERY_BROKER_URL is required in production.")
-            if self.DEBUG:
-                # Often DEBUG=True is banned, but if it must be true, we can warn or block
-                pass 
+            eff_url = self.effective_database_url
+            if not eff_url or "sqlite" in eff_url.lower() or not eff_url.startswith("postgresql://"):
+                raise ValueError(
+                    "PRODUCTION SAFETY: A PostgreSQL database (DATABASE_URL or SUPABASE_DB_*) "
+                    "is mandatory in production. Silent SQLite fallback is strictly prohibited."
+                )
         return self
 
     # --- App ---
     APP_NAME: str = "Healthcare NL-to-Test-Case Generation Agent"
     APP_ENV: str = "development"
+    ENVIRONMENT: str | None = None
     DEBUG: bool = True
+
+    @property
+    def is_production(self) -> bool:
+        env = (self.ENVIRONMENT or self.APP_ENV or "").lower().strip()
+        return env in ("production", "prod")
 
     # --- Server ---
     HOST: str = "0.0.0.0"
@@ -75,15 +81,18 @@ class Settings(BaseSettings):
             url = str(self.DATABASE_URL).strip()
             if url.startswith("postgres://"):
                 url = "postgresql://" + url[len("postgres://"):]
+            if ("supabase" in url.lower() or "pooler" in url.lower()) and "sslmode=" not in url:
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}sslmode=require"
             return url
         if self.SUPABASE_DB_HOST and self.SUPABASE_DB_USER and self.SUPABASE_DB_PASSWORD:
             import urllib.parse
             user = urllib.parse.quote_plus(self.SUPABASE_DB_USER)
             pwd = urllib.parse.quote_plus(self.SUPABASE_DB_PASSWORD)
-            host = self.SUPABASE_DB_HOST
+            host = self.SUPABASE_DB_HOST.strip()
             port = self.SUPABASE_DB_PORT or 5432
             dbname = self.SUPABASE_DB_NAME or "postgres"
-            ssl_param = "?sslmode=require" if "supabase" in host.lower() else ""
+            ssl_param = "?sslmode=require" if ("supabase" in host.lower() or "pooler" in host.lower() or port in (6543, 5432)) else ""
             return f"postgresql://{user}:{pwd}@{host}:{port}/{dbname}{ssl_param}"
         return f"sqlite:///{self.SQLITE_DB_PATH}"
 

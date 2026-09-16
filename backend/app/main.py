@@ -27,7 +27,7 @@ except Exception as _e:
         raise RuntimeError(f"Database schema initialization failed on startup: {_e}") from _e
 
 # Production security check
-if settings.APP_ENV != "development" and settings.SECRET_KEY == "dev-only-change-me":
+if settings.is_production and settings.SECRET_KEY == "dev-only-change-me":
     raise RuntimeError(
         "SECRET_KEY must be set to a secure random value in non-development environments."
     )
