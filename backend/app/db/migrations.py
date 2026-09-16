@@ -43,6 +43,8 @@ def ensure_rbac_schema(engine: Engine) -> None:
 
 def ensure_governance_schema(engine: Engine) -> None:
     """Checks and creates baseline roles and governance permissions if not present."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
     with engine.connect() as conn:
         insp = inspect(conn)
         existing_tables = set(insp.get_table_names())
@@ -58,8 +60,8 @@ def ensure_governance_schema(engine: Engine) -> None:
                     check = conn.execute(text("SELECT id FROM roles WHERE name = :name"), {"name": role_name}).first()
                     if not check:
                         conn.execute(
-                            text("INSERT INTO roles (name, description, is_system_role) VALUES (:name, :desc, :is_sys)"),
-                            {"name": role_name, "desc": desc, "is_sys": True}
+                            text("INSERT INTO roles (name, description, is_system_role, created_at, updated_at) VALUES (:name, :desc, :is_sys, :now, :now)"),
+                            {"name": role_name, "desc": desc, "is_sys": True, "now": now}
                         )
                 conn.commit()
             except Exception as e:
@@ -76,8 +78,8 @@ def ensure_governance_schema(engine: Engine) -> None:
                     check = conn.execute(text("SELECT id FROM permissions WHERE code = :code"), {"code": code}).first()
                     if not check:
                         conn.execute(
-                            text("INSERT INTO permissions (code, name, description, module) VALUES (:code, :name, :desc, :mod)"),
-                            {"code": code, "name": name, "desc": desc, "mod": mod}
+                            text("INSERT INTO permissions (code, name, description, module, created_at, updated_at) VALUES (:code, :name, :desc, :mod, :now, :now)"),
+                            {"code": code, "name": name, "desc": desc, "mod": mod, "now": now}
                         )
                 conn.commit()
             except Exception as e:

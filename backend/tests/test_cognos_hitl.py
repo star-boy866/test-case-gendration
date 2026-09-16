@@ -147,21 +147,16 @@ def test_compute_field_diffs_and_history():
     assert len(history[0]["diffs"]) == 2
 
 
-def test_hitl_api_review_lifecycle():
-    from fastapi.testclient import TestClient
+def test_hitl_api_review_lifecycle(client: TestClient, db: Session):
     from app.main import app
-    from app.db.session import get_db, SessionLocal
     from app.models.cognos_orm import CognosGenerationRun, CognosTestCaseModel
     from app.core.rbac import get_current_user, CurrentUser
 
-    # Override auth for tests
+    # Override auth for tests (admin has full review and scenario-addition capabilities)
     def mock_get_current_user():
-        return CurrentUser(username="test_reviewer", role="tester")
+        return CurrentUser(username="test_reviewer", role="admin")
 
     app.dependency_overrides[get_current_user] = mock_get_current_user
-
-    client = TestClient(app)
-    db = SessionLocal()
 
     try:
         # Create a test run
@@ -288,5 +283,5 @@ def test_hitl_api_review_lifecycle():
         assert res_add.json()["test_case"]["review_status"] == "GENERATED"
 
     finally:
-        app.dependency_overrides.clear()
-        db.close()
+        from app.core.rbac import get_current_user
+        app.dependency_overrides.pop(get_current_user, None)
