@@ -110,3 +110,4 @@ class NhMmisDsd(BaseModel):
     report_section_headings: List[ReportSectionHeadingRow] = Field(default_factory=list)  # Phase 12M
     special_processing: List[ReportSpecialProcessingRow] = Field(default_factory=list)    # Phase 12N
     report_specification: List[ReportSpecificationRow] = Field(default_factory=list)
+    total_pages_estimated: Optional[int] = None

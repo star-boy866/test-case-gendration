@@ -129,6 +129,7 @@ class ReportMetadata(BaseModel):
     frequency: str = ""
     trigger: str = ""
     data_accumulation_type: str = ""
+    total_pages: Optional[int] = None
     source: SourceReference = Field(default_factory=SourceReference)
 
 

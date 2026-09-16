@@ -47,6 +47,7 @@ def map_nd_dsd_to_domain(dsd: NdMmisDsd, source_document_name: str = "") -> Doma
         calendar_type=dsd.definition.calendar_type or "Calendar",
         frequency_type=dsd.definition.frequency_type or "On Request",
         trigger=dsd.definition.frequency_explanation or "",
+        total_pages=getattr(dsd, "total_pages_estimated", None),
         source=SourceReference(document_name=source_document_name or rtitle, section="Report Definition"),
     )
     domain_rd.metadata = meta

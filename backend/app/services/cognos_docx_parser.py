@@ -640,6 +640,24 @@ def parse_cognos_docx(path: str | Path) -> CognosParsedDocument:
     except Exception as e:
         result.warnings.append(f"Failed to extract comments: {e}")
 
+    # Estimate total pages: prefer OOXML docProps/app.xml <Pages> count if present; fallback to traversed current_page
+    try:
+        import zipfile
+        import xml.etree.ElementTree as ET
+        with zipfile.ZipFile(str(p)) as z:
+            if 'docProps/app.xml' in z.namelist():
+                app_xml = z.read('docProps/app.xml')
+                root_app = ET.fromstring(app_xml)
+                for elem in root_app:
+                    if 'Pages' in elem.tag and elem.text and elem.text.strip().isdigit():
+                        result.total_pages_estimated = int(elem.text.strip())
+                        break
+    except Exception:
+        pass
+
+    if result.total_pages_estimated is None:
+        result.total_pages_estimated = current_page or 1
+
     return result
 
 

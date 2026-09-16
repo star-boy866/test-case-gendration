@@ -741,6 +741,13 @@ class DSDSourceSnapshotService:
             return None
 
         try:
+            from app.core.upload_diagnostics import log_upload_lifecycle
+            t_start_lo = time.perf_counter()
+            log_upload_lifecycle(
+                "PDF_CONVERT",
+                source_path.stem,
+                extra_details={"action": "LIBREOFFICE_START", "source": source_path.name}
+            )
             temp_dir = tempfile.gettempdir().replace("\\", "/").lstrip("/")
             cmd = [
                 soffice_bin,
@@ -758,7 +765,20 @@ class DSDSourceSnapshotService:
                 str(source_path),
             ]
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            if pdf_path.exists() and pdf_path.stat().st_size > 0:
+            t_lo_ms = round((time.perf_counter() - t_start_lo) * 1000, 2)
+            pdf_created = bool(pdf_path.exists() and pdf_path.stat().st_size > 0)
+            log_upload_lifecycle(
+                "PDF_CONVERT",
+                source_path.stem,
+                extra_details={
+                    "action": "LIBREOFFICE_END",
+                    "exit_code": res.returncode,
+                    "elapsed_ms": t_lo_ms,
+                    "pdf_created": pdf_created,
+                    "pdf_size_bytes": pdf_path.stat().st_size if pdf_created else 0,
+                }
+            )
+            if pdf_created:
                 logger.info(f"[TIER 2 CONVERT] DOCX -> PDF: {source_path.name} -> {pdf_path.name} ({pdf_path.stat().st_size} bytes)")
                 return pdf_path
             else:
@@ -807,6 +827,13 @@ class DSDSourceSnapshotService:
                         target_idx = page_number - 1
                         page = pdf.get_page(target_idx)
                         try:
+                            from app.core.upload_diagnostics import log_upload_lifecycle
+                            t_start_render = time.perf_counter()
+                            log_upload_lifecycle(
+                                "SNAPSHOT_RENDER",
+                                pdf_path.stem,
+                                extra_details={"action": "PYPDFIUM2_START", "page": page_number, "total_pages": num_pages, "has_crop": bool(crop_box)}
+                            )
                             # Check for blank page if not allow_blank
                             if not allow_blank:
                                 try:
@@ -842,6 +869,18 @@ class DSDSourceSnapshotService:
 
                             png_path.parent.mkdir(parents=True, exist_ok=True)
                             pil_img.save(png_path, format="PNG", optimize=True)
+                            t_render_ms = round((time.perf_counter() - t_start_render) * 1000, 2)
+                            log_upload_lifecycle(
+                                "SNAPSHOT_RENDER",
+                                pdf_path.stem,
+                                extra_details={
+                                    "action": "PYPDFIUM2_END",
+                                    "page": page_number,
+                                    "rendered_dimensions": f"{pil_img.size[0]}x{pil_img.size[1]}",
+                                    "elapsed_ms": t_render_ms,
+                                    "file_size_bytes": png_path.stat().st_size,
+                                }
+                            )
                             logger.info(
                                 f"[TIER 2 RENDER SUCCESS] pypdfium2 rendered page {page_number}/{num_pages} "
                                 f"(crop={crop_box is not None}) -> {png_path.name} ({png_path.stat().st_size} bytes, dims={pil_img.size})"

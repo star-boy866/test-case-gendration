@@ -12,3 +12,15 @@ services:
     envVars:
       - key: APP_ENV
         value: production
+
+  - type: web
+    name: cognos-test-case-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+

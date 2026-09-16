@@ -142,7 +142,22 @@ async def upload_and_generate(
     upload_dir = Path(settings.UPLOAD_DIR)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
+    import time
+    import uuid
+    from app.core.upload_diagnostics import log_upload_lifecycle
+
+    req_id = f"req_{uuid.uuid4().hex[:8]}"
+    req_start_time = time.perf_counter()
+
     contents = await file.read()
+    doc_size = len(contents)
+    log_upload_lifecycle(
+        "UPLOAD_RECEIVED",
+        req_id,
+        document_size_bytes=doc_size,
+        start_time=req_start_time,
+        extra_details={"filename": file.filename, "profile_requested": dsd_profile},
+    )
     with tempfile.NamedTemporaryFile(dir=upload_dir, suffix=ext, delete=False) as tmp:
         tmp.write(contents)
         tmp_path = Path(tmp.name)
@@ -172,12 +187,30 @@ async def upload_and_generate(
         )
 
     try:
+        log_upload_lifecycle(
+            "DOCX_PARSE",
+            req_id,
+            document_size_bytes=doc_size,
+            start_time=req_start_time,
+            extra_details={"action": "START", "effective_profile": effective_profile},
+        )
         # Run the full pipeline via profile dispatcher (supports NH & ND)
         pipeline_result = run_cognos_pipeline(
             tmp_path, 
             source_document_name=file.filename,
             use_llm_assist=False,  # Disabled until deterministic path is proven correct
             dsd_profile=effective_profile,
+        )
+        log_upload_lifecycle(
+            "DOCX_PARSE",
+            req_id,
+            document_size_bytes=doc_size,
+            start_time=req_start_time,
+            extra_details={
+                "action": "COMPLETE",
+                "report_id": pipeline_result.report_definition.metadata.report_id,
+                "test_cases_count": len(pipeline_result.test_suite.test_cases),
+            },
         )
         
         # --- FAIL-ON-INVALID GUARDRAIL ---
@@ -320,6 +353,14 @@ async def upload_and_generate(
 
         # ── Governance & Scenario Versioning Persistence ─────────────────────
         try:
+            log_upload_lifecycle(
+                "GOVERNANCE_PERSIST",
+                req_id,
+                run_id=run.id,
+                document_size_bytes=doc_size,
+                start_time=req_start_time,
+                extra_details={"action": "START"},
+            )
             # 1. Persist Source Document
             source_doc = SourceDocument(
                 report_id=pipeline_result.report_definition.metadata.report_id,
@@ -329,7 +370,7 @@ async def upload_and_generate(
                 uploaded_by=current_user.username,
                 file_path=str(canonical_source_path),
                 profile=pipeline_result.report_definition.metadata.source_state_code or "NH",
-                page_count=pipeline_result.report_definition.metadata.total_pages or None,
+                page_count=getattr(pipeline_result.report_definition.metadata, "total_pages", None) or None,
                 parser_version="v7_semantic",
             )
             db.add(source_doc)
@@ -421,8 +462,28 @@ async def upload_and_generate(
                 actor_user_id=current_user.id,
             )
             db.commit()
+            log_upload_lifecycle(
+                "GOVERNANCE_PERSIST",
+                req_id,
+                run_id=run.id,
+                document_size_bytes=doc_size,
+                start_time=req_start_time,
+                extra_details={"action": "COMPLETE", "status": "SUCCESS"},
+            )
         except Exception as g_err:
-            logger.warning(f"Failed to persist governance metadata for run {run.id}: {g_err}")
+            db.rollback()
+            logger.error(
+                f"Failed to persist governance metadata for run {run.id} [{type(g_err).__name__}]: {g_err}",
+                exc_info=True,
+            )
+            log_upload_lifecycle(
+                "GOVERNANCE_PERSIST",
+                req_id,
+                run_id=run.id,
+                document_size_bytes=doc_size,
+                start_time=req_start_time,
+                extra_details={"action": "FAIL", "error": f"{type(g_err).__name__}: {g_err}"},
+            )
         
         requirement_count = len(pipeline_result.requirement_set.requirements)
         test_case_count = len(pipeline_result.test_suite.test_cases)
@@ -503,6 +564,15 @@ async def upload_and_generate(
         if current_user.role == "tester":
             for tc in test_cases_out:
                 tc.pop("raw_structural_intent", None)
+
+        log_upload_lifecycle(
+            "RESPONSE",
+            req_id,
+            run_id=run.id,
+            document_size_bytes=doc_size,
+            start_time=req_start_time,
+            extra_details={"status": "SUCCESS", "test_case_count": test_case_count},
+        )
 
         return {
             "run_id": run.id,

@@ -40,6 +40,7 @@ def map_dsd_to_domain(dsd: NhMmisDsd, source_document_name: str) -> DomainReport
             section=dsd.report_definition.source_section,
             table_index=dsd.report_definition.table_index
         )
+        meta.total_pages = getattr(dsd, "total_pages_estimated", None)
         domain_rd.metadata = meta
 
     if dsd.report_generation:

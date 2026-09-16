@@ -99,3 +99,4 @@ class NdMmisDsd(BaseModel):
     section_headings: List[NdSectionHeadingRow] = Field(default_factory=list)
     report_body: List[NdReportBodyRow] = Field(default_factory=list)
     footnotes: List[NdFootnoteRow] = Field(default_factory=list)
+    total_pages_estimated: Optional[int] = None

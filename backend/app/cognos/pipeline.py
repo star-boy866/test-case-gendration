@@ -161,6 +161,15 @@ def run_cognos_pipeline(
     all_warnings.extend(validation_warnings)
 
     # --- Stage 6.1: Semantic Proof Generation (Phase 13D.3: Profile-Aware) ---
+    import time
+    from app.core.upload_diagnostics import log_upload_lifecycle
+    t_sem = time.perf_counter()
+    log_upload_lifecycle(
+        "SEMANTIC_RESOLUTION",
+        job_id,
+        extra_details={"action": "START", "test_cases_count": len(test_cases), "profile": dsd.__class__.__name__}
+    )
+
     from app.cognos.extraction.nd_mmis_dsd_models import NdMmisDsd
     if isinstance(dsd, NdMmisDsd):
         logger.info("[PIPELINE STAGE 6.1] Semantic DSD Proof skipped for profile ND MMIS (semantic_proof_status = NOT_APPLICABLE_FOR_PROFILE).")
@@ -223,6 +232,13 @@ def run_cognos_pipeline(
             existing_types = {ev.evidence_type for ev in tc.evidence_references}
             if "SOURCE_DSD_SNAPSHOT" not in existing_types:
                 tc.evidence_references.append(snap_ref)
+
+    t_sem_ms = round((time.perf_counter() - t_sem) * 1000, 2)
+    log_upload_lifecycle(
+        "SEMANTIC_RESOLUTION",
+        job_id,
+        extra_details={"action": "COMPLETE", "elapsed_ms": t_sem_ms}
+    )
 
     # --- Stage 6.3: Deterministic SQL Generation & Source Mapping (PHASE 12K) ---
     from app.cognos.rules.sql_generator import DeterministicSqlGenerator

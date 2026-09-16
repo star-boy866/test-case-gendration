@@ -147,6 +147,7 @@ def extract_metadata(
     Returns (ReportMetadata, warnings).
     """
     metadata = ReportMetadata(
+        total_pages=getattr(doc, "total_pages_estimated", None),
         source=SourceReference(
             document_name=source_document_name,
             section="Report Definition",

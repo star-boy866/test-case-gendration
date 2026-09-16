@@ -34,6 +34,7 @@ class NhMmisDsdInterpreter:
     def __init__(self, doc: CognosParsedDocument):
         self.doc = doc
         self.dsd = NhMmisDsd()
+        self.dsd.total_pages_estimated = getattr(doc, "total_pages_estimated", None)
 
     def interpret(self) -> NhMmisDsd:
         self._parse_report_definition()
