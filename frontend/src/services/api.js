@@ -393,4 +393,37 @@ export const revokeAssignment = (assignmentId, reason) =>
 export const deleteTestCaseRun = (runId, reason) =>
   api.delete(`/admin/runs/${runId}`, { params: { reason } });
 
+// ── Database Explorer & Governance API ────────────────────────────────────────
+export const getDatabaseTables = () =>
+  api.get("/admin/database/tables");
+
+export const getTableSchema = (tableName) =>
+  api.get(`/admin/database/${encodeURIComponent(tableName)}/schema`);
+
+export const getTableRows = (tableName, params = {}) =>
+  api.get(`/admin/database/${encodeURIComponent(tableName)}/rows`, { params });
+
+export const exportTableRows = async (tableName, format = "csv") => {
+  const response = await api.get(`/admin/database/${encodeURIComponent(tableName)}/export`, {
+    params: { format },
+    responseType: "blob",
+  });
+  const ext = format === "json" ? "json" : "csv";
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${tableName}_export.${ext}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+};
+
+export const getDatabaseAuditSummary = () =>
+  api.get("/admin/database/audit-summary");
+
+export const getScenarioLearningSummary = () =>
+  api.get("/admin/learning/summary");
+
 export default api;
+

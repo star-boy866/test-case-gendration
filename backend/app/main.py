@@ -8,7 +8,7 @@ from app.db.init_db import init_db
 from app.core.immutable_audit import register_immutability_guards
 from app.api import (
     health, ingestion, gatekeeper, generation,
-    export, refinement, auth, cognos_api, jobs, admin_rbac
+    export, refinement, auth, cognos_api, jobs, admin_rbac, admin_database
 )
 
 # Phase 9: register immutable audit listeners (in-memory ORM event listeners)
@@ -71,6 +71,8 @@ app.include_router(export.router)
 app.include_router(refinement.router)
 app.include_router(cognos_api.router)
 app.include_router(jobs.router)
+app.include_router(admin_database.router)
+
 
 
 @app.middleware("http")

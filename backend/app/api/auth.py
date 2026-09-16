@@ -34,6 +34,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.models.rbac import AccessRequest, UserSession
 from app.models.audit import AuditLogEntry
+from app.services.audit_service import log_audit_event, log_login_event
 from app.services.session_service import (
     create_session,
     revoke_session,
@@ -134,16 +135,21 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     """
     generic_error = HTTPException(status_code=401, detail="Invalid username or password.")
 
+    ip = request.client.host if request.client else "127.0.0.1"
+    ua = request.headers.get("user-agent", "Unknown")
+
     user = db.query(User).filter(User.username == payload.username.strip()).first()
     if not user:
         # Record failed attempt to audit log
-        db.add(AuditLogEntry(user_id=payload.username, event_type="LOGIN_FAILED", detail=None))
-        db.commit()
+        log_audit_event(db, actor_username=payload.username, actor_role="unknown", action="LOGIN_FAILED", success=False, ip_address=ip, user_agent=ua)
+        log_login_event(db, username=payload.username, success=False, ip_address=ip, user_agent=ua, failure_reason="User not found")
         raise generic_error
 
     # Check account lockout
     locked, remaining_minutes = is_account_locked(user)
     if locked:
+        log_audit_event(db, actor_username=user.username, actor_role=user.role, action="LOGIN_FAILED", success=False, ip_address=ip, user_agent=ua, details={"reason": "locked"})
+        log_login_event(db, username=user.username, success=False, user_id=user.id, ip_address=ip, user_agent=ua, failure_reason="Account locked")
         raise HTTPException(
             status_code=403,
             detail=f"Account is temporarily locked due to repeated failed login attempts. Please try again in {remaining_minutes} minute(s).",
@@ -152,8 +158,8 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     # Verify password
     if not verify_password(payload.password, str(user.hashed_password)):
         is_locked_now = handle_failed_login(db, user)
-        db.add(AuditLogEntry(user_id=user.username, event_type="LOGIN_FAILED", detail=None))
-        db.commit()
+        log_audit_event(db, actor_username=user.username, actor_role=user.role, action="LOGIN_FAILED", success=False, ip_address=ip, user_agent=ua, actor_user_id=user.id)
+        log_login_event(db, username=user.username, success=False, user_id=user.id, ip_address=ip, user_agent=ua, failure_reason="Invalid credentials")
         if is_locked_now:
             raise HTTPException(
                 status_code=403,
@@ -243,8 +249,17 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     session = create_session(db, user, ip_address=ip, user_agent=ua)
     _set_session_cookie(response, str(session.session_id))
 
-    db.add(AuditLogEntry(user_id=user.username, event_type="LOGIN_SUCCEEDED", detail=None))
-    db.commit()
+    log_audit_event(
+        db,
+        actor_username=user.username,
+        actor_role=user.role,
+        action="LOGIN_SUCCESS",
+        success=True,
+        ip_address=ip,
+        user_agent=ua,
+        actor_user_id=user.id
+    )
+    log_login_event(db, username=user.username, success=True, user_id=user.id, ip_address=ip, user_agent=ua)
 
     return {
         "status": "SUCCESS",

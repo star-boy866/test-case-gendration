@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.db.session import Base, get_db
-from app.db.migrations import ensure_rbac_schema
+from app.db.migrations import ensure_rbac_schema, ensure_governance_schema
 from app.services.user_service import bootstrap_standard_admin
 from app.main import app
 
@@ -49,6 +49,7 @@ def setup_test_database():
 
     Base.metadata.create_all(bind=test_engine)
     ensure_rbac_schema(test_engine)
+    ensure_governance_schema(test_engine)
 
     init_session = TestSessionLocal()
     try:

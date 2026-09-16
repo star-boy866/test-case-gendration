@@ -54,14 +54,38 @@ class Settings(BaseSettings):
     # --- CORS ---
     ALLOWED_ORIGINS: str = "http://localhost:5173,https://cognos-test-case-frontend.onrender.com"
 
-    # --- Database (PostgreSQL for Prod, SQLite for Dev) ---
+    # --- Database (PostgreSQL for Prod / Supabase, SQLite for Dev) ---
     DATABASE_URL: str | None = None
+    SUPABASE_DB_HOST: str = ""
+    SUPABASE_DB_PORT: int = 5432
+    SUPABASE_DB_USER: str = ""
+    SUPABASE_DB_NAME: str = "postgres"
+    SUPABASE_DB_PASSWORD: str = ""
     SQLITE_DB_PATH: str = "./database/app_metadata.db"
     
     # Postgres pooling configs
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
     DB_POOL_TIMEOUT: int = 30
+
+    @property
+    def effective_database_url(self) -> str:
+        """Returns the PostgreSQL connection URL if configured, else SQLite."""
+        if self.DATABASE_URL and str(self.DATABASE_URL).strip():
+            url = str(self.DATABASE_URL).strip()
+            if url.startswith("postgres://"):
+                url = "postgresql://" + url[len("postgres://"):]
+            return url
+        if self.SUPABASE_DB_HOST and self.SUPABASE_DB_USER and self.SUPABASE_DB_PASSWORD:
+            import urllib.parse
+            user = urllib.parse.quote_plus(self.SUPABASE_DB_USER)
+            pwd = urllib.parse.quote_plus(self.SUPABASE_DB_PASSWORD)
+            host = self.SUPABASE_DB_HOST
+            port = self.SUPABASE_DB_PORT or 5432
+            dbname = self.SUPABASE_DB_NAME or "postgres"
+            ssl_param = "?sslmode=require" if "supabase" in host.lower() else ""
+            return f"postgresql://{user}:{pwd}@{host}:{port}/{dbname}{ssl_param}"
+        return f"sqlite:///{self.SQLITE_DB_PATH}"
 
     # --- Background Jobs (Phase 9.5) ---
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"

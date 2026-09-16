@@ -12,7 +12,7 @@ import sys
 
 from app.db.session import Base, engine, SessionLocal
 from app import models  # noqa: F401  ensures all ORM tables register on Base.metadata
-from app.db.migrations import ensure_rbac_schema
+from app.db.migrations import ensure_rbac_schema, ensure_governance_schema
 from app.services.user_service import bootstrap_standard_admin, ensure_tester_account
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -30,9 +30,10 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     logger.info("Base.metadata.create_all completed successfully.")
 
-    # 2. Run lightweight column migrations (e.g. RBAC attributes)
+    # 2. Run lightweight column migrations and governance schema setup
     ensure_rbac_schema(engine)
-    logger.info("ensure_rbac_schema completed successfully.")
+    ensure_governance_schema(engine)
+    logger.info("ensure_rbac_schema and ensure_governance_schema completed successfully.")
 
     # 3. Bootstrap standard admin and tester accounts (idempotent, checks for existing rows)
     db = SessionLocal()

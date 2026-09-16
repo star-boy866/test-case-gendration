@@ -12,6 +12,7 @@ import SessionsPage from "./pages/SessionsPage.jsx";
 import AuditLogPage from "./pages/AuditLogPage.jsx";
 import CognosDashboard from "./pages/CognosDashboard.jsx";
 import TesterDashboard from "./pages/TesterDashboard.jsx";
+import DatabaseExplorerPage from "./pages/DatabaseExplorerPage.jsx";
 import { WorkflowProvider } from "./context/WorkflowContext.jsx";
 import { AuthProvider, useAuth } from "./context/AuthContext.jsx";
 
@@ -117,6 +118,16 @@ function AuthenticatedRoutes() {
               element={
                 <RequireAuth minRole="admin">
                   <AuditLogPage />
+                </RequireAuth>
+              }
+            />
+
+            {/* Admin Database Explorer (Read-Only Application Data & Learning) */}
+            <Route
+              path="/admin/database"
+              element={
+                <RequireAuth minRole="admin">
+                  <DatabaseExplorerPage />
                 </RequireAuth>
               }
             />

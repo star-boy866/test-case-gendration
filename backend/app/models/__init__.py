@@ -12,3 +12,4 @@ from app.models import job  # noqa: F401
 from app.models import outbox  # noqa: F401
 from app.models import delivery  # noqa: F401
 from app.models import rbac  # noqa: F401
+from app.models import governance  # noqa: F401

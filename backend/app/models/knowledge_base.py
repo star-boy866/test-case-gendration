@@ -40,6 +40,23 @@ class SourceDocument(Base):
     uploaded_by = Column(String, nullable=True)
     parse_status = Column(String, default="parsed")  # parsed | insufficient_metadata | error
     parse_summary = Column(Text, nullable=True)  # JSON blob: counts + warnings
+    profile = Column(String, nullable=True)
+    page_count = Column(Integer, nullable=True)
+    parser_version = Column(String, nullable=True)
+    file_path = Column(String, nullable=True)
+
+    @property
+    def file_name(self) -> str:
+        return self.filename
+
+    @property
+    def file_hash(self) -> str:
+        return self.file_sha256
+
+    @property
+    def document_type(self) -> str:
+        return self.file_type
+
 
     tables = relationship("KBTable", back_populates="source_document", cascade="all, delete-orphan")
     columns = relationship("KBColumn", back_populates="source_document", cascade="all, delete-orphan")

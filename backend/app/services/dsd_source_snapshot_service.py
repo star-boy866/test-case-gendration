@@ -2038,6 +2038,51 @@ class DSDSourceSnapshotService:
     # -------------------------------------------------------------------------
     # Main Coordinator
     # -------------------------------------------------------------------------
+    # Snapshot Persistence Helper
+    # -------------------------------------------------------------------------
+    @classmethod
+    def _persist_snapshot_record(
+        cls,
+        db: Session,
+        run_id: int,
+        evidence_id: str,
+        test_case_id: str,
+        page_number: int,
+        target_field: str,
+        section: str,
+        renderer: str,
+        png_path: Path,
+    ) -> None:
+        try:
+            from app.models.governance import SourceSnapshot
+            ev_key = evidence_id or png_path.stem
+            snap = db.query(SourceSnapshot).filter(
+                SourceSnapshot.run_id == run_id,
+                SourceSnapshot.evidence_id == ev_key
+            ).first()
+            if not snap:
+                snap = SourceSnapshot(
+                    run_id=run_id,
+                    scenario_id=test_case_id or None,
+                    evidence_id=ev_key,
+                    page_number=page_number,
+                    semantic_target=target_field or section or None,
+                    renderer=renderer,
+                    crop_version=CURRENT_CROP_VERSION,
+                    is_semantic_crop=True,
+                    file_path=str(png_path),
+                )
+                db.add(snap)
+                db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
+    # -------------------------------------------------------------------------
+    # Entry Point: Orchestrator
+    # -------------------------------------------------------------------------
     @classmethod
     def get_or_generate_snapshot(
         cls,
@@ -2144,6 +2189,11 @@ class DSDSourceSnapshotService:
             evidence_scope=evidence_scope,
         )
         if cached:
+            cls._persist_snapshot_record(
+                db=db, run_id=run_id, evidence_id=evidence_id, test_case_id=test_case_id,
+                page_number=page_number, target_field=target_field, section=section,
+                renderer="cached_authentic", png_path=cached
+            )
             logger.info(
                 f"run={run_id} evidence={evidence_id or Path(png_filename).stem} page={page_number} renderer=cached_authentic status=success path={cached.name}"
             )
@@ -2166,6 +2216,11 @@ class DSDSourceSnapshotService:
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
                 cls.write_provenance_meta(png_path, renderer="tier1_playwright", authentic=True, page_number=page_number)
+                cls._persist_snapshot_record(
+                    db=db, run_id=run_id, evidence_id=evidence_id, test_case_id=test_case_id,
+                    page_number=page_number, target_field=target_field, section=section,
+                    renderer="tier1_playwright", png_path=png_path
+                )
                 logger.info(
                     f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier1_playwright status=success path={png_path.name}"
                 )
@@ -2186,6 +2241,11 @@ class DSDSourceSnapshotService:
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
                 tier2_success = True
+                cls._persist_snapshot_record(
+                    db=db, run_id=run_id, evidence_id=evidence_id, test_case_id=test_case_id,
+                    page_number=page_number, target_field=target_field, section=section,
+                    renderer="tier2_docx_pdf", png_path=png_path
+                )
                 logger.info(
                     f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier2_docx_pdf status=success path={png_path.name}"
                 )
@@ -2215,6 +2275,11 @@ class DSDSourceSnapshotService:
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
                 cls.write_provenance_meta(png_path, renderer="tier3_synthetic", authentic=False, page_number=page_number)
+                cls._persist_snapshot_record(
+                    db=db, run_id=run_id, evidence_id=evidence_id, test_case_id=test_case_id,
+                    page_number=page_number, target_field=target_field, section=section,
+                    renderer="tier3_synthetic", png_path=png_path
+                )
                 return png_path
 
         raise RuntimeError(f"Visual source preview unavailable: unable to render authoritative DSD page for run {run_id} ({png_filename})")
