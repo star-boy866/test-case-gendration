@@ -2170,6 +2170,7 @@ class DSDSourceSnapshotService:
 
         # 2. Tier 1: Try Playwright / Node if source.docx is on disk
         render_script = BACKEND_DIR / "render" / "render_snapshot.js"
+        tier2_success = False
         if source_path and source_path.exists() and render_script.exists():
             success = cls.render_tier1_node(
                 render_script=render_script,
@@ -2203,14 +2204,20 @@ class DSDSourceSnapshotService:
                 evidence_id=evidence_id,
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
+                tier2_success = True
                 logger.info(
                     f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier2_docx_pdf status=success path={png_path.name}"
                 )
                 return png_path
+            else:
+                logger.warning(
+                    f"[TIER 2 FAILED] run={run_id} evidence={evidence_id} — DOCX->PDF conversion or rendering failed. "
+                    f"Falling back to Tier 3 DB snapshot."
+                )
 
-        # 4. Tier 3: Pure-Python Authoritative DB Metadata Snapshot (Fallback)
-        # ONLY permitted when source.docx is NOT present on disk (e.g. remote run, ephemeral restart)
-        if not source_path or not source_path.exists():
+        # 4. Tier 3: Pure-Python Authoritative DB Metadata Snapshot
+        # Runs whenever Tier 2 failed OR source.docx is not on disk
+        if not tier2_success:
             logger.warning(
                 f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier3_synthetic status=fallback path={png_path.name}"
             )
