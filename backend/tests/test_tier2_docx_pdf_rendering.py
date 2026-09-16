@@ -917,3 +917,174 @@ def test_dbrv_excludes_chart_footer_and_footnote(tmp_path: Path):
         assert im.size[0] > 200
         # Check that crop does not extend the full height
         assert im.size[1] < 1500
+
+
+def test_prv009_all_17_scenarios_exact_crops():
+    """
+    Verifies that all 17 PRV-INT-009 test case scenarios produce exact, non-empty,
+    full-width, scenario-specific bounded crops.
+    """
+    pdf_path = Path(__file__).resolve().parent.parent / "runs" / "12" / "source" / "source.pdf"
+    if not pdf_path.exists():
+        pytest.skip(f"PRV-INT-009 source.pdf not present at {pdf_path}")
+
+    test_cases = [
+        ("PRV009-REPO-01", 1, "Report Definition", "REPORT_NAME_DESCRIPTION_VALIDATION", "report description", "Report Metadata"),
+        ("PRV009-EXEC-01", 1, "Report Generation", "SCHEDULED_EXECUTION_VALIDATION", "Scheduled / Report Frequency Type", "REPORT_FREQUENCY_SCHEDULING"),
+        ("PRV009-SELC-01", 1, "Report Selection Criteria", "SELECTION_CRITERIA_VALIDATION", "file name", "REPORT_SELECTION_CRITERIA"),
+        ("PRV009-SORT-01", 1, "Report Control Breaks, Totals, Counts, and Sorts", "SORT_VALIDATION", "provider id", "Report Control Breaks, Totals, Counts, and Sorts"),
+        ("PRV009-DBCO-01", 2, "Report Control Breaks, Totals, Counts, and Sorts", "DB_COUNT_VALIDATION", "total records processed", "Report Control Breaks, Totals, Counts, and Sorts"),
+        ("PRV009-OUTP-01", 2, "Report Output", "OUTPUT_DELIVERY_VALIDATION", "reporting portal", "Distribution & Portal"),
+        ("PRV009-SCRI-01", 2, "Report Output / Retention", "SCRIPT_OUTPUT_VALIDATION", "reporting portal", "Source Specification"),
+        ("PRV009-SCRI-02", 2, "Report Output / Retention", "SCRIPT_OUTPUT_VALIDATION", "retention type", "Source Specification"),
+        ("PRV009-SPEC-01", 2, "Report Special Processing", "SPECIAL_PROCESSING_VALIDATION", "p_lic_cert_agcy_cd", "REPORT_SPECIAL_PROCESSING"),
+        ("PRV009-RHDR-01", 3, "Report Layout", "REPORT_HEADER_VALIDATION", "Report Header", "REPORT_HEADER"),
+        ("PRV009-LAYO-01", 3, "Report Layout", "LAYOUT_VALIDATION", "", "FULL_REPORT_LAYOUT"),
+        ("PRV009-SECT-01", 4, "Report Section Heading", "REPORT_SECTION_HEADING_VALIDATION", "Report Section Heading", "REPORT_SECTION_HEADING"),
+        ("PRV009-LABE-01", 4, "Report Body", "LABEL_VALIDATION", "Column Labels", "COLUMN_LABELS"),
+        ("PRV009-DBRV-01", 4, "Report Body", "DB_REPORT_DATA_VALIDATION", "Full Mapping", "REPORT_BODY_MAPPING"),
+        ("PRV009-LOOK-01", 5, "Report Specification", "LOOKUP_VALIDATION", "prov agency", "prov agency"),
+        ("PRV009-LOOK-02", 5, "Report Specification", "LOOKUP_VALIDATION", "prov ty cd - desc", "prov ty cd - desc"),
+        ("PRV009-DUPL-01", 4, "Report Specification", "DUPLICATE_VALIDATION", "p_alt_id, p_sort_nam, p_lic_cert_agcy_cd, p_disp_actn_cd", "p_alt_id, p_sort_nam, p_lic_cert_agcy_cd, p_disp_actn_cd"),
+    ]
+
+    for tc_id, pno, sec, meth, tf, sc in test_cases:
+        cb = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+            pdf_path=pdf_path,
+            page_number=pno,
+            section=sec,
+            methodology=meth,
+            target_field=tf,
+            evidence_scope=sc,
+            test_case_id=tc_id,
+        )
+        assert cb is not None, f"Crop bounds must be computed for {tc_id}"
+        px_x0, px_y0, px_x1, px_y1 = cb
+        assert px_x0 == 0, f"{tc_id} must have left_x=0 (full width)"
+        assert px_x1 == 1190, f"{tc_id} must span full page width (1190 px)"
+        height = px_y1 - px_y0
+        assert height >= 60, f"{tc_id} height {height} must be >= 60px"
+        assert height <= 1650, f"{tc_id} height {height} must not exceed page bounds"
+
+
+def test_rhdr_vs_layo_invariant():
+    """
+    Verifies that RHDR is strictly contained inside LAYO and significantly smaller.
+    """
+    pdf_path = Path(__file__).resolve().parent.parent / "runs" / "12" / "source" / "source.pdf"
+    if not pdf_path.exists():
+        pytest.skip("PRV-INT-009 source.pdf not present")
+
+    cb_rhdr = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path,
+        page_number=3,
+        section="Report Layout",
+        methodology="REPORT_HEADER_VALIDATION",
+        target_field="Report Header",
+        evidence_scope="REPORT_HEADER",
+        test_case_id="PRV009-RHDR-01",
+    )
+    cb_layo = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path,
+        page_number=3,
+        section="Report Layout",
+        methodology="LAYOUT_VALIDATION",
+        target_field="",
+        evidence_scope="FULL_REPORT_LAYOUT",
+        test_case_id="PRV009-LAYO-01",
+    )
+    assert cb_rhdr is not None and cb_layo is not None
+    # RHDR top edge is at or below LAYO top edge (px_y0_rhdr >= px_y0_layo)
+    assert cb_rhdr[1] >= cb_layo[1]
+    # RHDR bottom edge is strictly above LAYO bottom edge (px_y1_rhdr < px_y1_layo)
+    assert cb_rhdr[3] < cb_layo[3]
+    # RHDR height is significantly smaller than LAYO
+    h_rhdr = cb_rhdr[3] - cb_rhdr[1]
+    h_layo = cb_layo[3] - cb_layo[1]
+    assert h_rhdr < (h_layo / 2), f"RHDR height ({h_rhdr}) must be less than half of LAYO ({h_layo})"
+
+
+def test_scri01_vs_scri02_distinct_crops():
+    """
+    Verifies that SCRI-01 (Output delivery) and SCRI-02 (Retention) produce
+    distinct, non-overlapping crop regions on Page 2.
+    """
+    pdf_path = Path(__file__).resolve().parent.parent / "runs" / "12" / "source" / "source.pdf"
+    if not pdf_path.exists():
+        pytest.skip("PRV-INT-009 source.pdf not present")
+
+    cb_scri1 = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path,
+        page_number=2,
+        section="Report Output / Retention",
+        methodology="SCRIPT_OUTPUT_VALIDATION",
+        target_field="reporting portal",
+        evidence_scope="Source Specification",
+        test_case_id="PRV009-SCRI-01",
+    )
+    cb_scri2 = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path,
+        page_number=2,
+        section="Report Output / Retention",
+        methodology="SCRIPT_OUTPUT_VALIDATION",
+        target_field="retention type",
+        evidence_scope="Source Specification",
+        test_case_id="PRV009-SCRI-02",
+    )
+    assert cb_scri1 is not None and cb_scri2 is not None
+    # SCRI-01 is above SCRI-02 (px_y1 of scri1 <= px_y0 of scri2 or minimal overlap)
+    assert cb_scri1 != cb_scri2, "SCRI-01 and SCRI-02 must produce different crop bounds"
+    assert cb_scri1[3] <= cb_scri2[1] + 15, "SCRI-01 region must be strictly above SCRI-02 region"
+
+
+def test_semantic_target_cache_validation(tmp_path: Path, monkeypatch):
+    """
+    Validates that find_cached_snapshot checks semantic_target and rejects cache
+    when the cached target does not match the requested scenario.
+    """
+    monkeypatch.setattr(DSDSourceSnapshotService, "get_candidate_runs_dirs", classmethod(lambda cls: [tmp_path]))
+    ev_dir = tmp_path / "99" / "evidence"
+    ev_dir.mkdir(parents=True)
+
+    png_file = ev_dir / "source_snapshot_test.png"
+    im = Image.new("RGB", (1190, 400), color=(255, 255, 255))
+    im.save(png_file)
+
+    # Stamped with REPORT_OUTPUT_DELIVERY
+    DSDSourceSnapshotService.write_provenance_meta(
+        png_file,
+        renderer="tier2_docx_pdf",
+        authentic=True,
+        page_number=2,
+        extra={
+            "crop_version": DSDSourceSnapshotService.CURRENT_CROP_VERSION,
+            "is_semantic_crop": True,
+            "semantic_target": "REPORT_OUTPUT_DELIVERY",
+        },
+    )
+
+    # 1. Query for REPORT_OUTPUT_DELIVERY -> HIT
+    hit = DSDSourceSnapshotService.find_cached_snapshot(
+        run_id=99,
+        png_filename="source_snapshot_test.png",
+        require_authentic=True,
+        methodology="OUTPUT_DELIVERY_VALIDATION",
+        section="Report Output",
+        target_field="reporting portal",
+        page_number=2,
+    )
+    assert hit is not None, "Matching semantic_target must be accepted from cache"
+
+    # 2. Query for REPORT_RETENTION on same filename -> MISMATCH REJECTED
+    miss = DSDSourceSnapshotService.find_cached_snapshot(
+        run_id=99,
+        png_filename="source_snapshot_test.png",
+        require_authentic=True,
+        methodology="SCRIPT_OUTPUT_VALIDATION",
+        section="Report Retention",
+        target_field="retention type",
+        test_case_id="PRV009-SCRI-02",
+        page_number=2,
+    )
+    assert miss is None, "Mismatched semantic_target must be rejected from cache"
+

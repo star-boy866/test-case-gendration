@@ -45,7 +45,7 @@ class DSDSourceSnapshotService:
     Manages resolution, caching, and resilient generation of Source DSD Snapshots.
     """
 
-    CURRENT_CROP_VERSION = "v6_full_width"
+    CURRENT_CROP_VERSION = "v7_exact_semantic_region"
     _pdfium_lock = threading.Lock()
 
     @classmethod
@@ -390,6 +390,22 @@ class DSDSourceSnapshotService:
                                     continue
                         except Exception as ex:
                             logger.info(f"[IMAGE OPEN FAILED] {cand.name}: {ex}. Rejecting.")
+                            continue
+
+                        # Guard 9: Semantic target consistency check
+                        req_target = cls._describe_semantic_target(
+                            methodology=methodology or "",
+                            section=section or "",
+                            target_field=target_field or "",
+                            test_case_id=test_case_id or "",
+                            evidence_scope=evidence_scope or "",
+                        )
+                        m_target = m_dict.get("semantic_target")
+                        if req_target and m_target and req_target != m_target:
+                            logger.info(
+                                f"[SEMANTIC TARGET MISMATCH REJECTED] Cached file {cand.name} target '{m_target}' "
+                                f"does not match requested '{req_target}'. Rejecting stale cache."
+                            )
                             continue
 
                         # All authenticity and crop provenance checks passed!
@@ -806,11 +822,11 @@ class DSDSourceSnapshotService:
         # Build prioritized search anchors
         strong_anchors: List[Tuple[str, int]] = []
         if tf_norm and len(tf_norm) >= 3:
-            strong_anchors.append((tf_norm, 150))
+            strong_anchors.append((tf_norm, 200))
             for part in re.split(r"[,;/\-]+", tf_norm):
                 p_clean = part.strip()
                 if len(p_clean) >= 3 and p_clean != tf_norm and p_clean not in {"desc", "code", "date", "type", "name", "text"}:
-                    strong_anchors.append((p_clean, 120))
+                    strong_anchors.append((p_clean, 130))
                     words = p_clean.split()
                     if len(words) >= 3:
                         strong_anchors.append((" ".join(words[:2]), 110))
@@ -840,10 +856,10 @@ class DSDSourceSnapshotService:
         if "special_processing" in meth_norm or "special processing" in sec_norm:
             strong_anchors.append(("report special processing", 130))
             strong_anchors.append(("special processing", 90))
-        if "output" in meth_norm or "output" in sec_norm:
+        if "retention" in sec_norm or "retention" in tf_norm or (meth_norm.startswith("script") and "retention" in tf_norm):
+            strong_anchors.append(("report retention", 120))
+        elif "output" in meth_norm or "output" in sec_norm or meth_norm.startswith("script"):
             strong_anchors.append(("report output", 90))
-        if "retention" in sec_norm or "script" in meth_norm:
-            strong_anchors.append(("report retention", 100))
         if "section_heading" in meth_norm or "section heading" in sec_norm:
             strong_anchors.append(("report section heading", 130))
             strong_anchors.append(("section heading", 80))
@@ -1026,6 +1042,61 @@ class DSDSourceSnapshotService:
                 return 36.0, 576.0
 
     @classmethod
+    def _describe_semantic_target(
+        cls,
+        methodology: str = "",
+        section: str = "",
+        target_field: str = "",
+        test_case_id: str = "",
+        evidence_scope: str = "",
+    ) -> str:
+        """
+        Maps scenario parameters to an authoritative normalized semantic target identifier.
+        """
+        m = (methodology or "").lower()
+        s = (section or "").lower()
+        t = (target_field or "").lower()
+        sc = (evidence_scope or "").lower()
+        tc = (test_case_id or "").lower()
+
+        if "report_header" in m or "rhdr" in tc or "report_header" in sc or m == "header_validation":
+            return "REPORT_HEADER"
+        if "layout" in m or "layo" in tc or "full_report_layout" in sc:
+            return "FULL_REPORT_LAYOUT"
+        if "name_description" in m or "repo" in tc or "report metadata" in sc:
+            return "REPORT_METADATA"
+        if "scheduled_execution" in m or "exec" in tc or "frequency" in sc or ("generation" in s and "section" not in s):
+            return "REPORT_EXECUTION_SCHEDULING"
+        if "selection_criteria" in m or "selc" in tc:
+            return "SELECTION_CRITERIA"
+        if "count" in m or "dbco" in tc or "ctrl" in tc:
+            return "DB_COUNTS_TOTALS"
+        if "sort" in m or "sort" in tc or "control_break" in m:
+            return "SORT_CONTROL_BREAKS"
+        if "scri-02" in tc or "retention" in t or ("retention" in s and "output" not in s):
+            return "REPORT_RETENTION"
+        if "output" in m or "outp" in tc or "scri-01" in tc or "reporting portal" in t or "output format" in t:
+            return "REPORT_OUTPUT_DELIVERY"
+        if "special_processing" in m or "spec" in tc or "special" in s:
+            return "SPECIAL_PROCESSING"
+        if "label" in m or "labe" in tc or "column labels" in sc or "column_labels" in sc:
+            return "COLUMN_LABELS"
+        if "section_heading" in m or "sect" in tc or "section heading" in s:
+            return "REPORT_SECTION_HEADING"
+        if "look" in m or "look" in tc or "lookup" in sc:
+            clean_t = re.sub(r"[^A-Z0-9_]+", "_", t[:25].upper()).strip("_")
+            return f"LOOKUP_{clean_t}" if clean_t else "LOOKUP_FIELD"
+        if "date" in m or "date" in tc:
+            clean_t = re.sub(r"[^A-Z0-9_]+", "_", t[:25].upper()).strip("_")
+            return f"DATE_FORMAT_{clean_t}" if clean_t else "DATE_FORMAT"
+        if "dupl" in m or "dupl" in tc:
+            return "DUPLICATE_VALIDATION"
+        if "db_report" in m or "dbrv" in tc or "report_body_mapping" in sc:
+            return "REPORT_BODY_MAPPING"
+        clean_m = re.sub(r"[^A-Z0-9_]+", "_", m[:20].upper()).strip("_")
+        return f"GENERIC_{clean_m}" if clean_m else "GENERIC_SCENARIO"
+
+    @classmethod
     def calculate_semantic_crop_bounds(
         cls,
         pdf_path: Path,
@@ -1039,8 +1110,8 @@ class DSDSourceSnapshotService:
     ) -> Optional[Tuple[int, int, int, int]]:
         """
         Computes (px_x0, px_y0, px_x1, px_y1) pixel crop box for the requested semantic scenario.
-        Enforces Level 1 (exact row/table), Level 2 (bounded subsection), and Level 3 (fallback)
-        hierarchy to produce tight, scenario-focused crops matching localhost Tier 1 Playwright.
+        Enforces exact scenario bounding boxes derived directly from document text geometry.
+        Always uses full horizontal page width (no cropped margins/sides).
         Thread-safe and memory-safe.
         """
         if not pdf_path.exists() or pdf_path.stat().st_size == 0:
@@ -1070,75 +1141,46 @@ class DSDSourceSnapshotService:
                         left_x: float = 0.0
                         right_x: float = w
 
-                        # 1. RHDR: ONLY Report Header Region
-                        if (
-                            "report_header" in meth_l
-                            or "rhdr" in tc_l
-                            or "report_header" in scope_l
-                            or meth_l == "header_validation"
-                        ):
+                        # Determine target scenario
+                        semantic_target = cls._describe_semantic_target(
+                            methodology=methodology,
+                            section=section,
+                            target_field=target_field,
+                            test_case_id=test_case_id,
+                            evidence_scope=evidence_scope,
+                        )
+
+                        # 1. RHDR: Report Header ONLY
+                        if semantic_target == "REPORT_HEADER":
                             b_hdr_top = (
                                 cls._find_text_boxes_in_pdf(page, "Report Layout")
                                 or cls._find_text_boxes_in_pdf(page, "NH MMIS REPORT LAYOUT")
                                 or cls._find_text_boxes_in_pdf(page, "Enterprise")
                                 or cls._find_text_boxes_in_pdf(page, "Department of Health")
-                                or cls._find_text_boxes_in_pdf(page, "Department of Human Services")
                                 or cls._find_text_boxes_in_pdf(page, "Report Header")
                             )
-                            b_hdr_id = (
-                                cls._find_text_boxes_in_pdf(page, "Report ID")
-                                or cls._find_text_boxes_in_pdf(page, "Client Report ID")
-                                or cls._find_text_boxes_in_pdf(page, "File Name")
-                                or cls._find_text_boxes_in_pdf(page, "MM/DD/CCYY")
-                                or cls._find_text_boxes_in_pdf(page, "Report Definition")
-                            )
-                            if b_hdr_top or b_hdr_id:
-                                all_hdr = b_hdr_top + b_hdr_id
-                                top_y = max(b[3] for b in all_hdr) + 12.0
-
-                                b_below = (
-                                    cls._find_text_boxes_in_pdf(page, "License Status")
+                            if b_hdr_top:
+                                top_y = max(b[3] for b in b_hdr_top) + 12.0
+                                b_stop = (
+                                    cls._find_text_boxes_in_pdf(page, "Total Records Matched")
                                     or cls._find_text_boxes_in_pdf(page, "Total Errors")
                                     or cls._find_text_boxes_in_pdf(page, "Total Records")
+                                    or cls._find_text_boxes_in_pdf(page, "License Status")
                                     or cls._find_text_boxes_in_pdf(page, "Prov ID")
                                     or cls._find_text_boxes_in_pdf(page, "Prov Sort")
-                                    or cls._find_text_boxes_in_pdf(page, "Prov Lic")
-                                    or cls._find_text_boxes_in_pdf(page, "Error Field")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Body")
-                                    or cls._find_text_boxes_in_pdf(page, "Run Date")
                                 )
-                                if b_below:
-                                    # bottom_y = just above the first body-content element.
-                                    # min(b[1]) = the bottom edge (lowest Y) of b_below anchors,
-                                    # so subtracting a large padding keeps the white-space gap
-                                    # between header table and body visible in the crop.
-                                    candidate_bottom = min(b[1] for b in b_below) - 22.0
-                                    if b_hdr_id:
-                                        # Ensure we always reach at least below the Report ID row
-                                        min_id = min(b[1] for b in b_hdr_id) - 40.0
-                                        # Take the LOWER Y (further down the page)
-                                        bottom_y = min(candidate_bottom, min_id)
-                                    else:
-                                        bottom_y = candidate_bottom
+                                b_stop_below = [b for b in b_stop if b[3] < (top_y - 20.0)] if b_stop else []
+                                if b_stop_below:
+                                    bottom_y = max(b[3] for b in b_stop_below) + 10.0
                                 else:
-                                    if b_hdr_id:
-                                        # No body anchor found – add generous padding below Report ID
-                                        bottom_y = min(b[1] for b in b_hdr_id) - 55.0
+                                    b_id = cls._find_text_boxes_in_pdf(page, "Report ID") or cls._find_text_boxes_in_pdf(page, "File Name")
+                                    if b_id:
+                                        bottom_y = min(b[1] for b in b_id) - 35.0
                                     else:
-                                        bottom_y = min(b[1] for b in all_hdr) - 80.0
+                                        bottom_y = top_y - 220.0
 
-                                # Ensure the crop is never taller than a reasonable header block
-                                # but allow up to 320 pt to always capture full header + white gap
-                                if (top_y - bottom_y) > 320.0:
-                                    bottom_y = top_y - 290.0
-
-                        # 2. LAYO: FULL Report Layout ONLY (broad mockup grid)
-                        elif (
-                            "layout" in meth_l
-                            or "layo" in tc_l
-                            or "full_report_layout" in scope_l
-                            or "report_layout_full" in scope_l
-                        ):
+                        # 2. LAYO: FULL Report Layout (broad mockup grid)
+                        elif semantic_target == "FULL_REPORT_LAYOUT":
                             b_layo = (
                                 cls._find_text_boxes_in_pdf(page, "Report Layout")
                                 or cls._find_text_boxes_in_pdf(page, "NH MMIS REPORT LAYOUT")
@@ -1146,298 +1188,230 @@ class DSDSourceSnapshotService:
                             )
                             if b_layo:
                                 top_y = max(b[3] for b in b_layo) + 15.0
-                                b_rundate = cls._find_text_boxes_in_pdf(page, "Run Date") or cls._find_text_boxes_in_pdf(page, "Page:")
-                                if b_rundate:
-                                    bottom_y = min(b[1] for b in b_rundate) - 15.0
+                                b_footer = cls._find_text_boxes_in_pdf(page, "Run Date") or cls._find_text_boxes_in_pdf(page, "Page:")
+                                if b_footer:
+                                    bottom_y = min(b[1] for b in b_footer) - 15.0
                                 else:
-                                    bottom_y = min(b[1] for b in b_layo) - 550.0
+                                    bottom_y = 40.0
 
-                        # 3. DBRV: Full Mapping Rows ONLY (Strictly Excludes Footers & Footnotes)
-                        elif (
-                            "db_report" in meth_l
-                            or "dbrv" in tc_l
-                            or "report_body_mapping" in scope_l
-                            or "full mapping" in tf_l
-                        ):
-                            b_tbl_hdr = (
-                                cls._find_text_boxes_in_pdf(page, "Field Type")
-                                or cls._find_text_boxes_in_pdf(page, "Business Label")
-                                or cls._find_text_boxes_in_pdf(page, "Source Table")
-                                or cls._find_text_boxes_in_pdf(page, "Source Column")
-                                or cls._find_text_boxes_in_pdf(page, "Report Body")
+                        # 3. REPO: Report Definition / Metadata (Client Report ID MUST be included)
+                        elif semantic_target == "REPORT_METADATA":
+                            b_def = (
+                                cls._find_text_boxes_in_pdf(page, "NH MMIS REPORT DEFINITION")
+                                or cls._find_text_boxes_in_pdf(page, "Report Definition")
+                                or cls._find_text_boxes_in_pdf(page, "Report Type")
                             )
-                            if b_tbl_hdr:
-                                top_y = max(b[3] for b in b_tbl_hdr) + 12.0
-                                b_stop = (
-                                    cls._find_text_boxes_in_pdf(page, "Chart Footer")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Footnote")
-                                    or cls._find_text_boxes_in_pdf(page, "Footnote")
-                                    or cls._find_text_boxes_in_pdf(page, "Chart Footnote")
-                                )
-                                if b_stop:
-                                    bottom_y = max(b[3] for b in b_stop) + 10.0
+                            if b_def:
+                                top_y = max(b[3] for b in b_def) + 12.0
+                                b_next = cls._find_text_boxes_in_pdf(page, "Report Generation") or cls._find_text_boxes_in_pdf(page, "Report Generated By")
+                                b_next_below = [b for b in b_next if b[3] < (top_y - 30.0)] if b_next else []
+                                if b_next_below:
+                                    bottom_y = max(b[3] for b in b_next_below) + 8.0
                                 else:
-                                    bottom_y = min(b[1] for b in b_tbl_hdr) - 260.0
+                                    b_desc = cls._find_text_boxes_in_pdf(page, "Report Description")
+                                    if b_desc:
+                                        bottom_y = min(b[1] for b in b_desc) - 50.0
+                                    else:
+                                        bottom_y = top_y - 280.0
 
-                        # 4. LABE: Column Labels Table
-                        elif (
-                            "label" in meth_l
-                            or "labe" in tc_l
-                            or "column labels" in scope_l
-                            or "column_labels" in scope_l
-                            or "column labels" in tf_l
-                        ):
-                            b_lbl = (
-                                cls._find_text_boxes_in_pdf(page, "Business Label")
-                                or cls._find_text_boxes_in_pdf(page, "Field Type")
-                                or cls._find_text_boxes_in_pdf(page, "Column Labels")
-                                or cls._find_text_boxes_in_pdf(page, "Report Body")
-                            )
-                            if b_lbl:
-                                top_y = max(b[3] for b in b_lbl) + 12.0
-                                b_stop = (
-                                    cls._find_text_boxes_in_pdf(page, "Chart Footer")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Footnote")
-                                    or cls._find_text_boxes_in_pdf(page, "Footnote")
-                                )
-                                if b_stop:
-                                    bottom_y = max(b[3] for b in b_stop) + 10.0
-                                else:
-                                    bottom_y = min(b[1] for b in b_lbl) - 220.0
-
-                        # 5. SECT: Report Section Heading
-                        elif "section_heading" in meth_l or "sect" in tc_l or "section heading" in sec_l:
-                            b_sec = (
-                                cls._find_text_boxes_in_pdf(page, "Report Section Heading")
-                                or cls._find_text_boxes_in_pdf(page, "Section Heading")
-                                or cls._find_text_boxes_in_pdf(page, "Report Section")
-                            )
-                            if b_sec:
-                                top_y = max(b[3] for b in b_sec) + 15.0
-                                # Look for content that marks the END of the section heading table
+                        # 4. EXEC: Scheduled Execution / Generation
+                        elif semantic_target == "REPORT_EXECUTION_SCHEDULING":
+                            b_gen = cls._find_text_boxes_in_pdf(page, "Report Generation") or cls._find_text_boxes_in_pdf(page, "Report Generated By")
+                            if b_gen:
+                                top_y = max(b[3] for b in b_gen) + 15.0
                                 b_next = (
-                                    cls._find_text_boxes_in_pdf(page, "Chart Header (opt)")
-                                    or cls._find_text_boxes_in_pdf(page, "Chart Header")
-                                    or cls._find_text_boxes_in_pdf(page, "Chart Title")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Body")
-                                    or cls._find_text_boxes_in_pdf(page, "Business Label")
-                                    or cls._find_text_boxes_in_pdf(page, "Field Type")
+                                    cls._find_text_boxes_in_pdf(page, "Report Selection Criteria")
+                                    or cls._find_text_boxes_in_pdf(page, "Selection Criteria")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Field")
                                 )
-                                if b_next:
-                                    # The section heading table ends just ABOVE these next-section anchors.
-                                    # In PDF coords these anchors are BELOW (lower Y) the section table.
-                                    # bottom_y = just below the lowest element of b_next
-                                    bottom_y = min(b[1] for b in b_next) - 10.0
+                                b_next_below = [b for b in b_next if b[3] < (top_y - 30.0)] if b_next else []
+                                if b_next_below:
+                                    bottom_y = max(b[3] for b in b_next_below) + 8.0
                                 else:
-                                    bottom_y = min(b[1] for b in b_sec) - 160.0
+                                    bottom_y = min(b[1] for b in b_gen) - 140.0
 
-                        # 6. EXEC: Report Generation & Scheduling
-                        elif (
-                            "scheduled_execution" in meth_l
-                            or "exec" in tc_l
-                            or "frequency" in scope_l
-                            or "generation" in sec_l
-                        ):
-                            b_gen = cls._find_text_boxes_in_pdf(page, "Report Generation")
-                            b_freq = cls._find_text_boxes_in_pdf(page, "Frequency")
-                            if b_gen or b_freq:
-                                anchors = b_gen + b_freq
-                                top_y = max(b[3] for b in anchors) + 15.0
-                                b_next = (
-                                    cls._find_text_boxes_in_pdf(page, "Selection Criteria")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Control Breaks")
-                                )
-                                if b_next:
-                                    bottom_y = max(b[3] for b in b_next) + 10.0
-                                else:
-                                    bottom_y = min(b[1] for b in anchors) - 130.0
-
-                        # 7. SELC: Selection Criteria
-                        elif "selection_criteria" in meth_l or "selc" in tc_l or "selection" in sec_l:
-                            b_sel = cls._find_text_boxes_in_pdf(page, "Selection Criteria")
+                        # 5. SELC: Selection Criteria
+                        elif semantic_target == "SELECTION_CRITERIA":
+                            b_sel = (
+                                cls._find_text_boxes_in_pdf(page, "Report Selection Criteria")
+                                or cls._find_text_boxes_in_pdf(page, "Report Field")
+                                or cls._find_text_boxes_in_pdf(page, "Selection Criteria")
+                            )
                             if b_sel:
                                 top_y = max(b[3] for b in b_sel) + 15.0
                                 b_next = (
                                     cls._find_text_boxes_in_pdf(page, "Report Control Breaks")
                                     or cls._find_text_boxes_in_pdf(page, "Sort By")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Output")
+                                    or cls._find_text_boxes_in_pdf(page, "Control Break")
                                 )
-                                if b_next:
-                                    bottom_y = max(b[3] for b in b_next) + 10.0
+                                b_next_below = [b for b in b_next if b[3] < (top_y - 30.0)] if b_next else []
+                                if b_next_below:
+                                    bottom_y = max(b[3] for b in b_next_below) + 8.0
                                 else:
                                     bottom_y = min(b[1] for b in b_sel) - 150.0
 
-                        # 8. SORT: Sort By / Control Break
-                        elif "sort" in meth_l or "sort" in tc_l or "control break" in sec_l:
-                            b_sort = cls._find_text_boxes_in_pdf(page, "Sort By") or cls._find_text_boxes_in_pdf(page, "Control Break")
-                            if b_sort:
-                                top_y = max(b[3] for b in b_sort) + 15.0
-                                b_next = (
-                                    cls._find_text_boxes_in_pdf(page, "Total")
-                                    or cls._find_text_boxes_in_pdf(page, "Counts")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Output")
-                                )
-                                if b_next:
-                                    bottom_y = max(b[3] for b in b_next) + 10.0
-                                else:
-                                    bottom_y = min(b[1] for b in b_sort) - 120.0
-
-                        # 9. DBCO: Counts / Totals
-                        elif "count" in meth_l or "total" in meth_l or "dbco" in tc_l:
+                        # 6. DBCO: Counts / Totals
+                        elif semantic_target == "DB_COUNTS_TOTALS":
                             b_cnt = (
-                                cls._find_text_boxes_in_pdf(page, "Total Records")
-                                or cls._find_text_boxes_in_pdf(page, "Counts")
+                                cls._find_text_boxes_in_pdf(page, "Total Records Processed")
+                                or cls._find_text_boxes_in_pdf(page, "Total Records")
                                 or cls._find_text_boxes_in_pdf(page, "Total Errors")
+                                or cls._find_text_boxes_in_pdf(page, "Counts")
                                 or cls._find_text_boxes_in_pdf(page, "Total")
                             )
                             if b_cnt:
                                 top_y = max(b[3] for b in b_cnt) + 15.0
                                 b_next = cls._find_text_boxes_in_pdf(page, "Report Output") or cls._find_text_boxes_in_pdf(page, "Output Format")
-                                if b_next:
-                                    bottom_y = max(b[3] for b in b_next) + 10.0
+                                b_next_below = [b for b in b_next if b[3] < (top_y - 20.0)] if b_next else []
+                                if b_next_below:
+                                    bottom_y = max(b[3] for b in b_next_below) + 8.0
                                 else:
-                                    bottom_y = min(b[1] for b in b_cnt) - 120.0
+                                    bottom_y = min(b[1] for b in b_cnt) - 35.0
 
-                        # 10. OUTP: Report Output
-                        elif "output" in meth_l or "outp" in tc_l or "output" in sec_l:
-                            b_out = cls._find_text_boxes_in_pdf(page, "Report Output") or cls._find_text_boxes_in_pdf(page, "Output Format")
-                            if b_out:
-                                top_y = max(b[3] for b in b_out) + 15.0
-                                b_next = (
-                                    cls._find_text_boxes_in_pdf(page, "Report Retention")
-                                    or cls._find_text_boxes_in_pdf(page, "Retention")
-                                    or cls._find_text_boxes_in_pdf(page, "Special Processing")
-                                )
-                                if b_next:
-                                    bottom_y = max(b[3] for b in b_next) + 10.0
+                        # 7. SORT: Sort By / Control Break
+                        elif semantic_target == "SORT_CONTROL_BREAKS":
+                            b_sort = (
+                                cls._find_text_boxes_in_pdf(page, "Report Control Breaks")
+                                or cls._find_text_boxes_in_pdf(page, "Sort By")
+                                or cls._find_text_boxes_in_pdf(page, "Control Break")
+                            )
+                            if b_sort:
+                                top_y = max(b[3] for b in b_sort) + 15.0
+                                b_rows = cls._find_text_boxes_in_pdf(page, "Sort By") or cls._find_text_boxes_in_pdf(page, "Provider ID")
+                                if b_rows:
+                                    bottom_y = min(b[1] for b in b_rows) - 50.0
                                 else:
-                                    bottom_y = min(b[1] for b in b_out) - 140.0
+                                    bottom_y = min(b[1] for b in b_sort) - 120.0
 
-                        # 11. SCRI: Report Retention
-                        elif "script" in meth_l or "scri" in tc_l or "retention" in sec_l:
+                        # 8. SCRI-02 / RETENTION: Report Retention
+                        elif semantic_target == "REPORT_RETENTION":
                             b_ret = cls._find_text_boxes_in_pdf(page, "Report Retention") or cls._find_text_boxes_in_pdf(page, "Retention")
                             if b_ret:
                                 top_y = max(b[3] for b in b_ret) + 15.0
-                                b_next = (
-                                    cls._find_text_boxes_in_pdf(page, "Report Special Processing")
-                                    or cls._find_text_boxes_in_pdf(page, "Special Processing")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Layout")
-                                )
-                                if b_next:
-                                    bottom_y = max(b[3] for b in b_next) + 10.0
+                                b_next = cls._find_text_boxes_in_pdf(page, "Report Special Processing") or cls._find_text_boxes_in_pdf(page, "Special Processing")
+                                b_next_below = [b for b in b_next if b[3] < (top_y - 20.0)] if b_next else []
+                                if b_next_below:
+                                    bottom_y = max(b[3] for b in b_next_below) + 8.0
                                 else:
                                     bottom_y = min(b[1] for b in b_ret) - 140.0
 
-                        # 12. SPEC: Special Processing
-                        elif "special_processing" in meth_l or "spec" in tc_l or "special" in sec_l:
+                        # 9. OUTP / SCRI-01: Report Output
+                        elif semantic_target == "REPORT_OUTPUT_DELIVERY":
+                            b_out = cls._find_text_boxes_in_pdf(page, "Report Output") or cls._find_text_boxes_in_pdf(page, "Output Format")
+                            if b_out:
+                                top_y = max(b[3] for b in b_out) + 15.0
+                                b_next = cls._find_text_boxes_in_pdf(page, "Report Retention") or cls._find_text_boxes_in_pdf(page, "Retention")
+                                b_next_below = [b for b in b_next if b[3] < (top_y - 20.0)] if b_next else []
+                                if b_next_below:
+                                    bottom_y = max(b[3] for b in b_next_below) + 8.0
+                                else:
+                                    bottom_y = min(b[1] for b in b_out) - 140.0
+
+                        # 10. SPEC: Special Processing
+                        elif semantic_target == "SPECIAL_PROCESSING":
                             b_sp = cls._find_text_boxes_in_pdf(page, "Report Special Processing") or cls._find_text_boxes_in_pdf(page, "Special Processing")
                             if b_sp:
                                 top_y = max(b[3] for b in b_sp) + 15.0
-                                b_next = (
-                                    cls._find_text_boxes_in_pdf(page, "Report Specification")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Layout")
-                                    or cls._find_text_boxes_in_pdf(page, "Report Section")
-                                )
-                                if b_next:
-                                    bottom_y = max(b[3] for b in b_next) + 10.0
+                                b_text = cls._find_text_boxes_in_pdf(page, "database update") or cls._find_text_boxes_in_pdf(page, "Interface")
+                                b_text_below = [b for b in b_text if b[3] < top_y] if b_text else []
+                                if b_text_below:
+                                    bottom_y = min(b[1] for b in b_text_below) - 25.0
                                 else:
-                                    bottom_y = min(b[1] for b in b_sp) - 140.0
+                                    bottom_y = min(b[1] for b in b_sp) - 160.0
 
-                        # 12B. LOOK: Report Specification / Presentation Type / Lookup
-                        elif "look" in meth_l or "look" in tc_l or "lookup" in scope_l:
-                            b_spec = (
-                                cls._find_text_boxes_in_pdf(page, "Report Specification")
-                                or cls._find_text_boxes_in_pdf(page, "NH MMIS REPORT SPECIFICATION")
-                                or cls._find_text_boxes_in_pdf(page, "Presentation")
-                            )
-                            if b_spec:
-                                top_y = max(b[3] for b in b_spec) + 15.0
+                        # 11. SECT: Report Section Heading
+                        elif semantic_target == "REPORT_SECTION_HEADING":
+                            b_sec = cls._find_text_boxes_in_pdf(page, "Report Section Heading") or cls._find_text_boxes_in_pdf(page, "Section Heading")
+                            if b_sec:
+                                top_y = max(b[3] for b in b_sec) + 15.0
                                 b_next = (
-                                    cls._find_text_boxes_in_pdf(page, "Report Section Heading")
+                                    cls._find_text_boxes_in_pdf(page, "Chart Header")
                                     or cls._find_text_boxes_in_pdf(page, "Report Body")
-                                    or cls._find_text_boxes_in_pdf(page, "Chart Header")
+                                    or cls._find_text_boxes_in_pdf(page, "Field Type")
                                 )
-                                if b_next:
-                                    bottom_y = max(b[3] for b in b_next) + 10.0
+                                b_next_below = [b for b in b_next if b[3] < (top_y - 20.0)] if b_next else []
+                                if b_next_below:
+                                    bottom_y = max(b[3] for b in b_next_below) + 8.0
                                 else:
-                                    bottom_y = min(b[1] for b in b_spec) - 180.0
+                                    bottom_y = min(b[1] for b in b_sec) - 160.0
 
-                        # 12C. REPO: Report Definition / Report Metadata (report name, ID, description)
-                        elif (
-                            "report_name_description" in meth_l
-                            or "repo" in tc_l
-                            or "report metadata" in scope_l
-                            or "report_metadata" in scope_l
-                            or ("definition" in sec_l and "report title" in tf_l)
-                            or ("definition" in sec_l and "report name" in tf_l)
-                        ):
-                            # Find the Report Definition section banner
-                            b_def = (
-                                cls._find_text_boxes_in_pdf(page, "NH MMIS REPORT DEFINITION")
-                                or cls._find_text_boxes_in_pdf(page, "Report Definition")
-                                or cls._find_text_boxes_in_pdf(page, "REPORT DEFINITION")
+                        # 12. LABE: Column Labels Table
+                        elif semantic_target == "COLUMN_LABELS":
+                            b_lbl = (
+                                cls._find_text_boxes_in_pdf(page, "Business Label")
+                                or cls._find_text_boxes_in_pdf(page, "Field Type")
+                                or cls._find_text_boxes_in_pdf(page, "Report Body")
                             )
-                            # Always include Client Report ID / Report ID row
-                            b_rid = (
-                                cls._find_text_boxes_in_pdf(page, "Client Report ID")
-                                or cls._find_text_boxes_in_pdf(page, "Report ID")
-                            )
-                            # Find the bottom boundary: Report Description or Report Source State Code row
-                            b_desc = (
-                                cls._find_text_boxes_in_pdf(page, "Report Description")
-                                or cls._find_text_boxes_in_pdf(page, "Report Source State Code")
-                                or cls._find_text_boxes_in_pdf(page, "Client Line Of Business")
-                            )
-                            if b_def or b_rid:
-                                anchors_top = (b_def or []) + (b_rid or [])
-                                top_y = max(b[3] for b in anchors_top) + 12.0
-                                if b_desc:
-                                    bottom_y = min(b[1] for b in b_desc) - 18.0
-                                elif b_rid:
-                                    bottom_y = min(b[1] for b in b_rid) - 25.0
+                            if b_lbl:
+                                top_y = max(b[3] for b in b_lbl) + 15.0
+                                b_stop = (
+                                    cls._find_text_boxes_in_pdf(page, "Chart Footer")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Footnote")
+                                    or cls._find_text_boxes_in_pdf(page, "Footnote")
+                                )
+                                b_stop_below = [b for b in b_stop if b[3] < (top_y - 30.0)] if b_stop else []
+                                if b_stop_below:
+                                    bottom_y = max(b[3] for b in b_stop_below) + 8.0
                                 else:
-                                    bottom_y = min(b[1] for b in anchors_top) - 80.0
+                                    bottom_y = top_y - 220.0
 
-                        # 13. Level 1: LOOK / DATE / Target field exact row search
+                        # 13. DBRV: DB Report Data Validation / Full Mapping
+                        elif semantic_target == "REPORT_BODY_MAPPING":
+                            b_body = (
+                                cls._find_text_boxes_in_pdf(page, "Report Body")
+                                or cls._find_text_boxes_in_pdf(page, "Business Label")
+                                or cls._find_text_boxes_in_pdf(page, "Field Type")
+                            )
+                            if b_body:
+                                top_y = max(b[3] for b in b_body) + 15.0
+                                b_stop = (
+                                    cls._find_text_boxes_in_pdf(page, "Chart Footer")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Footnote")
+                                    or cls._find_text_boxes_in_pdf(page, "Footnote")
+                                )
+                                b_stop_below = [b for b in b_stop if b[3] < (top_y - 30.0)] if b_stop else []
+                                if b_stop_below:
+                                    bottom_y = max(b[3] for b in b_stop_below) + 8.0
+                                else:
+                                    bottom_y = 45.0
+
+                        # 14. Level 1: LOOKUP / DUPL / DATE / Target field exact row search
                         if top_y is None and tf_l and tf_l not in {"report header", "report layout", "full mapping", "report body"}:
-                            queries = [tf_l]
+                            queries = []
                             for part in re.split(r"[,;/\-]+", tf_l):
                                 p_c = part.strip()
-                                if len(p_c) >= 3 and p_c != tf_l and p_c not in {"desc", "code", "date", "type", "name", "text"}:
+                                if len(p_c) >= 3 and p_c not in {"desc", "code", "date", "type", "name", "text"}:
                                     queries.append(p_c)
+                            if tf_l not in queries:
+                                queries.insert(0, tf_l)
 
                             row_boxes = []
                             for q in queries:
                                 m = cls._find_text_boxes_in_pdf(page, q)
                                 if m:
                                     row_boxes.extend(m)
-                                    break
 
                             if row_boxes:
                                 match_top = max(b[3] for b in row_boxes)
                                 match_bottom = min(b[1] for b in row_boxes)
-
                                 tbl_headers = cls._find_text_boxes_in_pdf(page, "Business Label") or cls._find_text_boxes_in_pdf(page, "Field Type")
-                                header_above = [h_box for h_box in tbl_headers if 0 < (h_box[1] - match_top) < 140]
-
-                                if header_above:
-                                    top_y = max(h_box[3] for h_box in header_above) + 12.0
+                                headers_above = [h_box for h_box in tbl_headers if 0 < (h_box[1] - match_top) < 220] if tbl_headers else []
+                                if headers_above:
+                                    top_y = max(h_box[3] for h_box in headers_above) + 12.0
                                 else:
-                                    top_y = match_top + 18.0
-
+                                    top_y = match_top + 25.0
                                 bottom_y = match_bottom - 20.0
 
-                        # 14. Fallback: Section or Body fallback
+                        # 15. Fallback: Generic Body or Header fallback if still unset
                         if top_y is None:
-                            if "body" in sec_l or "dbrv" in tc_l or "labe" in tc_l or "mapping" in scope_l or "label" in meth_l:
-                                b_body = cls._find_text_boxes_in_pdf(page, "Report Body") or cls._find_text_boxes_in_pdf(page, "Business Label")
-                                if b_body:
-                                    top_y = max(b[3] for b in b_body) + 15.0
-                                    b_stop = cls._find_text_boxes_in_pdf(page, "Chart Footer") or cls._find_text_boxes_in_pdf(page, "Report Footnote")
-                                    if b_stop:
-                                        bottom_y = max(b[3] for b in b_stop) + 10.0
-                                    else:
-                                        bottom_y = min(b[1] for b in b_body) - 220.0
+                            b_fb = (
+                                cls._find_text_boxes_in_pdf(page, "Report Body")
+                                or cls._find_text_boxes_in_pdf(page, "Report Definition")
+                                or cls._find_text_boxes_in_pdf(page, "Report Layout")
+                            )
+                            if b_fb:
+                                top_y = max(b[3] for b in b_fb) + 15.0
+                                bottom_y = min(b[1] for b in b_fb) - 220.0
 
                         # Final validation and pixel translation
                         if top_y is not None and bottom_y is not None:
@@ -1543,7 +1517,14 @@ class DSDSourceSnapshotService:
                     "evidence_scope": evidence_scope,
                     "crop_version": cls.CURRENT_CROP_VERSION,
                     "is_semantic_crop": crop_box is not None,
-                    "crop_box": crop_box,
+                    "crop_box": list(crop_box) if crop_box else None,
+                    "semantic_target": cls._describe_semantic_target(
+                        methodology=methodology,
+                        section=section,
+                        target_field=target_field,
+                        test_case_id=test_case_id,
+                        evidence_scope=evidence_scope,
+                    ),
                 },
             )
             return True
