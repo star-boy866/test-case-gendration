@@ -37,6 +37,7 @@ class Role(Base):
     description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     is_system_role: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     permissions = relationship("Permission", secondary=role_permissions, backref="roles")
 
@@ -50,6 +51,7 @@ class Permission(Base):
     description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     module: Mapped[str] = mapped_column(String, nullable=False)  # test, user, approval, audit, session
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class AccessRequest(Base):

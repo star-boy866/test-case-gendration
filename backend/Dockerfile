@@ -19,7 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Create a non-root user with home directory
 RUN groupadd -r appgroup && useradd -r -m -g appgroup appuser
-ENV HOME=/home/appuser
+ENV HOME=/home/appuser \
+    APP_ENV=production \
+    ENVIRONMENT=production \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 

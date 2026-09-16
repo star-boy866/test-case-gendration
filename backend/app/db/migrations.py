@@ -50,6 +50,16 @@ def ensure_governance_schema(engine: Engine) -> None:
         existing_tables = set(insp.get_table_names())
 
         if "roles" in existing_tables:
+            # Ensure updated_at exists on roles table
+            role_cols = {col["name"] for col in insp.get_columns("roles")}
+            if "updated_at" not in role_cols:
+                try:
+                    conn.execute(text("ALTER TABLE roles ADD COLUMN updated_at TIMESTAMP NULL"))
+                    conn.commit()
+                    logger.info("Added column roles.updated_at via schema migration.")
+                except Exception as e:
+                    logger.warning(f"Could not add column roles.updated_at: {e}")
+
             try:
                 # Seed system roles
                 for role_name, desc in [
@@ -68,6 +78,16 @@ def ensure_governance_schema(engine: Engine) -> None:
                 logger.warning(f"Could not seed default roles: {e}")
 
         if "permissions" in existing_tables:
+            # Ensure updated_at exists on permissions table
+            perm_cols = {col["name"] for col in insp.get_columns("permissions")}
+            if "updated_at" not in perm_cols:
+                try:
+                    conn.execute(text("ALTER TABLE permissions ADD COLUMN updated_at TIMESTAMP NULL"))
+                    conn.commit()
+                    logger.info("Added column permissions.updated_at via schema migration.")
+                except Exception as e:
+                    logger.warning(f"Could not add column permissions.updated_at: {e}")
+
             try:
                 # Seed governance permissions
                 for code, name, desc, mod in [
