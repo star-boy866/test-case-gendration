@@ -45,7 +45,7 @@ class DSDSourceSnapshotService:
     Manages resolution, caching, and resilient generation of Source DSD Snapshots.
     """
 
-    CURRENT_CROP_VERSION = "v4_crop_fix"
+    CURRENT_CROP_VERSION = "v5_whitespace_fix"
     _pdfium_lock = threading.Lock()
 
     @classmethod
@@ -1097,7 +1097,8 @@ class DSDSourceSnapshotService:
                                 top_y = max(b[3] for b in all_hdr) + 12.0
 
                                 b_below = (
-                                    cls._find_text_boxes_in_pdf(page, "Total Errors")
+                                    cls._find_text_boxes_in_pdf(page, "License Status")
+                                    or cls._find_text_boxes_in_pdf(page, "Total Errors")
                                     or cls._find_text_boxes_in_pdf(page, "Total Records")
                                     or cls._find_text_boxes_in_pdf(page, "Prov ID")
                                     or cls._find_text_boxes_in_pdf(page, "Prov Sort")
@@ -1107,27 +1108,29 @@ class DSDSourceSnapshotService:
                                     or cls._find_text_boxes_in_pdf(page, "Run Date")
                                 )
                                 if b_below:
-                                    # candidate_bottom = top of the first body element below header
-                                    # Use max(top) of b_below anchors — these elements are BELOW header
-                                    # in page layout but have LOWER Y in PDF coords (bottom-left origin)
-                                    candidate_bottom = min(b[1] for b in b_below) - 8.0
+                                    # bottom_y = just above the first body-content element.
+                                    # min(b[1]) = the bottom edge (lowest Y) of b_below anchors,
+                                    # so subtracting a large padding keeps the white-space gap
+                                    # between header table and body visible in the crop.
+                                    candidate_bottom = min(b[1] for b in b_below) - 22.0
                                     if b_hdr_id:
-                                        # min(bottom) of Report ID row = lowest edge of that row
-                                        min_id = min(b[1] for b in b_hdr_id) - 15.0
-                                        # Take the LOWER Y (further down the page) so Report ID is included
+                                        # Ensure we always reach at least below the Report ID row
+                                        min_id = min(b[1] for b in b_hdr_id) - 40.0
+                                        # Take the LOWER Y (further down the page)
                                         bottom_y = min(candidate_bottom, min_id)
                                     else:
                                         bottom_y = candidate_bottom
                                 else:
                                     if b_hdr_id:
-                                        bottom_y = min(b[1] for b in b_hdr_id) - 18.0
+                                        # No body anchor found – add generous padding below Report ID
+                                        bottom_y = min(b[1] for b in b_hdr_id) - 55.0
                                     else:
-                                        bottom_y = min(b[1] for b in all_hdr) - 50.0
+                                        bottom_y = min(b[1] for b in all_hdr) - 80.0
 
                                 # Ensure the crop is never taller than a reasonable header block
-                                # but allow up to 280 pt to always capture Report ID + Dept rows
-                                if (top_y - bottom_y) > 280.0:
-                                    bottom_y = top_y - 250.0
+                                # but allow up to 320 pt to always capture full header + white gap
+                                if (top_y - bottom_y) > 320.0:
+                                    bottom_y = top_y - 290.0
 
                         # 2. LAYO: FULL Report Layout ONLY (broad mockup grid)
                         elif (
