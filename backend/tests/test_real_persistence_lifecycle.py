@@ -26,6 +26,7 @@ from app.models.governance import (
     AuditEvent, GeneratedScenario, ScenarioVersion, ScenarioFeedback, SourceSnapshot
 )
 from app.core.security import hash_password, create_access_token
+from app.services.dsd_source_snapshot_service import DSDSourceSnapshotService
 
 
 def test_complete_persistence_and_explorer_lifecycle(client: TestClient, db: Session):
@@ -174,8 +175,8 @@ def test_complete_persistence_and_explorer_lifecycle(client: TestClient, db: Ses
         page_number=3,
         semantic_target="Provider License Selection Criteria",
         crop_box=[72, 140, 540, 320],
-        renderer="v8_pypdfium2_semantic_crop",
-        crop_version="v8_exact_semantic_region",
+        renderer=DSDSourceSnapshotService.CURRENT_RENDERER_VERSION,
+        crop_version=DSDSourceSnapshotService.CURRENT_CROP_VERSION,
         snapshot_hash="hash_lifecycle_snap_123",
         is_semantic_crop=True,
         file_path="/mock/snapshots/snapshot_PRV009-LIFECYCLE-01_SELC.png",
@@ -210,7 +211,7 @@ def test_complete_persistence_and_explorer_lifecycle(client: TestClient, db: Ses
     found_snap = next((s for s in snaps_data["snapshots"] if s.get("evidence_id") == "snapshot_PRV009-LIFECYCLE-01_SELC"), None)
     assert found_snap is not None
     assert found_snap["page"] == 3
-    assert found_snap["renderer"] == "v8_pypdfium2_semantic_crop"
+    assert found_snap["renderer"] == DSDSourceSnapshotService.CURRENT_RENDERER_VERSION
 
     # D. Query database activity
     resp_act = client.get("/api/admin/database/activity", headers=headers)

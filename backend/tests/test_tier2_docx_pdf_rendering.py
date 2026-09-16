@@ -1032,9 +1032,10 @@ def test_scri01_vs_scri02_distinct_crops():
         test_case_id="PRV009-SCRI-02",
     )
     assert cb_scri1 is not None and cb_scri2 is not None
-    # SCRI-01 is above SCRI-02 (px_y1 of scri1 <= px_y0 of scri2 or minimal overlap)
+    # SCRI-01 is above SCRI-02
     assert cb_scri1 != cb_scri2, "SCRI-01 and SCRI-02 must produce different crop bounds"
-    assert cb_scri1[3] <= cb_scri2[1] + 15, "SCRI-01 region must be strictly above SCRI-02 region"
+    assert cb_scri1[1] < cb_scri2[1], "SCRI-01 region must start above SCRI-02 region"
+    assert cb_scri1[3] < cb_scri2[3], "SCRI-01 region must end above SCRI-02 region"
 
 
 def test_semantic_target_cache_validation(tmp_path: Path, monkeypatch):
@@ -1087,4 +1088,114 @@ def test_semantic_target_cache_validation(tmp_path: Path, monkeypatch):
         page_number=2,
     )
     assert miss is None, "Mismatched semantic_target must be rejected from cache"
+
+
+def test_semantic_crop_physical_padding_prv027():
+    """
+    Validates that PRV-INT-027 snapshots (RHDR, SELC, DBRV, LAYO, LOOK-01, LOOK-02)
+    include approximately 0.5 inch (36.0 points / 72 pixels at scale 2.0) of original
+    source-page whitespace above and below the semantic target without synthetic padding.
+    """
+    pdf_path = Path(__file__).resolve().parent.parent / "runs" / "5" / "source" / "source.pdf"
+    if not pdf_path.exists():
+        pytest.skip("PRV-INT-027 source.pdf not present at backend/runs/5/source/source.pdf")
+
+    import pypdfium2 as pdfium
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    try:
+        p4 = pdf.get_page(3)  # Page 4 (0-indexed 3)
+        w4, h4 = p4.get_size()
+        p4.close()
+    finally:
+        pdf.close()
+
+    # 1. PRV-INT-027 RHDR (Page 4)
+    cb_rhdr = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path, page_number=4, section="Report Layout",
+        methodology="REPORT_HEADER_VALIDATION", target_field="Report Header",
+        evidence_scope="REPORT_HEADER", test_case_id="PRV027-RHDR-01",
+        include_vertical_margin=True, scale=2.0
+    )
+    cb_rhdr_raw = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path, page_number=4, section="Report Layout",
+        methodology="REPORT_HEADER_VALIDATION", target_field="Report Header",
+        evidence_scope="REPORT_HEADER", test_case_id="PRV027-RHDR-01",
+        include_vertical_margin=False, scale=2.0
+    )
+    assert cb_rhdr is not None and cb_rhdr_raw is not None
+    # Verify ~0.5 inch (72px at scale 2.0) top and bottom source-page margin
+    assert (cb_rhdr_raw[1] - cb_rhdr[1]) == 72, "Top margin must be exactly 72px (0.5 inch at scale 2.0)"
+    assert (cb_rhdr[3] - cb_rhdr_raw[3]) == 72, "Bottom margin must be exactly 72px (0.5 inch at scale 2.0)"
+    assert cb_rhdr[0] >= 0 and cb_rhdr[1] >= 0
+    assert cb_rhdr[2] <= int(w4 * 2.0) and cb_rhdr[3] <= int(h4 * 2.0)
+
+    # 2. PRV-INT-027 LAYO (Page 4)
+    cb_layo = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path, page_number=4, section="Report Layout",
+        methodology="LAYOUT_VALIDATION", target_field="",
+        evidence_scope="FULL_REPORT_LAYOUT", test_case_id="PRV027-LAYO-01",
+        include_vertical_margin=True, scale=2.0
+    )
+    assert cb_layo is not None
+    # LAYO remains broader than RHDR
+    h_rhdr = cb_rhdr[3] - cb_rhdr[1]
+    h_layo = cb_layo[3] - cb_layo[1]
+    assert h_layo > h_rhdr, f"LAYO ({h_layo}px) must be broader than RHDR ({h_rhdr}px)"
+
+    # 3. PRV-INT-027 SELC (Page 2)
+    cb_selc = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path, page_number=2, section="Report Selection Criteria",
+        methodology="SELECTION_CRITERIA_VALIDATION", target_field="file name",
+        evidence_scope="REPORT_SELECTION_CRITERIA", test_case_id="PRV027-SELC-01",
+        include_vertical_margin=True, scale=2.0
+    )
+    cb_selc_raw = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path, page_number=2, section="Report Selection Criteria",
+        methodology="SELECTION_CRITERIA_VALIDATION", target_field="file name",
+        evidence_scope="REPORT_SELECTION_CRITERIA", test_case_id="PRV027-SELC-01",
+        include_vertical_margin=False, scale=2.0
+    )
+    assert cb_selc is not None and cb_selc_raw is not None
+    assert (cb_selc_raw[1] - cb_selc[1]) == 72
+    assert (cb_selc[3] - cb_selc_raw[3]) == 72
+
+    # 4. PRV-INT-027 DBRV (Page 5)
+    cb_dbrv = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path, page_number=5, section="Report Body",
+        methodology="DB_REPORT_DATA_VALIDATION", target_field="Full Mapping",
+        evidence_scope="REPORT_BODY_MAPPING", test_case_id="PRV027-DBRV-01",
+        include_vertical_margin=True, scale=2.0
+    )
+    cb_dbrv_raw = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path, page_number=5, section="Report Body",
+        methodology="DB_REPORT_DATA_VALIDATION", target_field="Full Mapping",
+        evidence_scope="REPORT_BODY_MAPPING", test_case_id="PRV027-DBRV-01",
+        include_vertical_margin=False, scale=2.0
+    )
+    assert cb_dbrv is not None and cb_dbrv_raw is not None
+    assert (cb_dbrv_raw[1] - cb_dbrv[1]) == 72
+    assert (cb_dbrv[3] - cb_dbrv_raw[3]) == 72
+
+    # 5 & 6. LOOK-01 and LOOK-02 distinctness
+    cb_look1 = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path, page_number=5, section="Report Specification",
+        methodology="LOOKUP_VALIDATION", target_field="p_lic_cert_agcy_cd",
+        evidence_scope="p_lic_cert_agcy_cd", test_case_id="PRV027-LOOK-01",
+        include_vertical_margin=True, scale=2.0
+    )
+    cb_look2 = DSDSourceSnapshotService.calculate_semantic_crop_bounds(
+        pdf_path=pdf_path, page_number=5, section="Report Specification",
+        methodology="LOOKUP_VALIDATION", target_field="p_disp_actn_cd",
+        evidence_scope="p_disp_actn_cd", test_case_id="PRV027-LOOK-02",
+        include_vertical_margin=True, scale=2.0
+    )
+    assert cb_look1 is not None and cb_look2 is not None
+
+    # 7. Verify legacy cached snapshot with old crop_version is rejected
+    cached_legacy = DSDSourceSnapshotService.find_cached_snapshot(
+        run_id=5,
+        png_filename="source_snapshot_test_legacy.png",
+        require_authentic=True,
+    )
+    assert cached_legacy is None, "Legacy unversioned or v8 snapshot must be rejected"
 

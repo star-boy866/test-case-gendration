@@ -41,8 +41,8 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 REPO_ROOT = BACKEND_DIR.parent
 
 
-CURRENT_CROP_VERSION = "v8_exact_semantic_region"
-CURRENT_RENDERER_VERSION = "v8_pypdfium2_semantic_crop"
+CURRENT_CROP_VERSION = "v9_exact_semantic_padded_05in"
+CURRENT_RENDERER_VERSION = "v9_pypdfium2_semantic_crop"
 
 
 class DSDSourceSnapshotService:
@@ -52,6 +52,8 @@ class DSDSourceSnapshotService:
 
     CURRENT_CROP_VERSION = CURRENT_CROP_VERSION
     CURRENT_RENDERER_VERSION = CURRENT_RENDERER_VERSION
+    CROP_VERTICAL_MARGIN_INCHES: float = 0.5
+    PDF_POINTS_PER_INCH: float = 72.0
     _pdfium_lock = threading.Lock()
 
     @classmethod
@@ -1262,6 +1264,7 @@ class DSDSourceSnapshotService:
         evidence_scope: str = "",
         test_case_id: str = "",
         scale: float = 2.0,
+        include_vertical_margin: bool = True,
     ) -> Optional[Tuple[int, int, int, int]]:
         """
         Computes (px_x0, px_y0, px_x1, px_y1) pixel crop box for the requested semantic scenario.
@@ -1578,8 +1581,16 @@ class DSDSourceSnapshotService:
                                 top_y = mid + 25.0
                                 bottom_y = mid - 25.0
 
-                            top_y = min(h - 10.0, top_y)
-                            bottom_y = max(10.0, bottom_y)
+                            if include_vertical_margin:
+                                # Add configurable physical-page margin (~0.5 inch of natural source-page whitespace)
+                                # Convert inches to PDF points (72.0 points per inch in standard PDF coordinate geometry)
+                                margin_pts = cls.CROP_VERTICAL_MARGIN_INCHES * cls.PDF_POINTS_PER_INCH
+                                top_y = top_y + margin_pts
+                                bottom_y = bottom_y - margin_pts
+
+                            # Clamp only to actual PDF page boundaries (0.0 to h)
+                            top_y = min(h, top_y)
+                            bottom_y = max(0.0, bottom_y)
 
                             px_x0 = max(0, int(left_x * scale))
                             px_y0 = max(0, int((h - top_y) * scale))
