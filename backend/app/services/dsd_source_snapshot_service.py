@@ -45,7 +45,7 @@ class DSDSourceSnapshotService:
     Manages resolution, caching, and resilient generation of Source DSD Snapshots.
     """
 
-    CURRENT_CROP_VERSION = "v3_tight_crop"
+    CURRENT_CROP_VERSION = "v4_crop_fix"
     _pdfium_lock = threading.Lock()
 
     @classmethod
@@ -1087,6 +1087,7 @@ class DSDSourceSnapshotService:
                             )
                             b_hdr_id = (
                                 cls._find_text_boxes_in_pdf(page, "Report ID")
+                                or cls._find_text_boxes_in_pdf(page, "Client Report ID")
                                 or cls._find_text_boxes_in_pdf(page, "File Name")
                                 or cls._find_text_boxes_in_pdf(page, "MM/DD/CCYY")
                                 or cls._find_text_boxes_in_pdf(page, "Report Definition")
@@ -1106,10 +1107,15 @@ class DSDSourceSnapshotService:
                                     or cls._find_text_boxes_in_pdf(page, "Run Date")
                                 )
                                 if b_below:
-                                    candidate_bottom = max(b[3] for b in b_below) + 8.0
+                                    # candidate_bottom = top of the first body element below header
+                                    # Use max(top) of b_below anchors — these elements are BELOW header
+                                    # in page layout but have LOWER Y in PDF coords (bottom-left origin)
+                                    candidate_bottom = min(b[1] for b in b_below) - 8.0
                                     if b_hdr_id:
+                                        # min(bottom) of Report ID row = lowest edge of that row
                                         min_id = min(b[1] for b in b_hdr_id) - 15.0
-                                        bottom_y = max(candidate_bottom, min_id)
+                                        # Take the LOWER Y (further down the page) so Report ID is included
+                                        bottom_y = min(candidate_bottom, min_id)
                                     else:
                                         bottom_y = candidate_bottom
                                 else:
@@ -1118,9 +1124,10 @@ class DSDSourceSnapshotService:
                                     else:
                                         bottom_y = min(b[1] for b in all_hdr) - 50.0
 
-                                # RHDR precision: strictly limit height to header block (~100-160 pt)
-                                if (top_y - bottom_y) > 165.0:
-                                    bottom_y = top_y - 130.0
+                                # Ensure the crop is never taller than a reasonable header block
+                                # but allow up to 280 pt to always capture Report ID + Dept rows
+                                if (top_y - bottom_y) > 280.0:
+                                    bottom_y = top_y - 250.0
 
                         # 2. LAYO: FULL Report Layout ONLY (broad mockup grid)
                         elif (
@@ -1204,16 +1211,22 @@ class DSDSourceSnapshotService:
                             )
                             if b_sec:
                                 top_y = max(b[3] for b in b_sec) + 15.0
+                                # Look for content that marks the END of the section heading table
                                 b_next = (
-                                    cls._find_text_boxes_in_pdf(page, "Report Body")
+                                    cls._find_text_boxes_in_pdf(page, "Chart Header (opt)")
+                                    or cls._find_text_boxes_in_pdf(page, "Chart Header")
+                                    or cls._find_text_boxes_in_pdf(page, "Chart Title")
+                                    or cls._find_text_boxes_in_pdf(page, "Report Body")
                                     or cls._find_text_boxes_in_pdf(page, "Business Label")
                                     or cls._find_text_boxes_in_pdf(page, "Field Type")
-                                    or cls._find_text_boxes_in_pdf(page, "Chart Header")
                                 )
                                 if b_next:
-                                    bottom_y = max(b[3] for b in b_next) + 8.0
+                                    # The section heading table ends just ABOVE these next-section anchors.
+                                    # In PDF coords these anchors are BELOW (lower Y) the section table.
+                                    # bottom_y = just below the lowest element of b_next
+                                    bottom_y = min(b[1] for b in b_next) - 10.0
                                 else:
-                                    bottom_y = min(b[1] for b in b_sec) - 120.0
+                                    bottom_y = min(b[1] for b in b_sec) - 160.0
 
                         # 6. EXEC: Report Generation & Scheduling
                         elif (
@@ -1345,6 +1358,42 @@ class DSDSourceSnapshotService:
                                     bottom_y = max(b[3] for b in b_next) + 10.0
                                 else:
                                     bottom_y = min(b[1] for b in b_spec) - 180.0
+
+                        # 12C. REPO: Report Definition / Report Metadata (report name, ID, description)
+                        elif (
+                            "report_name_description" in meth_l
+                            or "repo" in tc_l
+                            or "report metadata" in scope_l
+                            or "report_metadata" in scope_l
+                            or ("definition" in sec_l and "report title" in tf_l)
+                            or ("definition" in sec_l and "report name" in tf_l)
+                        ):
+                            # Find the Report Definition section banner
+                            b_def = (
+                                cls._find_text_boxes_in_pdf(page, "NH MMIS REPORT DEFINITION")
+                                or cls._find_text_boxes_in_pdf(page, "Report Definition")
+                                or cls._find_text_boxes_in_pdf(page, "REPORT DEFINITION")
+                            )
+                            # Always include Client Report ID / Report ID row
+                            b_rid = (
+                                cls._find_text_boxes_in_pdf(page, "Client Report ID")
+                                or cls._find_text_boxes_in_pdf(page, "Report ID")
+                            )
+                            # Find the bottom boundary: Report Description or Report Source State Code row
+                            b_desc = (
+                                cls._find_text_boxes_in_pdf(page, "Report Description")
+                                or cls._find_text_boxes_in_pdf(page, "Report Source State Code")
+                                or cls._find_text_boxes_in_pdf(page, "Client Line Of Business")
+                            )
+                            if b_def or b_rid:
+                                anchors_top = (b_def or []) + (b_rid or [])
+                                top_y = max(b[3] for b in anchors_top) + 12.0
+                                if b_desc:
+                                    bottom_y = min(b[1] for b in b_desc) - 18.0
+                                elif b_rid:
+                                    bottom_y = min(b[1] for b in b_rid) - 25.0
+                                else:
+                                    bottom_y = min(b[1] for b in anchors_top) - 80.0
 
                         # 13. Level 1: LOOK / DATE / Target field exact row search
                         if top_y is None and tf_l and tf_l not in {"report header", "report layout", "full mapping", "report body"}:
