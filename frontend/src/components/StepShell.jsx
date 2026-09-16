@@ -1,12 +1,12 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { 
-  LogOut, 
-  Sparkles, 
-  Users, 
-  Menu, 
-  X, 
-  Activity, 
+import {
+  LogOut,
+  Sparkles,
+  Users,
+  Menu,
+  X,
+  Activity,
   ChevronLeft,
   ChevronRight,
   Shield,
@@ -92,6 +92,11 @@ export default function StepShell({ children }) {
   const isDatabaseActive = location.pathname === "/admin/database";
   const isSessionsActive = location.pathname === "/sessions";
 
+  const canAccessDatabase = (
+    (user?.role || "").toLowerCase().replace("-", "_") === "admin" ||
+    ((user?.role || "").toLowerCase().replace("-", "_") === "standard_admin" && Boolean(user?.has_database_read))
+  ) && user?.status === "ACTIVE";
+
   const getRoleBadgeStyle = (role) => {
     switch (role) {
       case "standard_admin":
@@ -107,10 +112,10 @@ export default function StepShell({ children }) {
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[#f8fafc] text-slate-900">
-      
+
       {/* Mobile Sidebar Backdrop Overlay */}
       {mobileOpen && (
-        <div 
+        <div
           className="fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-xs md:hidden"
           onClick={() => setMobileOpen(false)}
         />
@@ -126,7 +131,7 @@ export default function StepShell({ children }) {
       >
         {/* Top Branding & Navigation Area */}
         <div className="flex flex-col min-h-0">
-          
+
           {/* Brand Header */}
           <div className={`flex h-[52px] items-center border-b border-slate-100 px-3 ${collapsed ? "justify-center" : "justify-between"}`}>
             <div className="flex items-center gap-2.5 min-w-0">
@@ -189,7 +194,7 @@ export default function StepShell({ children }) {
 
           {/* Primary Navigation Menu */}
           <div className={`py-3 space-y-1 ${collapsed ? "px-2" : "px-3"}`}>
-            
+
             {!collapsed && (
               <div className="px-2.5 pb-1 pt-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
                 Core Workspace
@@ -203,8 +208,8 @@ export default function StepShell({ children }) {
               title="Test Case Studio"
               aria-label="Test Case Studio"
               className={`group flex items-center rounded-xl transition-all duration-150 ${
-                collapsed 
-                  ? "justify-center h-10 w-10 mx-auto" 
+                collapsed
+                  ? "justify-center h-10 w-10 mx-auto"
                   : "justify-between px-3 py-2 text-xs font-semibold"
               } ${
                 isCognosActive
@@ -236,8 +241,8 @@ export default function StepShell({ children }) {
               title="Dashboard"
               aria-label="Dashboard"
               className={`group flex items-center rounded-xl transition-all duration-150 ${
-                collapsed 
-                  ? "justify-center h-10 w-10 mx-auto" 
+                collapsed
+                  ? "justify-center h-10 w-10 mx-auto"
                   : "justify-between px-3 py-2 text-xs font-semibold"
               } ${
                 isDashboardActive
@@ -269,8 +274,8 @@ export default function StepShell({ children }) {
               title="Test Cases"
               aria-label="Test Cases"
               className={`group flex items-center rounded-xl transition-all duration-150 ${
-                collapsed 
-                  ? "justify-center h-10 w-10 mx-auto" 
+                collapsed
+                  ? "justify-center h-10 w-10 mx-auto"
                   : "justify-between px-3 py-2 text-xs font-semibold"
               } ${
                 isScenariosActive
@@ -302,8 +307,8 @@ export default function StepShell({ children }) {
               title="Evidence"
               aria-label="Evidence"
               className={`group flex items-center rounded-xl transition-all duration-150 ${
-                collapsed 
-                  ? "justify-center h-10 w-10 mx-auto" 
+                collapsed
+                  ? "justify-center h-10 w-10 mx-auto"
                   : "justify-between px-3 py-2 text-xs font-semibold"
               } ${
                 isEvidenceActive
@@ -338,8 +343,8 @@ export default function StepShell({ children }) {
               title="Upload New DSD"
               aria-label="Upload New DSD"
               className={`group flex items-center rounded-xl transition-all duration-150 ${
-                collapsed 
-                  ? "justify-center h-10 w-10 mx-auto" 
+                collapsed
+                  ? "justify-center h-10 w-10 mx-auto"
                   : "justify-between px-3 py-2 text-xs font-semibold"
               } text-slate-600 hover:bg-slate-100/70 hover:text-slate-900`}
             >
@@ -367,8 +372,8 @@ export default function StepShell({ children }) {
                   title="Access Approvals"
                   aria-label="Access Approvals"
                   className={`group flex items-center rounded-xl transition-all duration-150 ${
-                    collapsed 
-                      ? "justify-center h-10 w-10 mx-auto" 
+                    collapsed
+                      ? "justify-center h-10 w-10 mx-auto"
                       : "justify-between px-3 py-2 text-xs font-semibold"
                   } ${
                     isApprovalsActive
@@ -400,8 +405,8 @@ export default function StepShell({ children }) {
                   title="Users & Roles"
                   aria-label="Users & Roles"
                   className={`group flex items-center rounded-xl transition-all duration-150 ${
-                    collapsed 
-                      ? "justify-center h-10 w-10 mx-auto" 
+                    collapsed
+                      ? "justify-center h-10 w-10 mx-auto"
                       : "justify-between px-3 py-2 text-xs font-semibold"
                   } ${
                     isUsersActive
@@ -433,8 +438,8 @@ export default function StepShell({ children }) {
                   title="Audit Trail"
                   aria-label="Audit Trail"
                   className={`group flex items-center rounded-xl transition-all duration-150 ${
-                    collapsed 
-                      ? "justify-center h-10 w-10 mx-auto" 
+                    collapsed
+                      ? "justify-center h-10 w-10 mx-auto"
                       : "justify-between px-3 py-2 text-xs font-semibold"
                   } ${
                     isAuditActive
@@ -459,38 +464,41 @@ export default function StepShell({ children }) {
                   )}
                 </Link>
 
-                {/* 5. Database Explorer (Admin Only) */}
-                <Link
-                  to="/admin/database"
-                  onClick={() => setMobileOpen(false)}
-                  title="Database Explorer"
-                  aria-label="Database Explorer"
-                  className={`group flex items-center rounded-xl transition-all duration-150 ${
-                    collapsed 
-                      ? "justify-center h-10 w-10 mx-auto" 
-                      : "justify-between px-3 py-2 text-xs font-semibold"
-                  } ${
-                    isDatabaseActive
-                      ? "bg-blue-50/80 text-blue-700 font-bold"
-                      : "text-slate-600 hover:bg-slate-100/70 hover:text-slate-900"
-                  }`}
-                >
-                  <div className={`flex items-center gap-2.5 min-w-0 ${collapsed ? "justify-center" : ""}`}>
-                    <div
-                      className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors shrink-0 ${
-                        isDatabaseActive
-                          ? "bg-blue-600 text-white shadow-2xs"
-                          : "bg-slate-100 text-slate-500 group-hover:bg-slate-200/80 group-hover:text-slate-700"
-                      }`}
-                    >
-                      <Database className="h-3.5 w-3.5" />
+                {/* 5. Database Connection & Explorer (Admin Only) */}
+                {canAccessDatabase && (
+                  <Link
+                    to="/admin/database"
+                    onClick={() => setMobileOpen(false)}
+                    title="Database Connection & Explorer"
+                    aria-label="Database Connection & Explorer"
+                    className={`group flex items-center rounded-xl transition-all duration-150 ${
+                      collapsed
+                        ? "justify-center h-10 w-10 mx-auto"
+                        : "justify-between px-3 py-2 text-xs font-semibold"
+                    } ${
+                      isDatabaseActive
+                        ? "bg-blue-50/80 text-blue-700 font-bold"
+                        : "text-slate-600 hover:bg-slate-100/70 hover:text-slate-900"
+                    }`}
+                  >
+                    <div className={`flex items-center gap-2.5 min-w-0 ${collapsed ? "justify-center" : ""}`}>
+                      <div
+                        className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors shrink-0 ${
+                          isDatabaseActive
+                            ? "bg-blue-600 text-white shadow-2xs"
+                            : "bg-slate-100 text-slate-500 group-hover:bg-slate-200/80 group-hover:text-slate-700"
+                        }`}
+                      >
+                        <Database className="h-3.5 w-3.5" />
+                      </div>
+                      {!collapsed && <span className="truncate">Database Connection & Explorer</span>}
                     </div>
-                    {!collapsed && <span className="truncate">Database Explorer</span>}
-                  </div>
-                  {!collapsed && isDatabaseActive && (
-                    <span className="h-1.5 w-1.5 rounded-full bg-blue-600 shrink-0" />
-                  )}
-                </Link>
+                    {!collapsed && isDatabaseActive && (
+                      <span className="h-1.5 w-1.5 rounded-full bg-blue-600 shrink-0" />
+                    )}
+                  </Link>
+                )}
+
 
                 {/* Security Section (Admin only) */}
                 {!collapsed && (
@@ -506,8 +514,8 @@ export default function StepShell({ children }) {
                   title="Active Sessions"
                   aria-label="Active Sessions"
                   className={`group flex items-center rounded-xl transition-all duration-150 ${
-                    collapsed 
-                      ? "justify-center h-10 w-10 mx-auto" 
+                    collapsed
+                      ? "justify-center h-10 w-10 mx-auto"
                       : "justify-between px-3 py-2 text-xs font-semibold"
                   } ${
                     isSessionsActive
@@ -541,7 +549,7 @@ export default function StepShell({ children }) {
         <div className={`border-t border-slate-100 bg-slate-50/50 ${collapsed ? "p-2 space-y-2 flex flex-col items-center" : "p-3 space-y-2.5"}`}>
           {user && (
             collapsed ? (
-              <div 
+              <div
                 className="flex h-10 w-10 items-center justify-center rounded-xl bg-white border border-slate-200/80 shadow-2xs font-bold text-xs uppercase text-slate-700 cursor-default"
                 title={`Signed in as ${user.username} (${user.role})`}
                 aria-label={`Signed in as ${user.username} (${user.role})`}
@@ -574,8 +582,8 @@ export default function StepShell({ children }) {
             aria-label="Sign Out"
             title="Sign Out"
             className={`flex items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 hover:border-red-200 hover:bg-red-50 hover:text-red-700 transition-all shadow-2xs group focus:outline-none focus:ring-2 focus:ring-red-500/20 ${
-              collapsed 
-                ? "h-10 w-10" 
+              collapsed
+                ? "h-10 w-10"
                 : "w-full gap-2 px-3 py-2 text-xs font-semibold"
             }`}
           >
@@ -589,11 +597,11 @@ export default function StepShell({ children }) {
       {/* MAIN VIEWPORT AREA                                               */}
       {/* ================================================================ */}
       <div className="flex flex-1 flex-col overflow-hidden min-w-0 min-h-0">
-        
+
         {/* Compact Top Header Bar (52px) */}
         <header className="flex h-[52px] items-center justify-between border-b border-slate-200 bg-white px-4 sm:px-5 shrink-0 shadow-2xs z-30">
           <div className="flex items-center gap-3 min-w-0">
-            
+
             {/* Hamburger Button for Mobile */}
             <button
               type="button"

@@ -394,6 +394,12 @@ export const deleteTestCaseRun = (runId, reason) =>
   api.delete(`/admin/runs/${runId}`, { params: { reason } });
 
 // ── Database Explorer & Governance API ────────────────────────────────────────
+export const getDatabaseStatus = () =>
+  api.get("/admin/database/status");
+
+export const testDatabaseConnection = () =>
+  api.post("/admin/database/test-connection");
+
 export const getDatabaseTables = () =>
   api.get("/admin/database/tables");
 
@@ -419,6 +425,18 @@ export const exportTableRows = async (tableName, format = "csv") => {
   window.URL.revokeObjectURL(url);
 };
 
+export const getDatabaseActivity = (params = {}) =>
+  api.get("/admin/database/activity", { params });
+
+export const getSourceSnapshots = (params = {}) =>
+  api.get("/admin/database/source-snapshots", { params });
+
+export const getScenarioVersions = (testCaseId) =>
+  api.get(`/admin/database/scenario-versions/${encodeURIComponent(testCaseId)}`);
+
+export const getLearningScenarios = (params = {}) =>
+  api.get("/admin/database/learning-scenarios", { params });
+
 export const getDatabaseAuditSummary = () =>
   api.get("/admin/database/audit-summary");
 
@@ -426,4 +444,3 @@ export const getScenarioLearningSummary = () =>
   api.get("/admin/learning/summary");
 
 export default api;
-

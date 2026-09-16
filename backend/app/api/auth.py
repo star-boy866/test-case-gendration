@@ -642,6 +642,23 @@ def me(current_user: CurrentUser = Depends(get_current_user), db: Session = Depe
     if not user:
         raise HTTPException(status_code=404, detail="User account not found.")
 
+    has_db_read = False
+    norm_role = (user.role or "").lower().replace("-", "_")
+    if norm_role == "admin":
+        has_db_read = True
+    elif norm_role == "standard_admin":
+        try:
+            from app.models.rbac import role_permissions, Permission, Role
+            has_db_read = bool(
+                db.query(Permission.id)
+                .join(role_permissions, Permission.id == role_permissions.c.permission_id)
+                .join(Role, role_permissions.c.role_id == Role.id)
+                .filter(Role.name == "standard_admin", Permission.code == "database:read")
+                .first()
+            )
+        except Exception:
+            has_db_read = False
+
     return {
         "id": user.id,
         "username": user.username,
@@ -651,4 +668,5 @@ def me(current_user: CurrentUser = Depends(get_current_user), db: Session = Depe
         "must_change_password": user.must_change_password,
         "mfa_enabled": user.mfa_enabled,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        "has_database_read": has_db_read,
     }

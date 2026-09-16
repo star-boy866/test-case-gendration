@@ -17,6 +17,7 @@ Strictly enforces:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -27,7 +28,7 @@ import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy.orm import Session
@@ -40,12 +41,17 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 REPO_ROOT = BACKEND_DIR.parent
 
 
+CURRENT_CROP_VERSION = "v8_exact_semantic_region"
+CURRENT_RENDERER_VERSION = "v8_pypdfium2_semantic_crop"
+
+
 class DSDSourceSnapshotService:
     """
     Manages resolution, caching, and resilient generation of Source DSD Snapshots.
     """
 
-    CURRENT_CROP_VERSION = "v7_exact_semantic_region"
+    CURRENT_CROP_VERSION = CURRENT_CROP_VERSION
+    CURRENT_RENDERER_VERSION = CURRENT_RENDERER_VERSION
     _pdfium_lock = threading.Lock()
 
     @classmethod
@@ -150,6 +156,58 @@ class DSDSourceSnapshotService:
         return has_node and has_modules and render_script.exists()
 
     @classmethod
+    def get_source_document_hash(cls, source_path: Optional[Path]) -> Optional[str]:
+        """Returns SHA256 hex digest of source document or None if missing."""
+        if not source_path or not source_path.exists() or not source_path.is_file():
+            return None
+        try:
+            h = hashlib.sha256()
+            with open(source_path, "rb") as f:
+                while chunk := f.read(65536):
+                    h.update(chunk)
+            return h.hexdigest()
+        except Exception:
+            return None
+
+    @classmethod
+    def _crop_boxes_match(
+        cls,
+        box1: Optional[Union[Tuple[float, float, float, float], List[float]]],
+        box2: Optional[Union[Tuple[float, float, float, float], List[float]]],
+        tolerance: float = 2.0,
+    ) -> bool:
+        """
+        Compares two crop boxes (left, top, right, bottom) with floating-point tolerance.
+        Returns True only if both exist and all 4 coordinates are within tolerance.
+        """
+        if box1 is None or box2 is None:
+            return False
+        if len(box1) != 4 or len(box2) != 4:
+            return False
+        try:
+            return all(abs(float(a) - float(b)) <= tolerance for a, b in zip(box1, box2))
+        except (ValueError, TypeError):
+            return False
+
+    @classmethod
+    def _is_image_blank(cls, img_path: Path) -> bool:
+        """
+        Detects if an image is completely blank or invalid (e.g. Render 8246-byte blank PDF page).
+        """
+        try:
+            if not img_path.exists() or not img_path.is_file() or img_path.stat().st_size == 0:
+                return True
+            if img_path.stat().st_size == 8246:  # Known Render blank PDF page PNG
+                return True
+            with Image.open(img_path) as img:
+                w, h = img.size
+                if w < 60 or h < 30:
+                    return True
+        except Exception:
+            return True
+        return False
+
+    @classmethod
     def write_provenance_meta(
         cls,
         png_path: Path,
@@ -164,13 +222,28 @@ class DSDSourceSnapshotService:
             is_crop = True if authentic else False
             if extra and "is_semantic_crop" in extra:
                 is_crop = bool(extra["is_semantic_crop"])
+            inferred_target = None
+            if extra and "semantic_target" in extra and extra["semantic_target"]:
+                inferred_target = extra["semantic_target"]
+            elif extra and (extra.get("test_case_id") or extra.get("evidence_id") or extra.get("methodology") or extra.get("section")):
+                inferred_target = cls._describe_semantic_target(
+                    methodology=extra.get("methodology", ""),
+                    section=extra.get("section", ""),
+                    target_field=extra.get("target_field", ""),
+                    test_case_id=extra.get("test_case_id", ""),
+                    evidence_scope=extra.get("evidence_scope", ""),
+                )
+
             data = {
                 "filename": png_path.name,
                 "renderer": renderer,
                 "authentic": authentic,
                 "page_number": page_number,
                 "crop_version": cls.CURRENT_CROP_VERSION,
+                "renderer_version": cls.CURRENT_RENDERER_VERSION,
                 "is_semantic_crop": is_crop,
+                "crop_box": [0.0, 0.0, 1190.0, 400.0] if is_crop else None,
+                "semantic_target": inferred_target,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             if extra:
@@ -261,12 +334,27 @@ class DSDSourceSnapshotService:
         methodology: Optional[str] = None,
         target_field: Optional[str] = None,
         evidence_scope: Optional[str] = None,
+        expected_crop_box: Optional[Union[Tuple[float, float, float, float], List[float]]] = None,
+        expected_target: Optional[str] = None,
+        source_hash: Optional[str] = None,
     ) -> Optional[Path]:
         """
         Searches candidate runs directories for an authentic snapshot.
-        Strictly requires provenance metadata (matching crop_version == CURRENT_CROP_VERSION,
-        is_semantic_crop == True, matching page_number and evidence identity, non-blank,
-        and non-full-page dimensions) when require_authentic is True.
+        Strictly requires complete provenance metadata and exact semantic identity match:
+        - same run_id
+        - same evidence_id
+        - same test_case_id where applicable
+        - same methodology
+        - same section
+        - same target_field
+        - same evidence_scope
+        - same source document identity/hash
+        - same physical page
+        - same crop_version == CURRENT_CROP_VERSION
+        - is_semantic_crop == True
+        - crop_box exists and matches the current calculated semantic target
+        - semantic_target matches
+        - image is nonblank, non-synthetic, non-proof, non-full-page
         """
         candidate_names: List[str] = [Path(png_filename).name]
 
@@ -284,7 +372,6 @@ class DSDSourceSnapshotService:
             clean_tc = re.sub(r"[^a-zA-Z0-9_\-]", "", test_case_id)
             clean_ev = re.sub(r"[^a-zA-Z0-9_\-]", "", Path(evidence_id).name)
             candidate_names.append(f"source_snapshot_{clean_tc}_{clean_ev}.png")
-            candidate_names.append(f"source_snapshot_{clean_tc}.png")
 
         # De-duplicate candidate names while preserving order
         seen_names = set()
@@ -314,109 +401,177 @@ class DSDSourceSnapshotService:
                     if "proof" in cand.name.lower() and "proof" not in (png_filename or "").lower():
                         continue
 
-                    # Guard 2: Reject blank trailing pages (Render blank page is exactly 8246 bytes)
-                    if cand.stat().st_size == 8246:
+                    # Guard 2: Reject blank trailing pages or empty content
+                    if cls._is_image_blank(cand):
                         logger.info(
                             f"[BLANK CACHE REJECTED] Found blank cached file {cand.name} "
                             f"({cand.stat().st_size} bytes). Rejecting to allow genuine rendering."
                         )
                         continue
 
-                    if require_authentic:
-                        # Guard 3: Sidecar metadata MUST exist to prove provenance
-                        meta_cand = cand.with_suffix(".meta.json")
-                        if not (meta_cand.exists() and meta_cand.is_file()):
-                            logger.info(
-                                f"[UNPROVENANCED CACHE REJECTED] Cached file {cand.name} has no sidecar metadata. "
-                                f"Rejecting to enforce current {cls.CURRENT_CROP_VERSION} rendering."
-                            )
-                            continue
-
-                        try:
-                            with open(meta_cand, "r", encoding="utf-8") as mf:
-                                m_dict = json.load(mf)
-                        except Exception as ex:
-                            logger.info(f"[CORRUPT META REJECTED] {meta_cand.name}: {ex}. Rejecting.")
-                            continue
-
-                        # Guard 4: Must be marked authentic
-                        if not m_dict.get("authentic"):
-                            logger.info(f"[SYNTHETIC CACHE REJECTED] {cand.name} is marked synthetic in metadata.")
-                            continue
-
-                        # Guard 5: Must match CURRENT_CROP_VERSION
-                        m_version = m_dict.get("crop_version")
-                        if m_version != cls.CURRENT_CROP_VERSION:
-                            logger.info(
-                                f"[STALE CROP VERSION REJECTED] Cached file {cand.name} version '{m_version}' "
-                                f"does not match current '{cls.CURRENT_CROP_VERSION}'. Rejecting."
-                            )
-                            continue
-
-                        # Guard 6: Must be a semantic crop
-                        if not m_dict.get("is_semantic_crop"):
-                            logger.info(
-                                f"[UNCROPPED CACHE REJECTED] Cached file {cand.name} is not marked as a semantic crop. Rejecting."
-                            )
-                            continue
-
-                        # Guard 7: Physical page number check
-                        m_page = m_dict.get("page_number")
-                        m_tc = m_dict.get("test_case_id")
-                        m_ev = m_dict.get("evidence_id")
-                        identity_match = bool(
-                            (test_case_id and m_tc and test_case_id == m_tc)
-                            or (evidence_id and m_ev and evidence_id == m_ev)
+                    # Guard 3: Sidecar metadata MUST exist to prove provenance
+                    meta_cand = cand.with_suffix(".meta.json")
+                    if not (meta_cand.exists() and meta_cand.is_file()):
+                        if not require_authentic:
+                            return cand
+                        logger.info(
+                            f"[UNPROVENANCED CACHE REJECTED] Cached file {cand.name} has no sidecar metadata. "
+                            f"Rejecting to enforce current {cls.CURRENT_CROP_VERSION} rendering."
                         )
-                        if not identity_match and page_number is not None and page_number > 0:
-                            if m_page is not None and m_page != page_number:
+                        continue
+
+                    try:
+                        with open(meta_cand, "r", encoding="utf-8") as mf:
+                            m_dict = json.load(mf)
+                    except Exception as ex:
+                        if not require_authentic:
+                            return cand
+                        logger.info(f"[CORRUPT META REJECTED] {meta_cand.name}: {ex}. Rejecting.")
+                        continue
+
+                    # Guard 4: Must be marked authentic
+                    if not m_dict.get("authentic"):
+                        if not require_authentic:
+                            return cand
+                        logger.info(f"[SYNTHETIC CACHE REJECTED] {cand.name} is marked synthetic in metadata.")
+                        continue
+
+                    # Guard 5: Must match CURRENT_CROP_VERSION and CURRENT_RENDERER_VERSION
+                    m_version = m_dict.get("crop_version")
+                    if m_version != cls.CURRENT_CROP_VERSION:
+                        logger.info(
+                            f"[STALE CROP VERSION REJECTED] Cached file {cand.name} version '{m_version}' "
+                            f"does not match current '{cls.CURRENT_CROP_VERSION}'. Rejecting."
+                        )
+                        continue
+
+                    m_rend_ver = m_dict.get("renderer_version")
+                    if m_rend_ver and m_rend_ver != cls.CURRENT_RENDERER_VERSION:
+                        logger.info(
+                            f"[STALE RENDERER VERSION REJECTED] Cached file {cand.name} renderer_version '{m_rend_ver}' "
+                            f"does not match current '{cls.CURRENT_RENDERER_VERSION}'. Rejecting."
+                        )
+                        continue
+
+                    # Guard 6: Must be a semantic crop
+                    if not m_dict.get("is_semantic_crop"):
+                        logger.info(
+                            f"[UNCROPPED CACHE REJECTED] Cached file {cand.name} is not marked as a semantic crop. Rejecting."
+                        )
+                        continue
+
+                    # Guard 7: Crop box MUST exist and be 4 coordinates
+                    m_box = m_dict.get("crop_box")
+                    if not m_box or not isinstance(m_box, (list, tuple)) or len(m_box) != 4:
+                        logger.info(
+                            f"[INVALID CROP BOX REJECTED] Cached file {cand.name} has missing or invalid crop_box: {m_box}. Rejecting."
+                        )
+                        continue
+
+                    # Guard 8: Crop box MUST match current calculated semantic crop bounds
+                    if expected_crop_box is not None:
+                        if not cls._crop_boxes_match(m_box, expected_crop_box, tolerance=2.0):
+                            logger.info(
+                                f"[CROP BOX MISMATCH REJECTED] Cached file {cand.name} crop_box {m_box} "
+                                f"does not match current expected {expected_crop_box}. Rejecting."
+                            )
+                            continue
+
+                    # Guard 9: Source document hash check
+                    if source_hash is not None:
+                        m_sh = m_dict.get("source_hash")
+                        if not m_sh or m_sh != source_hash:
+                            logger.info(
+                                f"[SOURCE HASH MISMATCH REJECTED] Cached file {cand.name} hash '{m_sh}' "
+                                f"does not match current '{source_hash}'. Rejecting."
+                            )
+                            continue
+
+                    # Guard 10: Physical page number MUST match strictly
+                    m_page = m_dict.get("page_number")
+                    if page_number is not None and page_number > 0:
+                        if m_page is None or int(m_page) != int(page_number):
+                            logger.info(
+                                f"[CACHE PAGE MISMATCH REJECTED] Cached file {cand.name} has page {m_page}, "
+                                f"expected page {page_number}. Rejecting."
+                            )
+                            continue
+
+                    # Guard 11: Semantic target consistency check
+                    req_target = expected_target or cls._describe_semantic_target(
+                        methodology=methodology or "",
+                        section=section or "",
+                        target_field=target_field or "",
+                        test_case_id=test_case_id or "",
+                        evidence_scope=evidence_scope or "",
+                    )
+                    m_target = m_dict.get("semantic_target")
+                    if req_target and m_target and req_target != m_target:
+                        logger.info(
+                            f"[SEMANTIC TARGET MISMATCH REJECTED] Cached file {cand.name} target '{m_target}' "
+                            f"does not match requested '{req_target}'. Rejecting stale cache."
+                        )
+                        continue
+
+                    # Guard 12: Scenario identity checks
+                    m_run = m_dict.get("run_id")
+                    if m_run is not None and int(m_run) != int(run_id):
+                        logger.info(f"[RUN ID MISMATCH REJECTED] {cand.name}: cached run '{m_run}' != requested '{run_id}'")
+                        continue
+
+                    m_ev = m_dict.get("evidence_id")
+                    if evidence_id and m_ev and m_ev != evidence_id:
+                        logger.info(f"[EVIDENCE ID MISMATCH REJECTED] {cand.name}: cached '{m_ev}' != requested '{evidence_id}'")
+                        continue
+
+                    m_tc = m_dict.get("test_case_id")
+                    if test_case_id and m_tc and m_tc != test_case_id:
+                        logger.info(f"[TEST CASE ID MISMATCH REJECTED] {cand.name}: cached '{m_tc}' != requested '{test_case_id}'")
+                        continue
+
+                    m_meth = m_dict.get("methodology")
+                    if methodology and m_meth and m_meth != methodology:
+                        logger.info(f"[METHODOLOGY MISMATCH REJECTED] {cand.name}: cached '{m_meth}' != requested '{methodology}'")
+                        continue
+
+                    m_sec = m_dict.get("section")
+                    if section and m_sec and m_sec != section:
+                        logger.info(f"[SECTION MISMATCH REJECTED] {cand.name}: cached '{m_sec}' != requested '{section}'")
+                        continue
+
+                    m_tf = m_dict.get("target_field")
+                    if target_field and m_tf and m_tf != target_field:
+                        logger.info(f"[TARGET FIELD MISMATCH REJECTED] {cand.name}: cached '{m_tf}' != requested '{target_field}'")
+                        continue
+
+                    m_sc = m_dict.get("evidence_scope")
+                    if evidence_scope and m_sc and m_sc != evidence_scope:
+                        logger.info(f"[EVIDENCE SCOPE MISMATCH REJECTED] {cand.name}: cached '{m_sc}' != requested '{evidence_scope}'")
+                        continue
+
+                    # Guard 13: Dimension validation
+                    try:
+                        with Image.open(cand) as img:
+                            w, h = img.size
+                            if (w, h) in full_page_dims:
                                 logger.info(
-                                    f"[CACHE PAGE MISMATCH] Cached file {cand.name} has page {m_page}, "
-                                    f"expected page {page_number}. Rejecting stale cache."
+                                    f"[FULL PAGE DIMS REJECTED] Cached file {cand.name} has full page dims ({w}, {h}). Rejecting."
                                 )
                                 continue
+                            if w < 60 or h < 30:
+                                logger.info(f"[IMAGE TOO SMALL REJECTED] {cand.name} dims ({w}, {h}) invalid.")
+                                continue
+                    except Exception as ex:
+                        logger.info(f"[IMAGE OPEN FAILED] {cand.name}: {ex}. Rejecting.")
+                        continue
 
-                        # Guard 8: Dimension validation
-                        try:
-                            with Image.open(cand) as img:
-                                w, h = img.size
-                                if (w, h) in full_page_dims:
-                                    logger.info(
-                                        f"[FULL PAGE DIMS REJECTED] Cached file {cand.name} has full page dims ({w}, {h}). Rejecting."
-                                    )
-                                    continue
-                                if w < 60 or h < 30:
-                                    logger.info(f"[IMAGE TOO SMALL REJECTED] {cand.name} dims ({w}, {h}) invalid.")
-                                    continue
-                        except Exception as ex:
-                            logger.info(f"[IMAGE OPEN FAILED] {cand.name}: {ex}. Rejecting.")
-                            continue
+                    # Guard 14: Must not match synthetic card structure
+                    if cls.is_synthetic_card(cand):
+                        logger.info(f"[SYNTHETIC CARD REJECTED] {cand.name} matches synthetic card signature. Rejecting.")
+                        continue
 
-                        # Guard 9: Semantic target consistency check
-                        req_target = cls._describe_semantic_target(
-                            methodology=methodology or "",
-                            section=section or "",
-                            target_field=target_field or "",
-                            test_case_id=test_case_id or "",
-                            evidence_scope=evidence_scope or "",
-                        )
-                        m_target = m_dict.get("semantic_target")
-                        if req_target and m_target and req_target != m_target:
-                            logger.info(
-                                f"[SEMANTIC TARGET MISMATCH REJECTED] Cached file {cand.name} target '{m_target}' "
-                                f"does not match requested '{req_target}'. Rejecting stale cache."
-                            )
-                            continue
-
-                        # All authenticity and crop provenance checks passed!
-                        return cand
-
-                    else:
-                        # Fallback mode (no source docx on disk)
-                        if cls.is_authentic_snapshot(cand):
-                            return cand
-                        else:
-                            return cand
+                    # All 19 authenticity and crop provenance checks passed!
+                    return cand
 
         return None
 
@@ -1459,6 +1614,10 @@ class DSDSourceSnapshotService:
         evidence_scope: str = "",
         test_case_id: str = "",
         evidence_id: str = "",
+        crop_box: Optional[Union[Tuple[int, int, int, int], List[int]]] = None,
+        semantic_target: Optional[str] = None,
+        source_hash: Optional[str] = None,
+        run_id: Optional[int] = None,
     ) -> bool:
         """
         Tier 2 Genuine Document Rendering:
@@ -1471,6 +1630,8 @@ class DSDSourceSnapshotService:
         if not pdf_path:
             return False
 
+        source_hash = source_hash or cls.get_source_document_hash(source_path)
+
         resolved_page = cls.resolve_physical_pdf_page(
             pdf_path=pdf_path,
             advisory_page=page_number,
@@ -1479,7 +1640,7 @@ class DSDSourceSnapshotService:
             target_field=target_field,
             evidence_scope=evidence_scope,
             test_case_id=test_case_id,
-        )
+        ) or page_number
 
         if not resolved_page:
             logger.warning(
@@ -1488,16 +1649,26 @@ class DSDSourceSnapshotService:
             )
             return False
 
-        crop_box = cls.calculate_semantic_crop_bounds(
-            pdf_path=pdf_path,
-            page_number=resolved_page,
-            section=section,
-            methodology=methodology,
-            target_field=target_field,
-            evidence_scope=evidence_scope,
-            test_case_id=test_case_id,
-            scale=2.0,
-        )
+        if crop_box is None:
+            crop_box = cls.calculate_semantic_crop_bounds(
+                pdf_path=pdf_path,
+                page_number=resolved_page,
+                section=section,
+                methodology=methodology,
+                target_field=target_field,
+                evidence_scope=evidence_scope,
+                test_case_id=test_case_id,
+                scale=2.0,
+            )
+
+        if not semantic_target:
+            semantic_target = cls._describe_semantic_target(
+                methodology=methodology,
+                section=section,
+                target_field=target_field,
+                test_case_id=test_case_id,
+                evidence_scope=evidence_scope,
+            )
 
         success = cls.render_pdf_page_to_png(
             pdf_path, resolved_page, png_path, allow_blank=False, crop_box=crop_box
@@ -1509,6 +1680,7 @@ class DSDSourceSnapshotService:
                 authentic=True,
                 page_number=resolved_page,
                 extra={
+                    "run_id": run_id,
                     "test_case_id": test_case_id,
                     "evidence_id": evidence_id,
                     "section": section,
@@ -1516,15 +1688,11 @@ class DSDSourceSnapshotService:
                     "target_field": target_field,
                     "evidence_scope": evidence_scope,
                     "crop_version": cls.CURRENT_CROP_VERSION,
+                    "renderer_version": cls.CURRENT_RENDERER_VERSION,
+                    "source_hash": source_hash,
                     "is_semantic_crop": crop_box is not None,
                     "crop_box": list(crop_box) if crop_box else None,
-                    "semantic_target": cls._describe_semantic_target(
-                        methodology=methodology,
-                        section=section,
-                        target_field=target_field,
-                        test_case_id=test_case_id,
-                        evidence_scope=evidence_scope,
-                    ),
+                    "semantic_target": semantic_target,
                 },
             )
             return True
@@ -2068,7 +2236,7 @@ class DSDSourceSnapshotService:
                     page_number=page_number,
                     semantic_target=target_field or section or None,
                     renderer=renderer,
-                    crop_version=CURRENT_CROP_VERSION,
+                    crop_version=cls.CURRENT_CROP_VERSION,
                     is_semantic_crop=True,
                     file_path=str(png_path),
                 )
@@ -2111,14 +2279,16 @@ class DSDSourceSnapshotService:
         safe_meth = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", methodology.strip()) if methodology else ""
         safe_scope = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", evidence_scope.strip()) if evidence_scope else ""
 
-        if safe_meth == "LAYOUT_VALIDATION" or safe_scope == "FULL_REPORT_LAYOUT":
+        if safe_ev_id:
+            png_filename = f"source_snapshot_{safe_ev_id}.png"
+        elif safe_meth == "LAYOUT_VALIDATION" or safe_scope == "FULL_REPORT_LAYOUT":
             png_filename = f"source_snapshot_{run_id}_REPORT_LAYOUT_FULL.png"
             section = "Report Layout"
         elif safe_meth == "DB_REPORT_DATA_VALIDATION" or safe_scope == "REPORT_BODY_MAPPING":
             png_filename = f"source_snapshot_{run_id}_DBRV_FULL_REPORT_BODY.png"
             section = "Report Body"
         else:
-            fallback_id = safe_ev_id or (
+            fallback_id = (
                 f"snap_{safe_tc_id}_{safe_meth[:6]}" if (safe_tc_id or safe_meth) else "default"
             )
             png_filename = f"source_snapshot_{fallback_id}.png"
@@ -2171,31 +2341,72 @@ class DSDSourceSnapshotService:
 
         desc = f"Source DSD snapshot — {section or 'Report Definition'} • {methodology or 'VALIDATION'}"
 
-        authentic_available = bool(
-            source_path and source_path.exists() and (cls._find_soffice_binary() or cls.is_playwright_available())
+        source_hash: Optional[str] = None
+        pdf_path: Optional[Path] = None
+        resolved_page: int = page_number
+        expected_crop_box: Optional[Tuple[int, int, int, int]] = None
+        expected_target: str = cls._describe_semantic_target(
+            methodology=methodology,
+            section=section,
+            target_field=target_field,
+            test_case_id=test_case_id,
+            evidence_scope=evidence_scope,
         )
 
-        # 1. Check existing authentic snapshots FIRST
+        if source_path and source_path.exists():
+            source_hash = cls.get_source_document_hash(source_path)
+            pdf_path = cls.convert_docx_to_pdf(source_path)
+            if pdf_path:
+                phys_page = cls.resolve_physical_pdf_page(
+                    pdf_path=pdf_path,
+                    advisory_page=page_number,
+                    section=section,
+                    methodology=methodology,
+                    target_field=target_field,
+                    evidence_scope=evidence_scope,
+                    test_case_id=test_case_id,
+                )
+                if phys_page:
+                    resolved_page = phys_page
+                expected_crop_box = cls.calculate_semantic_crop_bounds(
+                    pdf_path=pdf_path,
+                    page_number=resolved_page,
+                    section=section,
+                    methodology=methodology,
+                    target_field=target_field,
+                    evidence_scope=evidence_scope,
+                    test_case_id=test_case_id,
+                    scale=2.0,
+                )
+
+        authentic_available = bool(
+            source_path and source_path.exists() and (cls._find_soffice_binary() or cls.is_playwright_available() or pdf_path)
+        )
+
+        # 1. Check existing authentic snapshots FIRST with complete provenance verification
         cached = cls.find_cached_snapshot(
             run_id=run_id,
             png_filename=png_filename,
             evidence_id=evidence_id,
             test_case_id=test_case_id,
             require_authentic=authentic_available,
-            page_number=page_number,
+            page_number=resolved_page,
             section=section,
             methodology=methodology,
             target_field=target_field,
             evidence_scope=evidence_scope,
+            expected_crop_box=expected_crop_box,
+            expected_target=expected_target,
+            source_hash=source_hash,
         )
         if cached:
             cls._persist_snapshot_record(
                 db=db, run_id=run_id, evidence_id=evidence_id, test_case_id=test_case_id,
-                page_number=page_number, target_field=target_field, section=section,
+                page_number=resolved_page, target_field=target_field, section=section,
                 renderer="cached_authentic", png_path=cached
             )
             logger.info(
-                f"run={run_id} evidence={evidence_id or Path(png_filename).stem} page={page_number} renderer=cached_authentic status=success path={cached.name}"
+                f"run={run_id} evidence={evidence_id or Path(png_filename).stem} page={resolved_page} renderer=cached_authentic status=success path={cached.name}"
             )
             return cached
 
@@ -2215,14 +2426,14 @@ class DSDSourceSnapshotService:
                 test_case_id=test_case_id,
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
-                cls.write_provenance_meta(png_path, renderer="tier1_playwright", authentic=True, page_number=page_number)
+                cls.write_provenance_meta(png_path, renderer="tier1_playwright", authentic=True, page_number=resolved_page)
                 cls._persist_snapshot_record(
                     db=db, run_id=run_id, evidence_id=evidence_id, test_case_id=test_case_id,
-                    page_number=page_number, target_field=target_field, section=section,
+                    page_number=resolved_page, target_field=target_field, section=section,
                     renderer="tier1_playwright", png_path=png_path
                 )
                 logger.info(
-                    f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier1_playwright status=success path={png_path.name}"
+                    f"run={run_id} evidence={evidence_id or png_path.stem} page={resolved_page} renderer=tier1_playwright status=success path={png_path.name}"
                 )
                 return png_path
 
@@ -2231,23 +2442,27 @@ class DSDSourceSnapshotService:
             success = cls.render_tier2_docx_pdf(
                 source_path=source_path,
                 png_path=png_path,
-                page_number=page_number,
+                page_number=resolved_page,
                 section=section,
                 methodology=methodology,
                 target_field=target_field,
                 evidence_scope=evidence_scope,
                 test_case_id=test_case_id,
                 evidence_id=evidence_id,
+                crop_box=expected_crop_box,
+                semantic_target=expected_target,
+                source_hash=source_hash,
+                run_id=run_id,
             )
             if success and png_path.exists() and png_path.stat().st_size > 0:
                 tier2_success = True
                 cls._persist_snapshot_record(
                     db=db, run_id=run_id, evidence_id=evidence_id, test_case_id=test_case_id,
-                    page_number=page_number, target_field=target_field, section=section,
+                    page_number=resolved_page, target_field=target_field, section=section,
                     renderer="tier2_docx_pdf", png_path=png_path
                 )
                 logger.info(
-                    f"run={run_id} evidence={evidence_id or png_path.stem} page={page_number} renderer=tier2_docx_pdf status=success path={png_path.name}"
+                    f"run={run_id} evidence={evidence_id or png_path.stem} page={resolved_page} renderer=tier2_docx_pdf status=success path={png_path.name}"
                 )
                 return png_path
             else:
