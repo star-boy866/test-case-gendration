@@ -41,8 +41,8 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 REPO_ROOT = BACKEND_DIR.parent
 
 
-CURRENT_CROP_VERSION = "v9_exact_semantic_padded_05in"
-CURRENT_RENDERER_VERSION = "v9_pypdfium2_semantic_crop"
+CURRENT_CROP_VERSION = "v10_exact_structural_header_padded"
+CURRENT_RENDERER_VERSION = "v10_pypdfium2_semantic_crop"
 
 
 class DSDSourceSnapshotService:
@@ -1318,24 +1318,54 @@ class DSDSourceSnapshotService:
                                 or cls._find_text_boxes_in_pdf(page, "Report Header")
                             )
                             if b_hdr_top:
-                                top_y = max(b[3] for b in b_hdr_top) + 12.0
-                                b_stop = (
-                                    cls._find_text_boxes_in_pdf(page, "Total Records Matched")
-                                    or cls._find_text_boxes_in_pdf(page, "Total Errors")
-                                    or cls._find_text_boxes_in_pdf(page, "Total Records")
-                                    or cls._find_text_boxes_in_pdf(page, "License Status")
-                                    or cls._find_text_boxes_in_pdf(page, "Prov ID")
-                                    or cls._find_text_boxes_in_pdf(page, "Prov Sort")
-                                )
-                                b_stop_below = [b for b in b_stop if b[3] < (top_y - 20.0)] if b_stop else []
-                                if b_stop_below:
-                                    bottom_y = max(b[3] for b in b_stop_below) + 10.0
+                                top_y = max(b[3] for b in b_hdr_top)
+
+                                # Collect all header table text elements in the upper section of the page
+                                header_text_boxes = []
+                                for q in [
+                                    "MM/DD/CCYY",
+                                    "File Name",
+                                    "Report ID",
+                                    "Department of Health",
+                                    "Enterprise Operational",
+                                    "Report Definition",
+                                    "Date:",
+                                ]:
+                                    tb = cls._find_text_boxes_in_pdf(page, q)
+                                    for b in tb:
+                                        if b[1] > (top_y - 180.0):
+                                            header_text_boxes.append(b)
+
+                                min_text_y = min(b[1] for b in header_text_boxes) if header_text_boxes else (top_y - 100.0)
+
+                                # Inspect any header images (e.g. state / client logo)
+                                objs = list(page.get_objects())
+                                header_images = [
+                                    o.get_bounds()
+                                    for o in objs
+                                    if o.type == 3 and o.get_bounds()[1] > (top_y - 180.0)
+                                ]
+                                min_img_y = min(b[1] for b in header_images) if header_images else min_text_y
+                                lowest_content_y = min(min_text_y, min_img_y)
+
+                                # Search for the horizontal bottom border line of the header table
+                                border_y = None
+                                for o in objs:
+                                    if o.type == 2:  # Vector path / shape
+                                        b = o.get_bounds()
+                                        line_w = b[2] - b[0]
+                                        line_h = b[3] - b[1]
+                                        if line_w > (w * 0.35) and line_h <= 4.0:
+                                            if (lowest_content_y - 35.0) <= b[1] <= (lowest_content_y + 5.0):
+                                                if border_y is None or b[1] < border_y:
+                                                    border_y = b[1]
+
+                                if border_y is not None:
+                                    bottom_y = border_y - 4.0
                                 else:
-                                    b_id = cls._find_text_boxes_in_pdf(page, "Report ID") or cls._find_text_boxes_in_pdf(page, "File Name")
-                                    if b_id:
-                                        bottom_y = min(b[1] for b in b_id) - 35.0
-                                    else:
-                                        bottom_y = top_y - 220.0
+                                    bottom_y = lowest_content_y - 18.0
+                            else:
+                                bottom_y = h * 0.60
 
                         # 2. LAYO: FULL Report Layout (broad mockup grid)
                         elif semantic_target == "FULL_REPORT_LAYOUT":
@@ -2421,34 +2451,8 @@ class DSDSourceSnapshotService:
             )
             return cached
 
-        # 2. Tier 1: Try Playwright / Node if source.docx is on disk
-        render_script = BACKEND_DIR / "render" / "render_snapshot.js"
+        # 2. Tier 2: Genuine Document Rendering (DOCX -> PDF -> Page image with exact semantic crop)
         tier2_success = False
-        if source_path and source_path.exists() and render_script.exists():
-            success = cls.render_tier1_node(
-                render_script=render_script,
-                source_path=source_path,
-                png_path=png_path,
-                section=section,
-                report_id=str(run.report_id or ""),
-                methodology=methodology,
-                target_field=target_field,
-                evidence_scope=evidence_scope,
-                test_case_id=test_case_id,
-            )
-            if success and png_path.exists() and png_path.stat().st_size > 0:
-                cls.write_provenance_meta(png_path, renderer="tier1_playwright", authentic=True, page_number=resolved_page)
-                cls._persist_snapshot_record(
-                    db=db, run_id=run_id, evidence_id=evidence_id, test_case_id=test_case_id,
-                    page_number=resolved_page, target_field=target_field, section=section,
-                    renderer="tier1_playwright", png_path=png_path
-                )
-                logger.info(
-                    f"run={run_id} evidence={evidence_id or png_path.stem} page={resolved_page} renderer=tier1_playwright status=success path={png_path.name}"
-                )
-                return png_path
-
-        # 3. Tier 2: Genuine Document Rendering (DOCX -> PDF -> Page image)
         if source_path and source_path.exists():
             success = cls.render_tier2_docx_pdf(
                 source_path=source_path,
@@ -2479,8 +2483,34 @@ class DSDSourceSnapshotService:
             else:
                 logger.warning(
                     f"[TIER 2 FAILED] run={run_id} evidence={evidence_id} — DOCX->PDF conversion or rendering failed. "
-                    f"Falling back to Tier 3 DB snapshot."
+                    f"Attempting Tier 1 Playwright fallback."
                 )
+
+        # 3. Tier 1: Try Playwright / Node fallback if source.docx is on disk and Tier 2 was not possible
+        render_script = BACKEND_DIR / "render" / "render_snapshot.js"
+        if not tier2_success and source_path and source_path.exists() and render_script.exists():
+            success = cls.render_tier1_node(
+                render_script=render_script,
+                source_path=source_path,
+                png_path=png_path,
+                section=section,
+                report_id=str(run.report_id or ""),
+                methodology=methodology,
+                target_field=target_field,
+                evidence_scope=evidence_scope,
+                test_case_id=test_case_id,
+            )
+            if success and png_path.exists() and png_path.stat().st_size > 0:
+                cls.write_provenance_meta(png_path, renderer="tier1_playwright", authentic=True, page_number=resolved_page)
+                cls._persist_snapshot_record(
+                    db=db, run_id=run_id, evidence_id=evidence_id, test_case_id=test_case_id,
+                    page_number=resolved_page, target_field=target_field, section=section,
+                    renderer="tier1_playwright", png_path=png_path
+                )
+                logger.info(
+                    f"run={run_id} evidence={evidence_id or png_path.stem} page={resolved_page} renderer=tier1_playwright status=success path={png_path.name}"
+                )
+                return png_path
 
         # 4. Tier 3: Pure-Python Authoritative DB Metadata Snapshot
         # Runs whenever Tier 2 failed OR source.docx is not on disk
