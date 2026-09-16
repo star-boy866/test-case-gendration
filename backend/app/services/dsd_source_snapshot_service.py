@@ -45,7 +45,7 @@ class DSDSourceSnapshotService:
     Manages resolution, caching, and resilient generation of Source DSD Snapshots.
     """
 
-    CURRENT_CROP_VERSION = "v5_whitespace_fix"
+    CURRENT_CROP_VERSION = "v6_full_width"
     _pdfium_lock = threading.Lock()
 
     @classmethod
@@ -1057,7 +1057,6 @@ class DSDSourceSnapshotService:
                     page = pdf.get_page(page_number - 1)
                     try:
                         w, h = page.get_size()
-                        c_left, c_right = cls._get_page_horizontal_content_bounds(page)
 
                         sec_l = (section or "").lower()
                         meth_l = (methodology or "").lower()
@@ -1067,8 +1066,9 @@ class DSDSourceSnapshotService:
 
                         top_y: Optional[float] = None
                         bottom_y: Optional[float] = None
-                        left_x: float = c_left
-                        right_x: float = c_right
+                        # Always use full page width — never crop the sides
+                        left_x: float = 0.0
+                        right_x: float = w
 
                         # 1. RHDR: ONLY Report Header Region
                         if (
